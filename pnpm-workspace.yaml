@@ -1,0 +1,6 @@
+ignoredBuiltDependencies:
+  - '@nestjs/core'
+  - '@scarf/scarf'
+  - bcrypt
+  - esbuild
+  - unrs-resolver
