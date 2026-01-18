@@ -8,6 +8,13 @@
       "when": 1768630718042,
       "tag": "0000_round_mother_askani",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1768706146169,
+      "tag": "0001_bored_serpent_society",
+      "breakpoints": true
     }
   ]
 }

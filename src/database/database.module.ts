@@ -17,7 +17,7 @@ export const DATABASE_CONNECTION = 'DATABASE_CONNECTION';
       useFactory: (
         configService: ConfigService,
       ): NodePgDatabase<typeof schema> => {
-        const connectionString = configService.get<string>('DATABASE_URL');
+        let connectionString = configService.get<string>('DATABASE_URL');
 
         if (!connectionString) {
           throw new Error(
@@ -25,9 +25,16 @@ export const DATABASE_CONNECTION = 'DATABASE_CONNECTION';
           );
         }
 
+        if (!connectionString.includes('sslmode=')) {
+          connectionString +=
+            (connectionString.includes('?') ? '&' : '?') + 'sslmode=require';
+        }
+        if (!connectionString.includes('uselibpqcompat=')) {
+          connectionString += '&uselibpqcompat=true';
+        }
+
         const pool = new Pool({
           connectionString,
-          ssl: true,
           max: 20,
         });
 

@@ -53,7 +53,7 @@ export const claimStatusEnum = pgEnum('claim_status', [
 
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
-  username: text('username').notNull().unique(),
+  username: text('username').notNull(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   phone: text('phone'),
