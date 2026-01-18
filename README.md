@@ -1,98 +1,125 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# 🍗 WDP301 - Backend API Service
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Đây là Backend Service cho hệ thống WDP301 (KFC Management System), được xây dựng bằng **NestJS**.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 🛠 Tech Stack
 
-## Description
+- **Framework:** NestJS
+- **Language:** TypeScript
+- **Database:** PostgreSQL
+- **ORM:** Drizzle ORM
+- **Authentication:** JWT (Access Token + Refresh Token Rotation)
+- **Mail Service:** Resend API
+- **Package Manager:** pnpm
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+---
 
-## Project setup
+## 🚀 Yêu cầu hệ thống (Prerequisites)
 
-```bash
-$ pnpm install
-```
+Trước khi bắt đầu, đảm bảo máy bạn đã cài đặt:
 
-## Compile and run the project
+- [Node.js](https://nodejs.org/) (Phiên bản v18 trở lên)
+- [pnpm](https://pnpm.io/) (`npm install -g pnpm`)
+- [PostgreSQL](https://www.postgresql.org/) (Hoặc Docker container)
+
+---
+
+## 📦 Cài đặt & Setup (Installation)
+
+### 1. Clone dự án
 
 ```bash
-# development
-$ pnpm run start
+git clone https://github.com/jonny-tran/wdp301-api.git
+cd wdp301-backend
 
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
 ```
 
-## Run tests
+### 2. Cài đặt dependencies
 
 ```bash
-# unit tests
-$ pnpm run test
+pnpm install
 
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
 ```
 
-## Deployment
+### 3. Cấu hình biến môi trường
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+Tạo file `.env` tại thư mục gốc và copy nội dung trong file env.example (sau đó sửa lại nội các key và nội dung cần thiết)
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### 4. Setup Database (Drizzle ORM)
+
+Đồng bộ Schema từ code xuống Database:
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+# Đẩy schema lên DB (Dev mode)
+npx drizzle-kit push
+
+# (Tùy chọn) Xem DB bằng giao diện UI
+npx drizzle-kit studio
+
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+---
 
-## Resources
+## ▶️ Chạy ứng dụng
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+# Chạy môi trường Development (Watch mode)
+pnpm start:dev
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+# Chạy môi trường Production
+pnpm build
+pnpm start
 
-## Support
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+Sau khi chạy thành công, truy cập Swagger Documentation tại:
+👉 **http://localhost:8080/wdp301-api/docs**
 
-## Stay in touch
+---
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## 🔐 Auth Flow (Lưu ý cho Frontend Dev)
 
-## License
+Hệ thống sử dụng cơ chế **Refresh Token Rotation** để bảo mật cao nhất:
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+1. **Login:** Nhận về `accessToken` (15p) và `refreshToken` (7d).
+2. **Request:** Dùng `accessToken` ở Header `Authorization: Bearer ...`.
+3. **Token Expired:** Khi `accessToken` hết hạn (401), gọi API `/auth/refresh` với `refreshToken` hiện tại.
+4. **Rotation:** API Refresh sẽ trả về cặp token MỚI. **Lưu ý:** `refreshToken` cũ sẽ bị hủy ngay lập tức. Nếu dùng lại cái cũ sẽ bị lỗi và logout.
+5. **Logout:** Gọi API `/auth/logout` để hủy token trên Server.
+
+---
+
+## 📂 Cấu trúc thư mục (Project Structure)
+
+```
+src/
+├── common/             # Các module dùng chung (Mail, Utils, Filters...)
+├── database/           # Cấu hình DB, Schema, Migrations
+├── modules/            # Các feature modules chính
+│   ├── auth/           # Login, Register, Refresh Token...
+│   ├── users/          # User management
+│   └── ...
+├── main.ts             # Entry point
+└── app.module.ts       # Root module
+
+```
+
+---
+
+## ⚠️ Common Errors (Lỗi thường gặp)
+
+**1. Lỗi kết nối DB (`ECONNREFUSED`)**
+
+> Kiểm tra xem PostgreSQL đã chạy chưa? Chuỗi `DATABASE_URL` trong `.env` đã đúng user/pass chưa?
+
+**2. Lỗi gửi mail Resend (`403 Forbidden`)**
+
+> Nếu dùng gói Free và chưa verify domain, bạn chỉ gửi được email đến **chính địa chỉ email đăng ký tài khoản Resend**. Gửi cho email khác sẽ bị chặn.
+
+**3. Lỗi Auth (`401 Unauthorized` liên tục)**
+
+> Kiểm tra lại `JWT_SECRET` trong `.env`. Nếu thay đổi secret, toàn bộ token cũ sẽ không dùng được nữa.
+
+---
+
+**Happy Coding! 🚀**
