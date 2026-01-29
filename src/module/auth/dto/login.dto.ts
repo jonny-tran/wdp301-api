@@ -14,7 +14,7 @@ export class LoginDto {
   email: string;
 
   @ApiProperty({
-    example: '123456',
+    example: 'pass123456789',
     description: 'Mật khẩu đăng nhập ',
     required: true,
     minLength: 6,
