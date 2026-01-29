@@ -31,7 +31,10 @@ export const orderStatusEnum = pgEnum('order_status', [
   'approved',
   'rejected',
   'cancelled',
+  'picking',
+  'delivering',
   'completed',
+  'claimed',
 ]);
 export const shipmentStatusEnum = pgEnum('shipment_status', [
   'preparing',
@@ -142,6 +145,9 @@ export const inventory = pgTable(
     quantity: decimal('quantity', { precision: 10, scale: 2 })
       .default('0')
       .notNull(),
+    reservedQuantity: decimal('reserved_quantity', { precision: 10, scale: 2 })
+      .default('0')
+      .notNull(),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },
@@ -177,6 +183,9 @@ export const orders = pgTable('orders', {
   totalAmount: decimal('total_amount', { precision: 12, scale: 2 }).default(
     '0',
   ),
+  deliveryDate: timestamp('delivery_date').notNull(),
+  priority: text('priority').default('standard'),
+  note: text('note'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

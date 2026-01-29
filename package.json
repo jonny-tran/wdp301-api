@@ -20,7 +20,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:seed": "ts-node src/database/seed.ts"
+    "db:seed": "ts-node src/database/seed.ts",
+    "db:seed:order": "ts-node src/database/seed-order-module.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
