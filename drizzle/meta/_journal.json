@@ -15,6 +15,20 @@
       "when": 1768706146169,
       "tag": "0001_bored_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1769609284984,
+      "tag": "0002_slim_otto_octavius",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1769614886332,
+      "tag": "0003_fast_baron_zemo",
+      "breakpoints": true
     }
   ]
 }
