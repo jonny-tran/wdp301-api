@@ -68,7 +68,7 @@ export class OrderRepository {
         .returning();
 
       if (!newOrder) {
-        throw new Error('Failed to create order');
+        throw new Error('Không thể tạo đơn hàng');
       }
 
       // 2. Create Order Items

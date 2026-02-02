@@ -58,9 +58,9 @@ export function IsFutureDate(validationOptions?: ValidationOptions) {
         defaultMessage() {
           const now = new Date();
           if (now.getHours() >= 22) {
-            return 'Orders placed after 22:00 cannot be delivered tomorrow. Please select a later date.';
+            return 'Đơn hàng đặt sau 22:00 không thể giao vào ngày mai. Vui lòng chọn ngày giao hàng khác.';
           }
-          return 'Delivery date must be at least 1 day in the future.';
+          return 'Ngày giao hàng phải là ít nhất 1 ngày trong tương lai.';
         },
       },
     });
@@ -69,13 +69,13 @@ export function IsFutureDate(validationOptions?: ValidationOptions) {
 
 export class OrderItemDto {
   @ApiProperty({ example: 1, description: 'ID of the product' })
-  @IsInt()
-  @IsPositive()
+  @IsInt({ message: 'ID sản phẩm phải là số nguyên' })
+  @IsPositive({ message: 'ID sản phẩm phải là số dương' })
   product_id: number;
 
   @ApiProperty({ example: 10, description: 'Quantity requested' })
-  @IsInt()
-  @IsPositive()
+  @IsInt({ message: 'Số lượng phải là số nguyên' })
+  @IsPositive({ message: 'Số lượng phải là số dương' })
   quantity: number;
 }
 
@@ -84,13 +84,13 @@ export class CreateOrderDto {
     example: '2023-12-25T00:00:00.000Z',
     description: 'Desired delivery date (must be in future)',
   })
-  @IsDateString()
-  @IsNotEmpty()
+  @IsDateString({}, { message: 'Ngày giao hàng không hợp lệ' })
+  @IsNotEmpty({ message: 'Ngày giao hàng không được để trống' })
   @IsFutureDate()
   delivery_date: string;
 
   @ApiProperty({ type: [OrderItemDto], description: 'List of items to order' })
-  @IsArray()
+  @IsArray({ message: 'Danh sách sản phẩm phải là một danh sách' })
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   items: OrderItemDto[];
