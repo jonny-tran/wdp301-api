@@ -1,6 +1,11 @@
-import { Logger, ValidationPipe, VersioningType } from '@nestjs/common';
+import {
+  BadRequestException,
+  Logger,
+  ValidationPipe,
+  VersioningType,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { NestFactory, Reflector } from '@nestjs/core';
+import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -31,10 +36,22 @@ async function bootstrap() {
       whitelist: true,
       transform: true,
       forbidNonWhitelisted: true,
+      exceptionFactory: (errors) => {
+        const result = errors.map((error) => ({
+          field: error.property,
+          message: error.constraints
+            ? Object.values(error.constraints)[0]
+            : 'Lỗi giá trị không hợp lệ',
+        }));
+        return new BadRequestException({
+          message: 'Dữ liệu đầu vào không hợp lệ',
+          errors: result,
+        });
+      },
     }),
   );
   app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(new TransformInterceptor(app.get(Reflector)));
+  app.useGlobalInterceptors(new TransformInterceptor());
 
   const config = new DocumentBuilder()
     .setTitle('Central Kitchen API')

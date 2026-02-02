@@ -2,8 +2,9 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { drizzle, NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
+import { DATABASE_CONNECTION } from './database.constants';
 import * as schema from './schema';
-export const DATABASE_CONNECTION = 'DATABASE_CONNECTION';
+import { UnitOfWork } from './unit-of-work';
 
 @Global()
 @Module({
@@ -38,7 +39,8 @@ export const DATABASE_CONNECTION = 'DATABASE_CONNECTION';
         return drizzle(pool, { schema });
       },
     },
+    UnitOfWork,
   ],
-  exports: [DATABASE_CONNECTION],
+  exports: [DATABASE_CONNECTION, UnitOfWork],
 })
 export class DatabaseModule {}
