@@ -5,7 +5,10 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './module/auth/auth.module';
+import { ClaimModule } from './module/claim/claim.module';
+import { InventoryModule } from './module/inventory/inventory.module';
 import { OrderModule } from './module/order/order.module';
+import { ShipmentModule } from './module/shipment/shipment.module';
 
 @Module({
   imports: [
@@ -26,6 +29,9 @@ import { OrderModule } from './module/order/order.module';
     }),
     AuthModule,
     OrderModule,
+    ShipmentModule,
+    InventoryModule,
+    ClaimModule,
   ],
   controllers: [AppController],
   providers: [AppService],

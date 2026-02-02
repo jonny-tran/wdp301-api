@@ -29,6 +29,13 @@
       "when": 1769614886332,
       "tag": "0003_fast_baron_zemo",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1769960427265,
+      "tag": "0004_worthless_bloodscream",
+      "breakpoints": true
     }
   ]
 }

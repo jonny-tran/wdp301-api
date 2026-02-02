@@ -41,6 +41,7 @@ export const shipmentStatusEnum = pgEnum('shipment_status', [
   'in_transit',
   'delivered',
   'completed',
+  'cancelled',
 ]);
 export const transactionTypeEnum = pgEnum('transaction_type', [
   'import',
