@@ -4,11 +4,9 @@ import {
   Injectable,
   NestInterceptor,
 } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
 import { Response as ExpressResponse, Request } from 'express';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
-import { RESPONSE_MESSAGE } from '../decorators/response-message.decorator';
 
 export interface Response<T> {
   statusCode: number;
@@ -23,8 +21,6 @@ export class TransformInterceptor<T> implements NestInterceptor<
   T,
   Response<T>
 > {
-  constructor(private reflector: Reflector) {}
-
   intercept(
     context: ExecutionContext,
     next: CallHandler<T>,
@@ -35,13 +31,9 @@ export class TransformInterceptor<T> implements NestInterceptor<
         const response = ctx.getResponse<ExpressResponse>();
         const request = ctx.getRequest<Request>();
 
-        const message =
-          this.reflector.get<string>(RESPONSE_MESSAGE, context.getHandler()) ||
-          'Success';
-
         return {
           statusCode: response.statusCode,
-          message: message,
+          message: 'Success',
           data: data || null,
           timestamp: new Date().toISOString(),
           path: request.url,
