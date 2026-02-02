@@ -25,7 +25,9 @@ export class OrderService {
 
   async createOrder(user: IJwtPayload, dto: CreateOrderDto) {
     if (!user.storeId) {
-      throw new BadRequestException('User does not belong to a store');
+      throw new BadRequestException(
+        'Người dùng không thuộc về bất kỳ cửa hàng nào',
+      );
     }
 
     const { delivery_date, items } = dto;
@@ -44,7 +46,7 @@ export class OrderService {
 
     if (invalidProductIds.length > 0) {
       throw new BadRequestException(
-        `Invalid or inactive product IDs: ${invalidProductIds.join(', ')}`,
+        `Danh sách sản phẩm không hợp lệ hoặc không hoạt động: ${invalidProductIds.join(', ')}`,
       );
     }
 
@@ -64,14 +66,16 @@ export class OrderService {
       };
     } catch (error) {
       throw new InternalServerErrorException(
-        `Transaction failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        `Giao dịch thất bại: ${error instanceof Error ? error.message : 'Lỗi không xác định'}`,
       );
     }
   }
 
   async getMyStoreOrders(user: IJwtPayload) {
     if (!user.storeId) {
-      throw new BadRequestException('User does not belong to a store');
+      throw new BadRequestException(
+        'Người dùng không thuộc về bất kỳ cửa hàng nào',
+      );
     }
 
     return this.orderRepository.getOrdersByStore(user.storeId);
@@ -86,18 +90,18 @@ export class OrderService {
       // 1. Fetch Order
       const order = await this.orderRepository.getOrderById(orderId, tx);
       if (!order) {
-        throw new NotFoundException('Order not found');
+        throw new NotFoundException('Không tìm thấy đơn hàng');
       }
 
       if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
-        throw new BadRequestException('Order is not pending');
+        throw new BadRequestException('Đơn hàng không ở trạng thái chờ xử lý');
       }
 
       // 2. Get Central Warehouse
       const centralWarehouseId =
         await this.orderRepository.getCentralWarehouseId(tx);
       if (!centralWarehouseId) {
-        throw new InternalServerErrorException('Central warehouse not found');
+        throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
       }
 
       // 3. Process Items
@@ -170,7 +174,7 @@ export class OrderService {
 
       if (!storeWarehouseId) {
         throw new InternalServerErrorException(
-          'Store warehouse not found for shipment',
+          'Không tìm thấy kho cửa hàng để tạo vận chuyển',
         );
       }
 
@@ -184,7 +188,7 @@ export class OrderService {
 
       return {
         success: true,
-        message: 'Order approved and shipment created',
+        message: 'Success',
         orderId: order.id,
         status: OrderStatus.APPROVED,
         results,
@@ -195,11 +199,13 @@ export class OrderService {
   async rejectOrder(orderId: string, reason: string) {
     const order = await this.orderRepository.getOrderById(orderId);
     if (!order) {
-      throw new NotFoundException('Order not found');
+      throw new NotFoundException('Không tìm thấy đơn hàng');
     }
 
     if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
-      throw new BadRequestException('Only pending orders can be rejected');
+      throw new BadRequestException(
+        'Chỉ có thể từ chối đơn hàng đang chờ xử lý',
+      );
     }
 
     await this.orderRepository.updateStatusWithReason(
@@ -209,7 +215,7 @@ export class OrderService {
     );
 
     return {
-      message: 'Order rejected successfully',
+      message: 'Success',
       orderId,
       status: OrderStatus.REJECTED,
     };
@@ -218,26 +224,28 @@ export class OrderService {
   async cancelOrder(orderId: string, user: IJwtPayload) {
     const order = await this.orderRepository.getOrderById(orderId);
     if (!order) {
-      throw new NotFoundException('Order not found');
+      throw new NotFoundException('Không tìm thấy đơn hàng');
     }
 
     // Data Isolation Check
     if (order.storeId !== user.storeId) {
-      throw new ForbiddenException('You can only cancel your own store orders');
+      throw new ForbiddenException(
+        'Bạn chỉ có thể hủy đơn hàng của cửa hàng mình',
+      );
     }
 
     if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
-      throw new BadRequestException('Only pending orders can be cancelled');
+      throw new BadRequestException('Chỉ có thể hủy đơn hàng đang chờ xử lý');
     }
 
     await this.orderRepository.updateStatusWithReason(
       orderId,
       OrderStatus.CANCELLED,
-      'Cancelled by Store Staff',
+      'Hủy bởi nhân viên cửa hàng',
     );
 
     return {
-      message: 'Order cancelled successfully',
+      message: 'Success',
       orderId,
       status: OrderStatus.CANCELLED,
     };
@@ -246,7 +254,7 @@ export class OrderService {
   async getOrderDetails(orderId: string, user: IJwtPayload) {
     const order = await this.orderRepository.getOrderById(orderId);
     if (!order) {
-      throw new NotFoundException('Order not found');
+      throw new NotFoundException('Không tìm thấy đơn hàng');
     }
 
     const isCoordinator =
@@ -254,7 +262,7 @@ export class OrderService {
 
     // Data Isolation for Store Staff: strictly no access to other store's orders
     if (!isCoordinator && order.storeId !== user.storeId) {
-      throw new ForbiddenException('Access denied');
+      throw new ForbiddenException('Từ chối truy cập');
     }
 
     // For both Store and Coordinator, return standard details here.
@@ -265,7 +273,7 @@ export class OrderService {
   async reviewOrder(orderId: string) {
     const order = await this.orderRepository.getOrderById(orderId);
     if (!order) {
-      throw new NotFoundException('Order not found');
+      throw new NotFoundException('Không tìm thấy đơn hàng');
     }
 
     // Ensure it is pending before review, or allow reviewing any order?
