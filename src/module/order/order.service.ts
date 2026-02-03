@@ -85,115 +85,163 @@ export class OrderService {
     return this.orderRepository.getOrdersForCoordinator(status);
   }
 
-  async approveOrder(orderId: string) {
-    return this.orderRepository.runTransaction(async (tx) => {
-      // 1. Fetch Order
-      const order = await this.orderRepository.getOrderById(orderId, tx);
-      if (!order) {
-        throw new NotFoundException('Không tìm thấy đơn hàng');
-      }
+  async approveOrder(orderId: string, confirm?: boolean) {
+    return this.orderRepository
+      .runTransaction(async (tx) => {
+        // 1. Fetch Order
+        const order = await this.orderRepository.getOrderById(orderId, tx);
+        if (!order) {
+          throw new NotFoundException('Không tìm thấy đơn hàng');
+        }
 
-      if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
-        throw new BadRequestException('Đơn hàng không ở trạng thái chờ xử lý');
-      }
+        if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
+          throw new BadRequestException(
+            'Đơn hàng không ở trạng thái chờ xử lý',
+          );
+        }
 
-      // 2. Get Central Warehouse
-      const centralWarehouseId =
-        await this.orderRepository.getCentralWarehouseId(tx);
-      if (!centralWarehouseId) {
-        throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
-      }
+        // 2. Get Central Warehouse
+        const centralWarehouseId =
+          await this.orderRepository.getCentralWarehouseId(tx);
+        if (!centralWarehouseId) {
+          throw new InternalServerErrorException(
+            'Không tìm thấy kho trung tâm',
+          );
+        }
 
-      // 3. Process Items
-      const shipmentItems: { batchId: number; quantity: number }[] = [];
-      const results: {
-        productId: number;
-        requested: number;
-        approved: number;
-        missing: number;
-      }[] = [];
+        // 3. Process Items
+        const shipmentItems: { batchId: number; quantity: number }[] = [];
+        const results: {
+          productId: number;
+          requested: number;
+          approved: number;
+          missing: number;
+        }[] = [];
 
-      for (const item of order.items) {
-        const requestedQty = parseFloat(item.quantityRequested);
-        let remainingNeeded = requestedQty;
-        let approvedQty = 0;
+        for (const item of order.items) {
+          const requestedQty = parseFloat(item.quantityRequested);
+          let remainingNeeded = requestedQty;
+          let approvedQty = 0;
 
-        const batches = await this.orderRepository.getBatchesForFEFO(
-          item.productId,
-          centralWarehouseId,
-          tx,
-        );
-
-        for (const batch of batches) {
-          if (remainingNeeded <= 0) break;
-
-          const availableQty =
-            parseFloat(batch.quantity) - parseFloat(batch.reservedQuantity);
-
-          if (availableQty <= 0) continue;
-
-          const takeQty = Math.min(remainingNeeded, availableQty);
-
-          await this.orderRepository.reserveInventory(
-            batch.inventoryId,
-            takeQty,
+          const batches = await this.orderRepository.getBatchesForFEFO(
+            item.productId,
+            centralWarehouseId,
             tx,
           );
 
-          shipmentItems.push({
-            batchId: batch.batchId,
-            quantity: takeQty,
-          });
+          for (const batch of batches) {
+            if (remainingNeeded <= 0) break;
 
-          approvedQty += takeQty;
-          remainingNeeded -= takeQty;
+            const availableQty =
+              parseFloat(batch.quantity) - parseFloat(batch.reservedQuantity);
+
+            if (availableQty <= 0) continue;
+
+            const takeQty = Math.min(remainingNeeded, availableQty);
+
+            await this.orderRepository.reserveInventory(
+              batch.inventoryId,
+              takeQty,
+              tx,
+            );
+
+            shipmentItems.push({
+              batchId: batch.batchId,
+              quantity: takeQty,
+            });
+
+            approvedQty += takeQty;
+            remainingNeeded -= takeQty;
+          }
+
+          await this.orderRepository.updateOrderItemApprovedQuantity(
+            item.id,
+            approvedQty.toString(),
+            tx,
+          );
+
+          results.push({
+            productId: item.productId,
+            requested: requestedQty,
+            approved: approvedQty,
+            missing: requestedQty - approvedQty,
+          });
         }
 
-        await this.orderRepository.updateOrderItemApprovedQuantity(
-          item.id,
-          approvedQty.toString(),
+        // --- New Logic: Calculate Ideals ---
+        const totalRequested = results.reduce(
+          (sum, item) => sum + item.requested,
+          0,
+        );
+        const totalApproved = results.reduce(
+          (sum, item) => sum + item.approved,
+          0,
+        );
+
+        // --- Business Rule: Zero-Fulfillment ---
+        if (totalRequested > 0 && totalApproved === 0) {
+          await this.orderRepository.updateStatusWithReason(
+            order.id,
+            OrderStatus.REJECTED,
+            'Không thể duyệt đơn do tất cả mặt hàng đã hết tồn kho',
+            tx,
+          );
+          return {
+            success: false,
+            message: 'Không thể duyệt đơn do tất cả mặt hàng đã hết tồn kho',
+            orderId: order.id,
+            status: OrderStatus.REJECTED,
+            results,
+          };
+        }
+
+        // --- Business Rule: Low Fill-rate ---
+        const fillRate =
+          totalRequested > 0 ? totalApproved / totalRequested : 0;
+        if (fillRate < 0.2 && !confirm) {
+          throw new BadRequestException({
+            message:
+              'Tỷ lệ đáp ứng quá thấp (dưới 20%), bạn có chắc chắn muốn giao đơn này không?',
+            fiilRate: (fillRate * 100).toFixed(2) + '%',
+            canForce: true,
+          });
+        }
+
+        // 4. Update Order Status (Approved)
+        await this.orderRepository.updateOrderApproved(order.id, tx);
+
+        // 5. Create Shipment
+        const storeWarehouseId = await this.orderRepository.getStoreWarehouseId(
+          order.storeId,
           tx,
         );
 
-        results.push({
-          productId: item.productId,
-          requested: requestedQty,
-          approved: approvedQty,
-          missing: requestedQty - approvedQty,
-        });
-      }
+        if (!storeWarehouseId) {
+          throw new InternalServerErrorException(
+            'Không tìm thấy kho cửa hàng để tạo vận chuyển',
+          );
+        }
 
-      // 4. Update Order Status
-      await this.orderRepository.updateOrderApproved(order.id, tx);
-
-      // 5. Create Shipment
-      const storeWarehouseId = await this.orderRepository.getStoreWarehouseId(
-        order.storeId,
-        tx,
-      );
-
-      if (!storeWarehouseId) {
-        throw new InternalServerErrorException(
-          'Không tìm thấy kho cửa hàng để tạo vận chuyển',
+        await this.shipmentService.createShipmentForOrder(
+          order.id,
+          centralWarehouseId,
+          storeWarehouseId,
+          shipmentItems,
+          tx,
         );
-      }
 
-      await this.shipmentService.createShipmentForOrder(
-        order.id,
-        centralWarehouseId,
-        storeWarehouseId,
-        shipmentItems,
-        tx,
-      );
-
-      return {
-        success: true,
-        message: 'Success',
-        orderId: order.id,
-        status: OrderStatus.APPROVED,
-        results,
-      };
-    });
+        return {
+          orderId: order.id,
+          status: OrderStatus.APPROVED,
+          results,
+        };
+      })
+      .then((res) => {
+        if (res.status === OrderStatus.REJECTED) {
+          throw new BadRequestException(res.message);
+        }
+        return res;
+      });
   }
 
   async rejectOrder(orderId: string, reason: string) {
@@ -215,7 +263,6 @@ export class OrderService {
     );
 
     return {
-      message: 'Success',
       orderId,
       status: OrderStatus.REJECTED,
     };
@@ -245,7 +292,6 @@ export class OrderService {
     );
 
     return {
-      message: 'Success',
       orderId,
       status: OrderStatus.CANCELLED,
     };
