@@ -71,7 +71,7 @@ export class OrderItemDto {
   @ApiProperty({ example: 1, description: 'ID of the product' })
   @IsInt({ message: 'ID sản phẩm phải là số nguyên' })
   @IsPositive({ message: 'ID sản phẩm phải là số dương' })
-  product_id: number;
+  productId: number;
 
   @ApiProperty({ example: 10, description: 'Quantity requested' })
   @IsInt({ message: 'Số lượng phải là số nguyên' })
@@ -87,7 +87,7 @@ export class CreateOrderDto {
   @IsDateString({}, { message: 'Ngày giao hàng không hợp lệ' })
   @IsNotEmpty({ message: 'Ngày giao hàng không được để trống' })
   @IsFutureDate()
-  delivery_date: string;
+  deliveryDate: string;
 
   @ApiProperty({ type: [OrderItemDto], description: 'List of items to order' })
   @IsArray({ message: 'Danh sách sản phẩm phải là một danh sách' })

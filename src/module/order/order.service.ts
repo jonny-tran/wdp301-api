@@ -30,10 +30,10 @@ export class OrderService {
       );
     }
 
-    const { delivery_date, items } = dto;
+    const { deliveryDate, items } = dto;
 
     // Validate products
-    const productIds = items.map((item) => item.product_id);
+    const productIds = items.map((item) => item.productId);
     const uniqueProductIds = [...new Set(productIds)];
 
     const activeProducts =
@@ -53,7 +53,7 @@ export class OrderService {
     try {
       const newOrder = await this.orderRepository.createOrderTransaction(
         user.storeId,
-        delivery_date,
+        deliveryDate,
         items,
       );
 
