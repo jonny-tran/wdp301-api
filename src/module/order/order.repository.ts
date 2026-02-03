@@ -76,7 +76,7 @@ export class OrderRepository {
         await tx.insert(schema.orderItems).values(
           items.map((item) => ({
             orderId: newOrder.id,
-            productId: item.product_id,
+            productId: item.productId,
             quantityRequested: item.quantity.toString(),
             quantityApproved: null,
           })),
