@@ -59,10 +59,10 @@ export class OrderService {
 
       return {
         id: newOrder.id,
-        store_id: newOrder.storeId,
+        storeId: newOrder.storeId,
         status: newOrder.status,
-        delivery_date: newOrder.deliveryDate,
-        created_at: newOrder.createdAt,
+        deliveryDate: newOrder.deliveryDate,
+        createdAt: newOrder.createdAt,
       };
     } catch (error) {
       throw new InternalServerErrorException(
