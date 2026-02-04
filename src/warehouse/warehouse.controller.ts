@@ -2,21 +2,19 @@ import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
-  ApiTags,
   ApiResponse,
+  ApiTags,
 } from '@nestjs/swagger';
-import { WarehouseService } from './warehouse.service';
-import {
-  ReportIssueDto,
-  FinalizeShipmentDto,
-  PickingListResponseDto,
-} from './dto/warehouse-ops.dto';
-import { AtGuard } from '../module/auth/guards/auth.guard';
-import { RolesGuard } from '../module/auth/guards/roles.guard';
 import { Roles } from '../module/auth/decorators/roles.decorator';
 import { UserRole } from '../module/auth/dto/create-user.dto';
-import { CurrentUser } from '../module/auth/decorators/current-user.decorator';
-import { IJwtPayload } from '../module/auth/types/auth.types';
+import { AtGuard } from '../module/auth/guards/auth.guard';
+import { RolesGuard } from '../module/auth/guards/roles.guard';
+import {
+  FinalizeShipmentDto,
+  PickingListResponseDto,
+  ReportIssueDto,
+} from './dto/warehouse-ops.dto';
+import { WarehouseService } from './warehouse.service';
 
 @ApiTags('Warehouse Operations')
 @ApiBearerAuth()

@@ -2,15 +2,15 @@ import {
   BadRequestException,
   Inject,
   Injectable,
-  NotFoundException,
   InternalServerErrorException,
+  NotFoundException,
 } from '@nestjs/common';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { eq, and, sql, desc, asc } from 'drizzle-orm';
-import * as schema from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.constants';
-import { ReportIssueDto, FinalizeShipmentDto } from './dto/warehouse-ops.dto';
+import * as schema from '../database/schema';
 import { OrderStatus } from '../module/order/constants/order-status.enum';
+import { FinalizeShipmentDto, ReportIssueDto } from './dto/warehouse-ops.dto';
 
 @Injectable()
 export class WarehouseService {
@@ -107,7 +107,9 @@ export class WarehouseService {
         ),
       });
 
-      if (!inventory) throw new NotFoundException('Batch not found in warehouse');
+      if (!inventory) {
+        throw new NotFoundException('Batch not found in warehouse');
+      }
 
       // 2. Tìm Shipment Item đang giữ lô này
       const shipmentItem = await tx.query.shipmentItems.findFirst({
