@@ -9,6 +9,7 @@ import { ClaimModule } from './module/claim/claim.module';
 import { InventoryModule } from './module/inventory/inventory.module';
 import { OrderModule } from './module/order/order.module';
 import { ShipmentModule } from './module/shipment/shipment.module';
+import { WarehouseModule } from './warehouse/warehouse.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { ShipmentModule } from './module/shipment/shipment.module';
     ShipmentModule,
     InventoryModule,
     ClaimModule,
+    WarehouseModule,
   ],
   controllers: [AppController],
   providers: [AppService],
