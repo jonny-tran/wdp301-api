@@ -1,0 +1,157 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { generateBatchCode } from 'src/common/utils/generate-batch-code.util';
+import { BatchFilterDto } from './dto/batch-filter.dto';
+import { CreateBatchDto } from './dto/create-batch.dto';
+import { CreateProductDto } from './dto/create-product.dto';
+import { ProductFilterDto } from './dto/product-filter.dto';
+import { UpdateBatchDto } from './dto/update-batch.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
+import { ProductRepository } from './product.repository';
+
+@Injectable()
+export class ProductService {
+  constructor(private readonly productRepository: ProductRepository) {}
+
+  async createProduct(dto: CreateProductDto) {
+    const existing = await this.productRepository.findBySku(dto.sku);
+    if (existing) {
+      throw new BadRequestException('Mã SKU đã tồn tại trên hệ thống');
+    }
+    return await this.productRepository.create(dto);
+  }
+
+  async updateProduct(id: number, dto: UpdateProductDto) {
+    const existing = await this.productRepository.findById(id);
+    if (!existing) {
+      throw new NotFoundException('Sản phẩm không tồn tại');
+    }
+    if (!existing.isActive) {
+      throw new NotFoundException(
+        'Sản phẩm này đã bị xóa hoặc ngừng kinh doanh',
+      );
+    }
+    // Check SKU if being updated
+    if (dto.sku && dto.sku !== existing.sku) {
+      const skuExists = await this.productRepository.findBySku(dto.sku);
+      if (skuExists) {
+        throw new BadRequestException('Mã SKU đã tồn tại trên hệ thống');
+      }
+    }
+    return await this.productRepository.update(id, dto);
+  }
+
+  async getProduct(id: number) {
+    const product = await this.productRepository.findOneWithBatches(id);
+    if (!product) {
+      throw new NotFoundException('Sản phẩm không tồn tại');
+    }
+    if (!product.isActive) {
+      throw new NotFoundException(
+        'Sản phẩm này đã bị xóa hoặc ngừng kinh doanh',
+      );
+    }
+    return product;
+  }
+
+  async getProducts(filter: ProductFilterDto) {
+    return await this.productRepository.findAll(filter);
+  }
+
+  async removeProduct(id: number) {
+    const product = await this.productRepository.findById(id);
+    if (!product) {
+      throw new NotFoundException('Sản phẩm không tồn tại');
+    }
+    if (!product.isActive) {
+      throw new NotFoundException(
+        'Sản phẩm này đã bị xóa hoặc ngừng kinh doanh',
+      );
+    }
+    return await this.productRepository.softDelete(id);
+  }
+
+  async restoreProduct(id: number) {
+    const product = await this.productRepository.findById(id);
+    if (!product) {
+      throw new NotFoundException('Sản phẩm không tồn tại');
+    }
+    return await this.productRepository.restore(id);
+  }
+
+  // --- Batch Services ---
+
+  async getBatches(filter: BatchFilterDto) {
+    return await this.productRepository.findAllBatches(filter);
+  }
+
+  async getBatch(id: number) {
+    const batch = await this.productRepository.findBatchById(id);
+    if (!batch) {
+      throw new NotFoundException('Lô hàng không tồn tại');
+    }
+    return batch;
+  }
+
+  async updateBatch(id: number, dto: UpdateBatchDto) {
+    const batch = await this.productRepository.findBatchById(id);
+    if (!batch) {
+      throw new NotFoundException('Lô hàng không tồn tại');
+    }
+
+    let centralWarehouseId: number | undefined;
+    if (dto.initialQuantity) {
+      centralWarehouseId =
+        await this.productRepository.findCentralWarehouseId();
+      if (!centralWarehouseId) {
+        throw new BadRequestException(
+          'Không tìm thấy kho tổng để cập nhật số lượng',
+        );
+      }
+    }
+
+    return await this.productRepository.updateBatch(
+      id,
+      dto,
+      centralWarehouseId,
+    );
+  }
+
+  async createBatch(productId: number, dto: CreateBatchDto) {
+    const product = await this.productRepository.findById(productId);
+    if (!product) {
+      throw new NotFoundException('Sản phẩm không tồn tại');
+    }
+
+    const generatedBatchCode = generateBatchCode(product.sku);
+
+    // FEFO Logic: Calculate expiry date
+    const today = new Date();
+    const expiryDate = new Date(today);
+    expiryDate.setDate(today.getDate() + product.shelfLifeDays);
+    const expiryDateStr = expiryDate.toISOString().split('T')[0];
+
+    // Get Central Warehouse ID
+    const centralWarehouseId =
+      await this.productRepository.findCentralWarehouseId();
+    if (!centralWarehouseId) {
+      throw new BadRequestException('Kho tổng chưa được cấu hình');
+    }
+
+    return await this.productRepository.createBatchWithInventory(
+      {
+        productId: productId,
+        batchCode: generatedBatchCode,
+        expiryDate: expiryDateStr,
+        imageUrl: dto.imageUrl,
+      },
+      {
+        warehouseId: centralWarehouseId,
+        initialQuantity: dto.initialQuantity,
+      },
+    );
+  }
+}

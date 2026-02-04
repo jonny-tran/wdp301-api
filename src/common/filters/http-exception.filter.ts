@@ -55,23 +55,32 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message = exceptionResponse;
     }
 
-    // Localization for Standard HTTP Status
-    switch (status) {
-      case HttpStatus.UNAUTHORIZED:
-        message = 'Chưa đăng nhập hoặc Token hết hạn';
-        break;
-      case HttpStatus.FORBIDDEN:
-        message = 'Bạn không có quyền truy cập resource này';
-        break;
-      case HttpStatus.NOT_FOUND:
-        message = `Không tìm thấy tài nguyên: ${request.method} ${request.url}`;
-        break;
-      case HttpStatus.TOO_MANY_REQUESTS:
-        message = 'Hệ thống quá tải, vui lòng thử lại sau';
-        break;
-      case HttpStatus.INTERNAL_SERVER_ERROR:
-        message = 'Lỗi máy chủ nội bộ, vui lòng liên hệ Admin';
-        break;
+    const isDefaultMessage =
+      message === 'Lỗi hệ thống' ||
+      message === 'Not Found' ||
+      message === 'Unauthorized' ||
+      message === 'Forbidden' ||
+      message === 'Internal Server Error' ||
+      message.startsWith('Cannot');
+
+    if (isDefaultMessage) {
+      switch (status) {
+        case HttpStatus.UNAUTHORIZED:
+          message = 'Chưa đăng nhập hoặc Token hết hạn';
+          break;
+        case HttpStatus.FORBIDDEN:
+          message = 'Bạn không có quyền truy cập resource này';
+          break;
+        case HttpStatus.NOT_FOUND:
+          message = `Không tìm thấy tài nguyên: ${request.method} ${request.url}`;
+          break;
+        case HttpStatus.TOO_MANY_REQUESTS:
+          message = 'Hệ thống quá tải, vui lòng thử lại sau';
+          break;
+        case HttpStatus.INTERNAL_SERVER_ERROR:
+          message = 'Lỗi máy chủ nội bộ, vui lòng liên hệ Admin';
+          break;
+      }
     }
 
     const errorBody = {

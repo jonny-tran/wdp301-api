@@ -129,6 +129,7 @@ export const batches = pgTable('batches', {
     .references(() => products.id)
     .notNull(),
   expiryDate: date('expiry_date').notNull(),
+  imageUrl: text('image_url'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

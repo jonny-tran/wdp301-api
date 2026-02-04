@@ -5,10 +5,10 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { Roles } from '../module/auth/decorators/roles.decorator';
-import { UserRole } from '../module/auth/dto/create-user.dto';
-import { AtGuard } from '../module/auth/guards/auth.guard';
-import { RolesGuard } from '../module/auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../auth/dto/create-user.dto';
+import { AtGuard } from '../auth/guards/auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import {
   FinalizeShipmentDto,
   PickingListResponseDto,
