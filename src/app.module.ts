@@ -8,6 +8,7 @@ import { AuthModule } from './module/auth/auth.module';
 import { ClaimModule } from './module/claim/claim.module';
 import { InventoryModule } from './module/inventory/inventory.module';
 import { OrderModule } from './module/order/order.module';
+import { ProductModule } from './module/product/product.module';
 import { ShipmentModule } from './module/shipment/shipment.module';
 import { WarehouseModule } from './warehouse/warehouse.module';
 
@@ -32,8 +33,10 @@ import { WarehouseModule } from './warehouse/warehouse.module';
     OrderModule,
     ShipmentModule,
     InventoryModule,
+
     ClaimModule,
     WarehouseModule,
+    ProductModule,
   ],
   controllers: [AppController],
   providers: [AppService],
