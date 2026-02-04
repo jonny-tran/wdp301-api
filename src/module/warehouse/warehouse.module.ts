@@ -1,8 +1,7 @@
 import { Module } from '@nestjs/common';
-import { WarehouseService } from './warehouse.service';
+import { DatabaseModule } from 'src/database/database.module';
 import { WarehouseController } from './warehouse.controller';
-// SỬA ĐƯỜNG DẪN TẠI ĐÂY
-import { DatabaseModule } from '../database/database.module';
+import { WarehouseService } from './warehouse.service';
 
 @Module({
   imports: [DatabaseModule],

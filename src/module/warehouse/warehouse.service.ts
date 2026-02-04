@@ -7,9 +7,9 @@ import {
 } from '@nestjs/common';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { DATABASE_CONNECTION } from '../database/database.constants';
-import * as schema from '../database/schema';
-import { OrderStatus } from '../module/order/constants/order-status.enum';
+import { DATABASE_CONNECTION } from 'src/database/database.constants';
+import * as schema from 'src/database/schema';
+import { OrderStatus } from '../order/constants/order-status.enum';
 import { FinalizeShipmentDto, ReportIssueDto } from './dto/warehouse-ops.dto';
 
 @Injectable()
@@ -22,6 +22,7 @@ export class WarehouseService {
   // =================================================================
   // API 1: Lấy danh sách nhiệm vụ (Tasks)
   // =================================================================
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async getTasks(warehouseId: number) {
     return this.db.query.orders.findMany({
       where: eq(schema.orders.status, OrderStatus.APPROVED),
@@ -76,7 +77,9 @@ export class WarehouseService {
 
       const entry = groupedItems.get(productId);
       if (!entry) {
-        throw new InternalServerErrorException('Error processing grouped items');
+        throw new InternalServerErrorException(
+          'Error processing grouped items',
+        );
       }
 
       const qty = parseFloat(item.quantity);
