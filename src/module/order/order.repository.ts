@@ -20,6 +20,7 @@ export class OrderRepository {
         name: schema.products.name,
         sku: schema.products.sku,
         unit: schema.products.baseUnit,
+        imageUrl: schema.products.imageUrl,
       })
       .from(schema.products)
       .where(eq(schema.products.isActive, true));
