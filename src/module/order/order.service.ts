@@ -310,9 +310,6 @@ export class OrderService {
     if (!isCoordinator && order.storeId !== user.storeId) {
       throw new ForbiddenException('Từ chối truy cập');
     }
-
-    // For both Store and Coordinator, return standard details here.
-    // Stock info is strictly for the Review endpoint.
     return order;
   }
 
@@ -321,9 +318,6 @@ export class OrderService {
     if (!order) {
       throw new NotFoundException('Không tìm thấy đơn hàng');
     }
-
-    // Ensure it is pending before review, or allow reviewing any order?
-    // Context implies review for approval.
 
     const centralWarehouseId =
       await this.orderRepository.getCentralWarehouseId();
