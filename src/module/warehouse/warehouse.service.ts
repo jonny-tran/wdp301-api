@@ -466,4 +466,45 @@ export class WarehouseService {
         inv && parseFloat(inv.quantity) > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
     };
   }
+
+  // =================================================================
+  // API 5: Quản lý Warehouse (CRUD)
+  // =================================================================
+  async create(dto: { name: string; type: string; storeId?: string }) {
+    const [warehouse] = await this.db
+      .insert(schema.warehouses)
+      .values({
+        name: dto.name,
+        type: dto.type as 'central' | 'store_internal',
+        storeId: dto.storeId,
+      })
+      .returning();
+    return warehouse;
+  }
+
+  async findAll(query: { storeId?: string }) {
+    return this.db.query.warehouses.findMany({
+      where: query.storeId
+        ? eq(schema.warehouses.storeId, query.storeId)
+        : undefined,
+      with: {
+        store: true,
+      },
+    });
+  }
+
+  async findInventory(warehouseId: number) {
+    // Re-use existing logic or query directly
+    // Using simple query for now
+    return this.db.query.inventory.findMany({
+      where: eq(schema.inventory.warehouseId, warehouseId),
+      with: {
+        batch: {
+          with: {
+            product: true,
+          },
+        },
+      },
+    });
+  }
 }

@@ -11,20 +11,21 @@ import {
 import {
   ApiBearerAuth,
   ApiOperation,
-  ApiTags,
   ApiQuery,
+  ApiTags,
 } from '@nestjs/swagger';
-import { WarehouseService } from './warehouse.service';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../auth/dto/create-user.dto';
+import { AtGuard } from '../auth/guards/auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { CreateWarehouseDto } from './dto/create-warehouse.dto';
 import {
-  PickItemDto,
   FinalizeShipmentDto,
+  PickItemDto,
   // ResetTaskDto,
   ReportIssueDto,
 } from './dto/warehouse-ops.dto';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { AtGuard } from '../auth/guards/auth.guard';
-import { UserRole } from '../auth/dto/create-user.dto';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { WarehouseService } from './warehouse.service';
 // Import các Guards...
 
 @ApiTags('Quản lý Kho vận (Warehouse Operations)')
@@ -98,5 +99,26 @@ export class WarehouseController {
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   async reportIssue(@Body() dto: ReportIssueDto) {
     return this.warehouseService.reportIssue(1, dto);
+  }
+
+  @Post()
+  @Roles(UserRole.MANAGER)
+  @ApiOperation({ summary: 'Tạo kho mới (Ví dụ: Kho lạnh, Kho khô)' })
+  async create(@Body() dto: CreateWarehouseDto) {
+    return this.warehouseService.create(dto);
+  }
+
+  @Get()
+  @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR)
+  @ApiOperation({ summary: 'Lấy danh sách kho (có thể lọc theo storeId)' })
+  async findAll(@Query('storeId') storeId?: string) {
+    return this.warehouseService.findAll({ storeId });
+  }
+
+  @Get(':id/inventory')
+  @Roles(UserRole.MANAGER, UserRole.FRANCHISE_STORE_STAFF)
+  @ApiOperation({ summary: 'Xem tồn kho chi tiết của kho' })
+  async getInventory(@Param('id') id: string) {
+    return this.warehouseService.findInventory(+id);
   }
 }
