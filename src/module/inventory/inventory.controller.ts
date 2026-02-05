@@ -30,7 +30,7 @@ export class InventoryController {
     description: 'Danh sách tồn kho tại cửa hàng',
     type: [InventoryDto],
   })
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   async getStoreInventory(@CurrentUser() user: IJwtPayload) {
     if (!user.storeId) {
       throw new Error('User không có storeId');
@@ -43,7 +43,7 @@ export class InventoryController {
   @ApiOperation({
     summary: 'Lịch sử kho Store',
   })
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   async getStoreTransactions(
     @CurrentUser() user: IJwtPayload,
     @Query('type') type?: 'import' | 'export' | 'waste' | 'adjustment',
@@ -65,7 +65,7 @@ export class InventoryController {
   @ApiOperation({
     summary: 'Tổng hợp tồn kho (Manager)',
   })
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   async getInventorySummary(
     @Query('warehouseId') warehouseId?: number,
     @Query('categoryId') categoryId?: number,
@@ -93,7 +93,7 @@ export class InventoryController {
   @ApiOperation({
     summary: 'Cảnh báo tồn kho thấp (Manager)',
   })
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   async getLowStockReport(@Query('warehouseId') warehouseId?: number) {
     return this.inventoryService.getLowStockItems(
       warehouseId ? Number(warehouseId) : undefined,
@@ -104,7 +104,7 @@ export class InventoryController {
   @ApiOperation({
     summary: 'Điều chỉnh tồn kho (Manager)',
   })
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   async adjustInventory(@Body() body: InventoryAdjustmentDto) {
     return this.inventoryService.adjustInventory(body);
   }

@@ -18,7 +18,6 @@ import { WarehouseService } from './warehouse.service';
 import {
   PickItemDto,
   FinalizeShipmentDto,
-  // ResetTaskDto,
   ReportIssueDto,
 } from './dto/warehouse-ops.dto';
 import { RolesGuard } from '../auth/guards/roles.guard';
@@ -39,7 +38,7 @@ export class WarehouseController {
   @ApiOperation({ summary: '1. Get list of Picking Tasks (Approved Orders)' })
   @ApiQuery({ name: 'date', required: false })
   async getPickingTasks(@Query('date') date?: string) {
-    // FIX: Lấy warehouseId động (Central)
+    // Lấy warehouseId động (Central) thay vì hardcode
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.getTasks(warehouseId, date);
   }
@@ -57,7 +56,7 @@ export class WarehouseController {
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({ summary: '3. Verify scanned Batch Code (FEFO Enforcement)' })
   async pickItem(@Body() dto: PickItemDto) {
-    // FIX: Lấy warehouseId động (Central)
+    // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.validatePickItem(warehouseId, dto);
   }
@@ -75,7 +74,7 @@ export class WarehouseController {
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({ summary: '5. Finalize Shipment & Deduct Stock' })
   async createShipment(@Body() dto: FinalizeShipmentDto) {
-    // FIX: Lấy warehouseId động (Central)
+    // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.finalizeShipment(warehouseId, dto);
   }
@@ -94,7 +93,7 @@ export class WarehouseController {
   @ApiOperation({ summary: '7. Quick check Batch Info by QR Code' })
   @ApiQuery({ name: 'batch_code', required: true })
   async scanCheck(@Query('batch_code') batchCode: string) {
-    // FIX: Lấy warehouseId động (Central)
+    // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.scanBatchCheck(warehouseId, batchCode);
   }
@@ -102,8 +101,9 @@ export class WarehouseController {
   // (Optional) Report Issue
   @Post('batch/report-issue')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({ summary: 'Report damaged batch and suggest replacement' })
   async reportIssue(@Body() dto: ReportIssueDto) {
-    // FIX: Lấy warehouseId động (Central)
+    // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.reportIssue(warehouseId, dto);
   }

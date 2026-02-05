@@ -31,14 +31,14 @@ export class OrderController {
   constructor(private readonly orderService: OrderService) {}
 
   @Get('catalog')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Franchise Staff]' })
   async getCatalog() {
     return this.orderService.getCatalog();
   }
 
   @Post()
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({ summary: 'Tạo đơn hàng [Franchise Staff]' })
   @UsePipes(new ValidationPipe({ transform: true }))
   async createOrder(
@@ -49,7 +49,7 @@ export class OrderController {
   }
 
   @Get('my-store')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Lấy danh sách đơn hàng của kho hàng của mình [Franchise Staff]',
   })
@@ -58,7 +58,7 @@ export class OrderController {
   }
 
   @Get('coordinator')
-  @Roles(UserRole.SUPPLY_COORDINATOR)
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Lấy danh sách đơn hàng chờ duyệt [Supply Coordinator]',
   })
@@ -67,7 +67,7 @@ export class OrderController {
   }
 
   @Get('coordinator/:id/review')
-  @Roles(UserRole.SUPPLY_COORDINATOR)
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Xem đơn & So sánh kho [Supply Coordinator]',
   })
@@ -76,7 +76,7 @@ export class OrderController {
   }
 
   @Patch(':id/approve')
-  @Roles(UserRole.SUPPLY_COORDINATOR)
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({ summary: 'Duyệt đơn hàng [Supply Coordinator]' })
   async approveOrder(
     @Param('id') id: string,
@@ -86,7 +86,7 @@ export class OrderController {
   }
 
   @Patch(':id/reject')
-  @Roles(UserRole.SUPPLY_COORDINATOR)
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({ summary: 'Từ chối đơn hàng [Supply Coordinator]' })
   async rejectOrder(
     @Param('id') id: string,
@@ -96,14 +96,18 @@ export class OrderController {
   }
 
   @Patch(':id/cancel')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({ summary: 'Hủy đơn hàng [Franchise Staff]' })
   async cancelOrder(@Param('id') id: string, @CurrentUser() user: IJwtPayload) {
     return this.orderService.cancelOrder(id, user);
   }
 
   @Get(':id')
-  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.FRANCHISE_STORE_STAFF,
+    UserRole.ADMIN,
+  )
   @ApiOperation({
     summary: 'Lấy thông tin đơn hàng [Supply Coordinator, Franchise Staff]',
   })
