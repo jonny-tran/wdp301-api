@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -11,7 +11,7 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import type { IJwtPayload } from '../auth/types/auth.types';
-import { InventoryDto } from './inventory.dto';
+import { InventoryAdjustmentDto, InventoryDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
 
 @ApiTags('Inventory')
@@ -59,5 +59,53 @@ export class InventoryController {
       limit: limit ? Number(limit) : 20,
       offset: offset ? Number(offset) : 0,
     });
+  }
+
+  @Get('summary')
+  @ApiOperation({
+    summary: 'Tổng hợp tồn kho (Manager)',
+  })
+  @Roles(UserRole.MANAGER)
+  async getInventorySummary(
+    @Query('warehouseId') warehouseId?: number,
+    @Query('categoryId') categoryId?: number,
+    @Query('searchTerm') searchTerm?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    const pageNumber = page ? Number(page) : 1;
+    const limitNumber = limit ? Number(limit) : 20;
+
+    return this.inventoryService.getInventorySummary(
+      {
+        warehouseId: warehouseId ? Number(warehouseId) : undefined,
+        categoryId: categoryId ? Number(categoryId) : undefined,
+        searchTerm,
+      },
+      {
+        limit: limitNumber,
+        offset: (pageNumber - 1) * limitNumber,
+      },
+    );
+  }
+
+  @Get('low-stock')
+  @ApiOperation({
+    summary: 'Cảnh báo tồn kho thấp (Manager)',
+  })
+  @Roles(UserRole.MANAGER)
+  async getLowStockReport(@Query('warehouseId') warehouseId?: number) {
+    return this.inventoryService.getLowStockItems(
+      warehouseId ? Number(warehouseId) : undefined,
+    );
+  }
+
+  @Post('adjust')
+  @ApiOperation({
+    summary: 'Điều chỉnh tồn kho (Manager)',
+  })
+  @Roles(UserRole.MANAGER)
+  async adjustInventory(@Body() body: InventoryAdjustmentDto) {
+    return this.inventoryService.adjustInventory(body);
   }
 }

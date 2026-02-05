@@ -27,7 +27,7 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 // Import các Guards...
 
-@ApiTags('Warehouse Operations')
+@ApiTags('Quản lý Kho vận (Warehouse Operations)')
 @ApiBearerAuth()
 @UseGuards(AtGuard, RolesGuard)
 @Controller('warehouse')

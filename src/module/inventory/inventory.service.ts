@@ -1,12 +1,17 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { InventoryDto } from './inventory.dto';
 import { InventoryRepository } from './inventory.repository';
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly inventoryRepository: InventoryRepository) {}
+  constructor(
+    private readonly inventoryRepository: InventoryRepository,
+    @Inject(DATABASE_CONNECTION)
+    private readonly db: NodePgDatabase<typeof schema>,
+  ) {}
 
   async getStoreInventory(warehouseId: number) {
     const inventory =
@@ -99,5 +104,65 @@ export class InventoryService {
       reason,
       tx,
     );
+  }
+  async getInventorySummary(
+    filters: {
+      warehouseId?: number;
+      categoryId?: number;
+      searchTerm?: string;
+    },
+    options: { limit?: number; offset?: number },
+  ) {
+    return this.inventoryRepository.getInventorySummary(filters, options);
+  }
+
+  async getLowStockItems(warehouseId?: number) {
+    return this.inventoryRepository.getLowStockItems(warehouseId);
+  }
+
+  async adjustInventory(
+    data: {
+      warehouseId: number;
+      batchId: number;
+      adjustmentQuantity: number;
+      reason: string;
+      note?: string;
+    },
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    // Changing approach slightly to use return value from repo
+    const transactionCallback = async (
+      transaction: NodePgDatabase<typeof schema>,
+    ) => {
+      const updatedInventory =
+        await this.inventoryRepository.adjustBatchQuantity(
+          data.warehouseId,
+          data.batchId,
+          data.adjustmentQuantity,
+          transaction,
+        );
+
+      if (parseFloat(updatedInventory.quantity) < 0) {
+        throw new Error('Số lượng tồn kho không thể nhỏ hơn 0');
+      }
+
+      await this.inventoryRepository.createInventoryTransaction(
+        data.warehouseId,
+        data.batchId,
+        'adjustment',
+        data.adjustmentQuantity,
+        undefined, // referenceId
+        data.reason + (data.note ? `: ${data.note}` : ''),
+        transaction,
+      );
+
+      return updatedInventory;
+    };
+
+    if (tx) {
+      return transactionCallback(tx);
+    } else {
+      return this.db.transaction(transactionCallback);
+    }
   }
 }

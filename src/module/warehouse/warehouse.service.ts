@@ -25,6 +25,29 @@ export class WarehouseService {
   ) {}
 
   // =================================================================
+  // INTERNAL: Tạo kho mặc định cho Store (Transactional)
+  // =================================================================
+  async createDefaultWarehouse(
+    storeId: string,
+    storeName: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const db = tx ?? this.db;
+    const warehouseName = `Kho mặc định - ${storeName}`;
+
+    const [warehouse] = await db
+      .insert(schema.warehouses)
+      .values({
+        name: warehouseName,
+        type: 'store_internal', // Must match enum in schema
+        storeId: storeId,
+      })
+      .returning();
+
+    return warehouse;
+  }
+
+  // =================================================================
   // API 1: Lấy danh sách nhiệm vụ (Tasks)
   // =================================================================
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -54,7 +77,9 @@ export class WarehouseService {
     });
 
     if (!shipment) {
-      throw new NotFoundException('Shipment not found for this order');
+      throw new NotFoundException(
+        'Không tìm thấy chuyến hàng cho đơn hàng này',
+      );
     }
 
     const groupedItems = new Map<
@@ -83,7 +108,7 @@ export class WarehouseService {
       const entry = groupedItems.get(productId);
       if (!entry) {
         throw new InternalServerErrorException(
-          'Error processing grouped items',
+          'Lỗi khi xử lý nhóm các mặt hàng',
         );
       }
 
@@ -116,7 +141,7 @@ export class WarehouseService {
       });
 
       if (!inventory) {
-        throw new NotFoundException('Batch not found in warehouse');
+        throw new NotFoundException('Không tìm thấy lô hàng trong kho');
       }
 
       // 2. Tìm Shipment Item đang giữ lô này
@@ -126,7 +151,7 @@ export class WarehouseService {
 
       if (!shipmentItem) {
         throw new BadRequestException(
-          'Batch is not in any active picking list',
+          'Lô hàng không nằm trong danh sách chọn hàng nào đang hoạt động',
         );
       }
 
@@ -139,7 +164,7 @@ export class WarehouseService {
       });
 
       if (!batch) {
-        throw new NotFoundException('Batch data integrity error');
+        throw new NotFoundException('Lỗi tính toàn vẹn dữ liệu lô hàng');
       }
       const productId = batch.productId;
       // -------------------------------------------------------------
@@ -220,12 +245,12 @@ export class WarehouseService {
 
       if (remainingToPick > 0) {
         throw new BadRequestException(
-          `Not enough stock to replace damaged batch. Missing: ${remainingToPick}`,
+          `Không đủ hàng trong kho để thay thế lô bị hỏng. Còn thiếu: ${remainingToPick}`,
         );
       }
 
       return {
-        message: 'Issue reported. Batch replaced successfully.',
+        message: 'Đã báo cáo sự cố. Lô hàng đã được thay thế thành công.',
         old_batch_id: dto.batch_id,
         replaced_with: newAllocations,
       };
@@ -242,9 +267,11 @@ export class WarehouseService {
         with: { items: true },
       });
 
-      if (!shipment) throw new NotFoundException('Shipment not found');
+      if (!shipment) throw new NotFoundException('Không tìm thấy chuyến hàng');
       if (shipment.status !== 'preparing') {
-        throw new BadRequestException('Shipment already finalized');
+        throw new BadRequestException(
+          'Chuyến hàng này đã được hoàn tất trước đó',
+        );
       }
 
       for (const item of shipment.items) {
@@ -269,7 +296,7 @@ export class WarehouseService {
           type: 'export',
           quantityChange: (-qty).toString(),
           referenceId: shipment.id,
-          reason: 'Order Dispatch',
+          reason: 'Xuất kho giao hàng',
         });
       }
 
@@ -285,7 +312,7 @@ export class WarehouseService {
 
       return {
         success: true,
-        message: 'Shipment finalized and inventory deducted.',
+        message: 'Đã hoàn tất chuyến hàng và trừ tồn kho thành công.',
       };
     });
   }
