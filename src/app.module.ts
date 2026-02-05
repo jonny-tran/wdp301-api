@@ -6,6 +6,7 @@ import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './module/auth/auth.module';
 import { ClaimModule } from './module/claim/claim.module';
+import { FranchiseStoreModule } from './module/franchise-store/franchise-store.module';
 import { InventoryModule } from './module/inventory/inventory.module';
 import { OrderModule } from './module/order/order.module';
 import { ProductModule } from './module/product/product.module';
@@ -36,6 +37,7 @@ import { WarehouseModule } from './module/warehouse/warehouse.module';
     ClaimModule,
     WarehouseModule,
     ProductModule,
+    FranchiseStoreModule,
   ],
   controllers: [AppController],
   providers: [AppService],

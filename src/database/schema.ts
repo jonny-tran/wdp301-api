@@ -97,6 +97,7 @@ export const stores = pgTable('stores', {
   address: text('address').notNull(),
   managerName: text('manager_name'),
   phone: text('phone'),
+  isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
