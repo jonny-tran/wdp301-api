@@ -27,7 +27,7 @@ export class FranchiseStoreController {
   constructor(private readonly franchiseStoreService: FranchiseStoreService) {}
 
   @Post()
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({ summary: 'Tạo store mới [Manager]' })
   async create(@Body() dto: CreateStoreDto) {
     return this.franchiseStoreService.createStore(dto);

@@ -25,7 +25,11 @@ export class ShipmentController {
   constructor(private readonly shipmentService: ShipmentService) {}
 
   @Get(':id/picking-list')
-  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.ADMIN,
+  )
   @ApiOperation({
     summary: 'Nhận danh sách chọn hàng cho một lô hàng [Coordinator, Kitchen]',
   })
@@ -34,7 +38,7 @@ export class ShipmentController {
   }
 
   @Get('incoming')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Danh sách hàng đang đến [Franchise Staff]',
   })
@@ -46,7 +50,7 @@ export class ShipmentController {
   }
 
   @Get(':id')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Chi tiết kiện hàng [Franchise Staff]',
   })
@@ -61,7 +65,7 @@ export class ShipmentController {
   }
 
   @Post(':id/receive')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Xác nhận nhận hàng [Franchise Staff]',
   })

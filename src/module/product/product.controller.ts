@@ -34,7 +34,7 @@ export class ProductController {
   // --- PRODUCTS ---
 
   @Post()
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({ summary: 'Tạo sản phẩm mới [Manager]' })
   @ResponseMessage('Tạo sản phẩm thành công')
   async create(@Body() createProductDto: CreateProductDto) {
@@ -42,7 +42,7 @@ export class ProductController {
   }
 
   @Get()
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Manager]' })
   @ResponseMessage('Lấy danh sách sản phẩm thành công')
   async findAll(@Query() filter: ProductFilterDto) {
@@ -50,7 +50,7 @@ export class ProductController {
   }
 
   @Get('batches')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Lấy danh sách lô hàng [Manager, Central Kitchen Staff]',
   })
@@ -60,7 +60,7 @@ export class ProductController {
   }
 
   @Get(':id')
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({ summary: 'Chi tiết sản phẩm [Manager]' })
   @ResponseMessage('Lấy thông tin sản phẩm thành công')
   async findOne(@Param('id', ParseIntPipe) id: number) {
@@ -68,7 +68,7 @@ export class ProductController {
   }
 
   @Patch(':id')
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({ summary: 'Cập nhật sản phẩm [Manager]' })
   @ResponseMessage('Cập nhật sản phẩm thành công')
   async update(
@@ -79,7 +79,7 @@ export class ProductController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({ summary: 'Xóa sản phẩm (Soft delete) [Manager]' })
   @ResponseMessage('Xóa sản phẩm thành công')
   async remove(@Param('id', ParseIntPipe) id: number) {
@@ -87,7 +87,7 @@ export class ProductController {
   }
 
   @Patch(':id/restore')
-  @Roles(UserRole.MANAGER)
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({ summary: 'Khôi phục sản phẩm [Manager]' })
   @ResponseMessage('Khôi phục sản phẩm thành công')
   async restore(@Param('id', ParseIntPipe) id: number) {
@@ -97,7 +97,7 @@ export class ProductController {
   // --- BATCHES ---
 
   @Get('batches/:id')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Chi tiết lô hàng [Manager, Central Kitchen Staff]',
   })
@@ -107,7 +107,7 @@ export class ProductController {
   }
 
   @Post(':id/batches')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Tạo lô hàng mới cho sản phẩm [Manager, Central Kitchen Staff]',
   })
@@ -120,7 +120,7 @@ export class ProductController {
   }
 
   @Patch('batches/:id')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Cập nhật lô hàng [Manager, Central Kitchen Staff]',
   })
