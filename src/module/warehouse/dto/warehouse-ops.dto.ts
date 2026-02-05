@@ -43,3 +43,46 @@ export class PickingListResponseDto {
     }[];
   }[];
 }
+
+// bổ sung
+export class PickItemDto {
+  @ApiProperty({ description: 'Order ID đang soạn', example: 'uuid-order-123' })
+  @IsUUID()
+  @IsNotEmpty()
+  order_id: string;
+
+  @ApiProperty({ description: 'Product ID của món hàng', example: 10 })
+  @IsNumber()
+  @IsNotEmpty()
+  product_id: number;
+
+  @ApiProperty({
+    description: 'Mã lô nhân viên vừa quét',
+    example: 'GA-2024-001',
+  })
+  @IsString()
+  @IsNotEmpty()
+  batch_code: string;
+
+  @ApiProperty({ description: 'Số lượng lấy', example: 5 })
+  @IsNumber()
+  @Min(0.1)
+  quantity: number;
+}
+
+export class ResetTaskDto {
+  @ApiProperty({
+    description: 'Lý do reset',
+    example: 'Nhân viên chọn nhầm lô quá nhiều',
+  })
+  @IsString()
+  @IsNotEmpty()
+  reason: string;
+}
+
+export class ScanCheckDto {
+  @ApiProperty({ description: 'Mã QR trên thùng hàng', example: 'GA-2024-001' })
+  @IsString()
+  @IsNotEmpty()
+  batch_code: string;
+}

@@ -1,16 +1,21 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from 'src/database/database.constants';
 import * as schema from 'src/database/schema';
 import { OrderStatus } from '../order/constants/order-status.enum';
-import { FinalizeShipmentDto, ReportIssueDto } from './dto/warehouse-ops.dto';
+import {
+  FinalizeShipmentDto,
+  PickItemDto,
+  ReportIssueDto,
+} from './dto/warehouse-ops.dto';
 
 @Injectable()
 export class WarehouseService {
@@ -46,7 +51,7 @@ export class WarehouseService {
   // API 1: Lấy danh sách nhiệm vụ (Tasks)
   // =================================================================
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async getTasks(warehouseId: number) {
+  async getTasks(warehouseId: number, date: string | undefined) {
     return this.db.query.orders.findMany({
       where: eq(schema.orders.status, OrderStatus.APPROVED),
       with: {
@@ -312,44 +317,153 @@ export class WarehouseService {
     });
   }
 
-  // =================================================================
-  // API 5: Quản lý Warehouse (CRUD)
-  // =================================================================
-  async create(dto: { name: string; type: string; storeId?: string }) {
-    const [warehouse] = await this.db
-      .insert(schema.warehouses)
-      .values({
-        name: dto.name,
-        type: dto.type as 'central' | 'store_internal',
-        storeId: dto.storeId,
-      })
-      .returning();
-    return warehouse;
-  }
-
-  async findAll(query: { storeId?: string }) {
-    return this.db.query.warehouses.findMany({
-      where: query.storeId
-        ? eq(schema.warehouses.storeId, query.storeId)
-        : undefined,
-      with: {
-        store: true,
-      },
+  // --- 3. POST PICK ITEM ( Validate FEFO Enforcement) ---
+  async validatePickItem(warehouseId: number, dto: PickItemDto) {
+    // Logic: Tìm tất cả lô của Product này trong kho, sắp xếp theo HSD.
+    // Lô scan phải nằm trong nhóm "Hết hạn sớm nhất" (có thể có nhiều lô cùng ngày hết hạn).
+    // 1. Lấy thông tin Lô vừa quét
+    const scannedBatch = await this.db.query.batches.findFirst({
+      where: eq(schema.batches.batchCode, dto.batch_code),
     });
+    if (!scannedBatch)
+      throw new NotFoundException('Mã lô không tồn tại trong hệ thống');
+    if (scannedBatch.productId !== dto.product_id)
+      throw new BadRequestException('Mã lô không thuộc sản phẩm này');
+
+    // 2. Lấy danh sách Lô khả dụng (FEFO) của sản phẩm đó trong kho
+    const availableBatches = await this.db
+      .select({
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.batches.productId, dto.product_id),
+          gt(schema.inventory.quantity, '0'), // Còn hàng
+        ),
+      )
+      .orderBy(asc(schema.batches.expiryDate));
+
+    if (availableBatches.length === 0) {
+      throw new BadRequestException('Kho đã hết sạch sản phẩm này');
+    }
+
+    // 3. So sánh: Lô quét có phải là lô đầu tiên (hoặc có date bằng lô đầu tiên) không?
+    const bestBatch = availableBatches[0];
+    const scannedDate = new Date(scannedBatch.expiryDate).getTime();
+    const bestDate = new Date(bestBatch.expiryDate).getTime();
+
+    // Cho phép sai số nhỏ hoặc cùng ngày
+    if (scannedDate > bestDate) {
+      // Nếu lô quét mới hơn lô gợi ý -> Chặn
+      throw new ForbiddenException(
+        `Vi phạm quy tắc FEFO! Hệ thống yêu cầu lấy lô ${bestBatch.batchCode} (HSD: ${bestBatch.expiryDate}) trước.`,
+      );
+    }
+
+    return {
+      valid: true,
+      message: 'Mã lô hợp lệ. Đã xác nhận.',
+      batch_code: dto.batch_code,
+      scanned_qty: dto.quantity,
+    };
   }
 
-  async findInventory(warehouseId: number) {
-    // Re-use existing logic or query directly
-    // Using simple query for now
-    return this.db.query.inventory.findMany({
-      where: eq(schema.inventory.warehouseId, warehouseId),
+  // --- 4. PATCH RESET (Xóa trạng thái soạn hàng) ---
+  // async resetPickingTask(orderId: string, warehouseId: number, reason: string) {
+  // async resetPickingTask(orderId: string, p0: number, reason: string) {
+  async resetPickingTask(orderId: string) {
+    // Trong mô hình hiện tại, chúng ta không lưu "Picking Session" vào DB tạm.
+    // Nhưng chúng ta cần đảm bảo đơn chưa Finalize mới được Reset.
+    const shipment = await this.db.query.shipments.findFirst({
+      where: eq(schema.shipments.orderId, orderId),
+    });
+
+    if (!shipment)
+      throw new NotFoundException('Không tìm thấy phiếu giao hàng');
+    if (shipment.status !== 'preparing') {
+      throw new BadRequestException(
+        'Đơn hàng đã hoàn tất hoặc đang vận chuyển, không thể làm lại.',
+      );
+    }
+
+    // Ghi log hành động Reset (Optional)
+    // await this.auditLogService.log('RESET_PICKING', { orderId, reason, by: warehouseId });
+
+    return {
+      success: true,
+      message: 'Đã đặt lại trạng thái soạn hàng. Vui lòng quét lại từ đầu.',
+      order_id: orderId,
+    };
+  }
+  // --- 6. GET SHIPMENT LABEL ( Dữ liệu in phiếu) ---
+  async getShipmentLabel(shipmentId: string) {
+    const shipment = await this.db.query.shipments.findFirst({
+      where: eq(schema.shipments.id, shipmentId),
       with: {
-        batch: {
+        order: { with: { store: true } },
+        items: {
           with: {
-            product: true,
+            batch: { with: { product: true } },
           },
         },
       },
     });
+
+    if (!shipment) throw new NotFoundException('Phiếu giao hàng không tồn tại');
+
+    // Transform data cho mẫu in
+    return {
+      template_type: 'INVOICE_A4',
+      shipment_id: shipment.id,
+      date: new Date().toISOString(),
+      store_name: shipment.order.store.name,
+      store_address: shipment.order.store.address,
+      items: shipment.items.map((item) => ({
+        product: item.batch.product.name,
+        sku: item.batch.product.sku,
+        batch_code: item.batch.batchCode,
+        qty: item.quantity,
+        unit: item.batch.product.baseUnit,
+        expiry: item.batch.expiryDate,
+      })),
+      total_items: shipment.items.length,
+    };
+  }
+
+  // --- 7. GET SCAN CHECK (Tiện ích tra cứu) ---
+  async scanBatchCheck(warehouseId: number, batchCode: string) {
+    const batchInfo = await this.db.query.batches.findFirst({
+      where: eq(schema.batches.batchCode, batchCode),
+      with: {
+        product: true,
+        inventory: {
+          where: eq(schema.inventory.warehouseId, warehouseId),
+        },
+      },
+    });
+
+    if (!batchInfo)
+      throw new NotFoundException('Không tìm thấy thông tin lô hàng này.');
+
+    const inv = batchInfo.inventory[0]; // Lấy tồn kho tại kho hiện tại
+
+    return {
+      product_name: batchInfo.product.name,
+      sku: batchInfo.product.sku,
+      batch_code: batchInfo.batchCode,
+      expiry_date: batchInfo.expiryDate,
+      quantity_physical: inv ? parseFloat(inv.quantity) : 0,
+      quantity_reserved: inv ? parseFloat(inv.reservedQuantity) : 0,
+      status:
+        inv && parseFloat(inv.quantity) > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
+    };
   }
 }

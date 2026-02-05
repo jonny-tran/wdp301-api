@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -10,20 +11,21 @@ import {
 import {
   ApiBearerAuth,
   ApiOperation,
-  ApiResponse,
   ApiTags,
+  ApiQuery,
 } from '@nestjs/swagger';
-import { Roles } from '../auth/decorators/roles.decorator';
-import { UserRole } from '../auth/dto/create-user.dto';
-import { AtGuard } from '../auth/guards/auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { CreateWarehouseDto } from './dto/create-warehouse.dto';
+import { WarehouseService } from './warehouse.service';
 import {
+  PickItemDto,
   FinalizeShipmentDto,
-  PickingListResponseDto,
+  // ResetTaskDto,
   ReportIssueDto,
 } from './dto/warehouse-ops.dto';
-import { WarehouseService } from './warehouse.service';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { AtGuard } from '../auth/guards/auth.guard';
+import { UserRole } from '../auth/dto/create-user.dto';
+import { Roles } from '../auth/decorators/roles.decorator';
+// Import các Guards...
 
 @ApiTags('Quản lý Kho vận (Warehouse Operations)')
 @ApiBearerAuth()
@@ -32,66 +34,69 @@ import { WarehouseService } from './warehouse.service';
 export class WarehouseController {
   constructor(private readonly warehouseService: WarehouseService) {}
 
-  @Get('tasks')
+  // 1. Task: Danh sách đơn cần soạn
+  @Get('picking-tasks')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '1. Lấy danh sách phiếu chuẩn bị hàng (Đã duyệt)' })
-  async getTasks() {
-    // Hardcode warehouseId = 1 (Kho trung tâm)
-    return this.warehouseService.getTasks(1);
+  @ApiOperation({ summary: '1. Get list of Picking Tasks (Approved Orders)' })
+  @ApiQuery({ name: 'date', required: false })
+  async getPickingTasks(@Query('date') date?: string) {
+    return this.warehouseService.getTasks(1, date); // Hardcode warehouseId=1
   }
 
-  @Get('tasks/:orderId/picking-list')
+  // 2. Picking: Chi tiết danh sách soạn hàng
+  @Get('picking-tasks/:orderId')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({
-    summary: '2. Lấy danh sách chọn hàng FEFO (JSON cho chế độ Offline)',
-  })
-  @ApiResponse({ type: PickingListResponseDto })
+  @ApiOperation({ summary: '2. Get Picking List details (FEFO Suggestion)' })
   async getPickingList(@Param('orderId') orderId: string) {
     return this.warehouseService.getPickingList(orderId);
   }
 
-  @Post('batch/report-issue')
+  // 3. Picking: Xác nhận quét mã Lô (Validate)
+  @Post('pick-item')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({
-    summary: '3. Báo cáo lô hàng lỗi -> Tự động gợi ý lô thay thế',
-  })
-  async reportIssue(@Body() dto: ReportIssueDto) {
-    // Hardcode warehouseId = 1
-    return this.warehouseService.reportIssue(1, dto);
+  @ApiOperation({ summary: '3. Verify scanned Batch Code (FEFO Enforcement)' })
+  async pickItem(@Body() dto: PickItemDto) {
+    return this.warehouseService.validatePickItem(1, dto);
   }
 
+  // 4. Picking: Làm lại lượt soạn hàng
+  @Patch('picking-tasks/:orderId/reset')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({ summary: '4. Reset picking status for an order' })
+  async resetPickingTask(@Param('orderId') orderId: string) {
+    // return this.warehouseService.resetPickingTask(orderId, 1, dto.reason);
+    return this.warehouseService.resetPickingTask(orderId);
+  }
+
+  // 5. Shipment: Tạo phiếu giao hàng (Finalize)
   @Post('shipments')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '4. Hoàn tất & Trừ tồn kho (Thực tế & Reserved)' })
-  async finalizeShipment(@Body() dto: FinalizeShipmentDto) {
+  @ApiOperation({ summary: '5. Finalize Shipment & Deduct Stock' })
+  async createShipment(@Body() dto: FinalizeShipmentDto) {
     return this.warehouseService.finalizeShipment(1, dto);
   }
 
-  // =================================================================
-  // NEW ENDPOINTS for Manager
-  // =================================================================
-
-  @Post()
-  @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Tạo kho mới (Ví dụ: Kho lạnh, Kho khô)' })
-  async create(@Body() dto: CreateWarehouseDto) {
-    return this.warehouseService.create(dto);
+  // 6. Shipment: In phiếu giao hàng
+  @Get('shipments/:id/label')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({ summary: '6. Get Shipment Invoice/Label data' })
+  async getShipmentLabel(@Param('id') id: string) {
+    return this.warehouseService.getShipmentLabel(id);
   }
 
-  @Get()
-  @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR)
-  @ApiOperation({ summary: 'Lấy danh sách kho (có thể lọc theo storeId)' })
-  async findAll(@Query('storeId') storeId?: string) {
-    return this.warehouseService.findAll({ storeId });
+  // 7. Inventory: Kiểm tra thông tin Lô (Scan Check)
+  @Get('scan-check')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({ summary: '7. Quick check Batch Info by QR Code' })
+  @ApiQuery({ name: 'batch_code', required: true })
+  async scanCheck(@Query('batch_code') batchCode: string) {
+    return this.warehouseService.scanBatchCheck(1, batchCode);
   }
 
-  @Get(':id/inventory')
-  @Roles(UserRole.MANAGER, UserRole.FRANCHISE_STORE_STAFF)
-  @ApiOperation({ summary: 'Xem tồn kho chi tiết của kho' })
-  async getInventory(@Param('id') id: string) {
-    // Strict access control: If Store Staff, can only view their own store's warehouse
-    // But for simplicity in this turn, we rely on roles.
-    // Ideally we check if warehouse.storeId == user.storeId
-    return this.warehouseService.findInventory(+id);
+  // (Giữ lại API Report Issue nếu cần thiết cho quy trình xử lý lỗi)
+  @Post('batch/report-issue')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  async reportIssue(@Body() dto: ReportIssueDto) {
+    return this.warehouseService.reportIssue(1, dto);
   }
 }
