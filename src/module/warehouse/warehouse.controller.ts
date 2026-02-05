@@ -25,7 +25,6 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
-// Import các Guards...
 
 @ApiTags('Quản lý Kho vận (Warehouse Operations)')
 @ApiBearerAuth()
@@ -40,7 +39,9 @@ export class WarehouseController {
   @ApiOperation({ summary: '1. Get list of Picking Tasks (Approved Orders)' })
   @ApiQuery({ name: 'date', required: false })
   async getPickingTasks(@Query('date') date?: string) {
-    return this.warehouseService.getTasks(1, date); // Hardcode warehouseId=1
+    // FIX: Lấy warehouseId động (Central)
+    const warehouseId = await this.warehouseService.getCentralWarehouseId();
+    return this.warehouseService.getTasks(warehouseId, date);
   }
 
   // 2. Picking: Chi tiết danh sách soạn hàng
@@ -56,7 +57,9 @@ export class WarehouseController {
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({ summary: '3. Verify scanned Batch Code (FEFO Enforcement)' })
   async pickItem(@Body() dto: PickItemDto) {
-    return this.warehouseService.validatePickItem(1, dto);
+    // FIX: Lấy warehouseId động (Central)
+    const warehouseId = await this.warehouseService.getCentralWarehouseId();
+    return this.warehouseService.validatePickItem(warehouseId, dto);
   }
 
   // 4. Picking: Làm lại lượt soạn hàng
@@ -64,7 +67,6 @@ export class WarehouseController {
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({ summary: '4. Reset picking status for an order' })
   async resetPickingTask(@Param('orderId') orderId: string) {
-    // return this.warehouseService.resetPickingTask(orderId, 1, dto.reason);
     return this.warehouseService.resetPickingTask(orderId);
   }
 
@@ -73,7 +75,9 @@ export class WarehouseController {
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({ summary: '5. Finalize Shipment & Deduct Stock' })
   async createShipment(@Body() dto: FinalizeShipmentDto) {
-    return this.warehouseService.finalizeShipment(1, dto);
+    // FIX: Lấy warehouseId động (Central)
+    const warehouseId = await this.warehouseService.getCentralWarehouseId();
+    return this.warehouseService.finalizeShipment(warehouseId, dto);
   }
 
   // 6. Shipment: In phiếu giao hàng
@@ -90,13 +94,17 @@ export class WarehouseController {
   @ApiOperation({ summary: '7. Quick check Batch Info by QR Code' })
   @ApiQuery({ name: 'batch_code', required: true })
   async scanCheck(@Query('batch_code') batchCode: string) {
-    return this.warehouseService.scanBatchCheck(1, batchCode);
+    // FIX: Lấy warehouseId động (Central)
+    const warehouseId = await this.warehouseService.getCentralWarehouseId();
+    return this.warehouseService.scanBatchCheck(warehouseId, batchCode);
   }
 
-  // (Giữ lại API Report Issue nếu cần thiết cho quy trình xử lý lỗi)
+  // (Optional) Report Issue
   @Post('batch/report-issue')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   async reportIssue(@Body() dto: ReportIssueDto) {
-    return this.warehouseService.reportIssue(1, dto);
+    // FIX: Lấy warehouseId động (Central)
+    const warehouseId = await this.warehouseService.getCentralWarehouseId();
+    return this.warehouseService.reportIssue(warehouseId, dto);
   }
 }
