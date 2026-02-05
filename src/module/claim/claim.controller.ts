@@ -53,7 +53,7 @@ export class ClaimController {
 
   @Post()
   @ApiOperation({ summary: 'Tạo khiếu nại thủ công' })
-  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   async createClaim(
     @Body() dto: CreateManualClaimDto,
     @CurrentUser() user: IJwtPayload,
@@ -66,7 +66,7 @@ export class ClaimController {
 
   @Patch(':id/resolve')
   @ApiOperation({ summary: 'Xử lý khiếu nại [Coordinator, Manager]' })
-  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.MANAGER)
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.MANAGER, UserRole.ADMIN)
   async resolveClaim(@Param('id') id: string, @Body() dto: ResolveClaimDto) {
     return this.claimService.resolveClaim(id, dto);
   }
