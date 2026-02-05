@@ -34,7 +34,7 @@ export class WarehouseService {
       .insert(schema.warehouses)
       .values({
         name: warehouseName,
-        type: 'store_internal', // Must match enum in schema
+        type: 'store_internal',
         storeId: storeId,
       })
       .returning();
