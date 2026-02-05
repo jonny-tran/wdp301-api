@@ -116,6 +116,7 @@ export const products = pgTable('products', {
   name: text('name').notNull(),
   baseUnit: text('base_unit').notNull(),
   shelfLifeDays: integer('shelf_life_days').notNull(),
+  minStockLevel: integer('min_stock_level').default(0).notNull(),
   imageUrl: text('image_url'),
   isActive: boolean('is_active').default(true),
   createdAt: timestamp('created_at').defaultNow(),

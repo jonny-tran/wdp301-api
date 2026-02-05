@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -32,7 +40,7 @@ export class ShipmentController {
   })
   async getIncomingShipments(@CurrentUser() user: IJwtPayload) {
     if (!user.storeId) {
-      throw new Error('User không có storeId');
+      throw new BadRequestException('User không có storeId');
     }
     return this.shipmentService.getIncomingShipments(user.storeId);
   }
