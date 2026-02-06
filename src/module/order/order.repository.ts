@@ -19,10 +19,14 @@ export class OrderRepository {
         id: schema.products.id,
         name: schema.products.name,
         sku: schema.products.sku,
-        unit: schema.products.baseUnit,
+        unit: schema.baseUnits.name,
         imageUrl: schema.products.imageUrl,
       })
       .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
       .where(eq(schema.products.isActive, true));
   }
 

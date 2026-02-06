@@ -7,10 +7,11 @@ export class CreateProductDto {
   @IsString()
   name: string;
 
-  @ApiProperty({ description: 'Đơn vị tính cơ bản', example: 'Kg' })
+  @ApiProperty({ description: 'ID đơn vị tính', example: 1 })
   @IsNotEmpty()
-  @IsString()
-  baseUnit: string;
+  @IsInt()
+  @Min(1)
+  baseUnitId: number;
 
   @ApiProperty({ description: 'Hạn sử dụng (số ngày)', example: 3 })
   @IsInt()

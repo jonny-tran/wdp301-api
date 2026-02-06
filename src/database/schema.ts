@@ -111,11 +111,22 @@ export const warehouses = pgTable('warehouses', {
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
+export const baseUnits = pgTable('base_units', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull().unique(),
+  description: text('description'),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 export const products = pgTable('products', {
   id: serial('id').primaryKey(),
   sku: text('sku').notNull().unique(),
   name: text('name').notNull(),
-  baseUnit: text('base_unit').notNull(),
+  baseUnitId: integer('base_unit_id')
+    .references(() => baseUnits.id)
+    .notNull(),
   shelfLifeDays: integer('shelf_life_days').notNull(),
   minStockLevel: integer('min_stock_level').default(0).notNull(),
   imageUrl: text('image_url'),
@@ -286,8 +297,16 @@ export const warehouseRelations = relations(warehouses, ({ one, many }) => ({
   inventory: many(inventory),
 }));
 
-export const productRelations = relations(products, ({ many }) => ({
+export const baseUnitRelations = relations(baseUnits, ({ many }) => ({
+  products: many(products),
+}));
+
+export const productRelations = relations(products, ({ one, many }) => ({
   batches: many(batches),
+  baseUnit: one(baseUnits, {
+    fields: [products.baseUnitId],
+    references: [baseUnits.id],
+  }),
 }));
 
 export const batchRelations = relations(batches, ({ one, many }) => ({

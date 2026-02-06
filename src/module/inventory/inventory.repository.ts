@@ -26,7 +26,11 @@ export class InventoryRepository {
       with: {
         batch: {
           with: {
-            product: true,
+            product: {
+              with: {
+                baseUnit: true,
+              },
+            },
           },
         },
       },
@@ -160,7 +164,7 @@ export class InventoryRepository {
         totalQuantity: sql<number>`sum(${schema.inventory.quantity})`.mapWith(
           Number,
         ),
-        unit: schema.products.baseUnit,
+        unit: schema.baseUnits.name,
         minStockLevel: schema.products.minStockLevel,
       })
       .from(schema.inventory)
@@ -176,12 +180,17 @@ export class InventoryRepository {
         schema.warehouses,
         eq(schema.inventory.warehouseId, schema.warehouses.id),
       )
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
       .where(and(...conditions))
       .groupBy(
         schema.products.id,
         schema.products.name,
         schema.products.sku,
-        schema.products.baseUnit,
+        schema.products.sku,
+        schema.baseUnits.name, // baseUnit
         schema.products.minStockLevel,
         schema.inventory.warehouseId,
         schema.warehouses.name,
@@ -225,9 +234,13 @@ export class InventoryRepository {
         currentQuantity: sql<number>`coalesce(${sq.totalQuantity}, 0)`.mapWith(
           Number,
         ),
-        unit: schema.products.baseUnit,
+        unit: schema.baseUnits.name,
       })
       .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
       .leftJoin(sq, eq(schema.products.id, sq.productId))
       .where(
         lte(
