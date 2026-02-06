@@ -17,50 +17,116 @@ export class ProductRepository {
   ) {}
 
   async create(data: CreateProductDto & { sku: string }) {
-    const result = await this.db
+    const [inserted] = await this.db
       .insert(schema.products)
       .values(data)
       .returning();
-    return result[0];
+
+    // Return with baseUnitName
+    return await this.findById(inserted.id);
   }
 
   async update(id: number, data: UpdateProductDto) {
-    const result = await this.db
+    await this.db
       .update(schema.products)
       .set({ ...data, updatedAt: new Date() })
       .where(eq(schema.products.id, id))
       .returning();
-    return result[0];
+
+    // Return with baseUnitName
+    return await this.findById(id);
   }
 
   async softDelete(id: number) {
-    const result = await this.db
+    const [result] = await this.db
       .update(schema.products)
       .set({ isActive: false, updatedAt: new Date() })
       .where(eq(schema.products.id, id))
       .returning();
-    return result[0];
+    return result;
   }
 
   async findById(id: number) {
-    return await this.db.query.products.findFirst({
-      where: eq(schema.products.id, id),
-    });
+    const result = await this.db
+      .select({
+        id: schema.products.id,
+        sku: schema.products.sku,
+        name: schema.products.name,
+        baseUnitId: schema.products.baseUnitId,
+        baseUnitName: schema.baseUnits.name,
+        shelfLifeDays: schema.products.shelfLifeDays,
+        minStockLevel: schema.products.minStockLevel,
+        imageUrl: schema.products.imageUrl,
+        isActive: schema.products.isActive,
+        createdAt: schema.products.createdAt,
+        updatedAt: schema.products.updatedAt,
+      })
+      .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(eq(schema.products.id, id));
+
+    return result[0];
   }
 
   async findOneWithBatches(id: number) {
-    return await this.db.query.products.findFirst({
-      where: eq(schema.products.id, id),
-      with: {
-        batches: true,
-      },
+    // Cannot easily mix db.select (flat) with existing relation object structure for batches.
+    // But requirement says "include baseUnitName in all responses".
+    // I'll fetch product details with innerJoin, and fetch batches separately or aggregately if needed.
+    // Or I can use db.query and map it.
+    // BUT strict requirement: "Use innerJoin".
+    // I will use db.select for the product part.
+    // For batches, I'll let findById handle the product part, but this method is "findOneWithBatches".
+    // I'll stick to db.query for this one OR manual join.
+    // db.query is much cleaner for relations.
+    // If I MUST use innerJoin to get "baseUnitName" column specifically...
+    // I will use db.query()...with: { baseUnit: true } and map it in Service or here.
+    // "Update Repository: Use innerJoin ... to include baseUnitName".
+    // I will rewrite this to use db.select with join to baseUnits, and leftJoin batch?
+    // Complex.
+    // Let's stick to existing "findFirst" with "with" but add "baseUnit".
+    // WAIT, strict rule: "Use innerJoin".
+    // I will rewrite findById to use innerJoin as shown above.
+    // For findOneWithBatches, I'll use query builder with relations if possible, or manual join.
+    // I'll use db.query for findOneWithBatches and add baseUnit relation, then flatten it?
+    // "Update Repository: Use innerJoin with baseUnits table".
+    // I will do:
+    const product = await this.findById(id);
+    if (!product) return null;
+
+    // Fetch batches
+    const batchesData = await this.db.query.batches.findMany({
+      where: eq(schema.batches.productId, id),
     });
+
+    return { ...product, batches: batchesData };
   }
 
   async findBySku(sku: string) {
-    return await this.db.query.products.findFirst({
-      where: eq(schema.products.sku, sku),
-    });
+    const result = await this.db
+      .select({
+        id: schema.products.id,
+        sku: schema.products.sku,
+        name: schema.products.name,
+        baseUnitId: schema.products.baseUnitId,
+        baseUnitName: schema.baseUnits.name,
+        shelfLifeDays: schema.products.shelfLifeDays,
+        minStockLevel: schema.products.minStockLevel,
+        imageUrl: schema.products.imageUrl,
+        isActive: schema.products.isActive,
+        createdAt: schema.products.createdAt,
+        updatedAt: schema.products.updatedAt,
+      })
+      .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(eq(schema.products.sku, sku));
+
+    return result[0];
   }
 
   async findAll(filter: ProductFilterDto) {
@@ -79,16 +145,37 @@ export class ProductRepository {
       );
     }
 
-    const data = await this.db.query.products.findMany({
-      where: whereClause.length ? and(...whereClause) : undefined,
-      limit: limit,
-      offset: offset,
-      orderBy: [desc(schema.products.createdAt)],
-    });
+    const data = await this.db
+      .select({
+        id: schema.products.id,
+        sku: schema.products.sku,
+        name: schema.products.name,
+        baseUnitId: schema.products.baseUnitId,
+        baseUnitName: schema.baseUnits.name,
+        shelfLifeDays: schema.products.shelfLifeDays,
+        minStockLevel: schema.products.minStockLevel,
+        imageUrl: schema.products.imageUrl,
+        isActive: schema.products.isActive,
+        createdAt: schema.products.createdAt,
+        updatedAt: schema.products.updatedAt,
+      })
+      .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(whereClause.length ? and(...whereClause) : undefined)
+      .limit(limit)
+      .offset(offset)
+      .orderBy(desc(schema.products.createdAt));
 
     const totalResult = await this.db
       .select({ count: count() })
       .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      ) // innerJoin here too to match filters if any
       .where(whereClause.length ? and(...whereClause) : undefined);
 
     const total = Number(totalResult[0]?.count || 0);
@@ -105,12 +192,12 @@ export class ProductRepository {
   }
 
   async restore(id: number) {
-    const result = await this.db
+    const [result] = await this.db
       .update(schema.products)
       .set({ isActive: true, updatedAt: new Date() })
       .where(eq(schema.products.id, id))
       .returning();
-    return result[0];
+    return result;
   }
 
   // --- Batch Methods ---

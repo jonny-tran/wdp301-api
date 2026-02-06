@@ -26,7 +26,7 @@ export class InventoryService {
       batchCode: item.batch.batchCode,
       quantity: parseFloat(item.quantity),
       expiryDate: new Date(item.batch.expiryDate),
-      unit: item.batch.product.baseUnit,
+      unit: item.batch.product.baseUnit.name,
       imageUrl: item.batch.product.imageUrl || null,
     }));
   }

@@ -31,7 +31,25 @@ async function main() {
     `✅ Using Warehouse: ${centralWarehouse.name} (ID: ${centralWarehouse.id})`,
   );
 
-  // 2. Tìm hoặc Tạo Sản Phẩm Test (Cánh gà)
+  // 2.A Find or Create Base Unit
+  const baseUnitName = 'kg';
+  let baseUnit = await db.query.baseUnits.findFirst({
+    where: eq(schema.baseUnits.name, baseUnitName),
+  });
+
+  if (!baseUnit) {
+    console.log('Creating Base Unit...');
+    [baseUnit] = await db
+      .insert(schema.baseUnits)
+      .values({
+        name: baseUnitName,
+        description: 'Kilogram',
+      })
+      .returning();
+  }
+  console.log(`✅ Using Base Unit: ${baseUnit.name} (ID: ${baseUnit.id})`);
+
+  // 2.B Tìm hoặc Tạo Sản Phẩm Test (Cánh gà)
   const productSku = 'CK-WINGS-TEST';
   let product = await db.query.products.findFirst({
     where: eq(schema.products.sku, productSku),
@@ -44,7 +62,7 @@ async function main() {
       .values({
         sku: productSku,
         name: 'Cánh gà Test FEFO',
-        baseUnit: 'kg',
+        baseUnitId: baseUnit.id,
         shelfLifeDays: 7,
         isActive: true,
       })
