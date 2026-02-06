@@ -8,6 +8,11 @@ export interface IJwtPayload {
 }
 
 export interface ILoginResponse {
+  userId: string;
+  email: string;
+  username: string;
+  role: string;
+  storeId: string | null;
   accessToken: string;
   refreshToken: string;
 }

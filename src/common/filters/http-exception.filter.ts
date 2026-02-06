@@ -66,7 +66,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     if (isDefaultMessage) {
       switch (status) {
         case HttpStatus.UNAUTHORIZED:
-          message = 'Chưa đăng nhập hoặc Token hết hạn';
+          message = 'Chưa đăng nhập';
           break;
         case HttpStatus.FORBIDDEN:
           message = 'Bạn không có quyền truy cập resource này';

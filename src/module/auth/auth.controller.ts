@@ -6,7 +6,6 @@ import {
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ResponseMessage } from 'src/common/decorators/response-message.decorator';
@@ -27,6 +26,7 @@ import { ForgotPasswordDto, ResetPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { AtGuard } from './guards/auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import type { RequestWithUser } from './types/auth.types';
 
@@ -50,7 +50,7 @@ export class AuthController {
   }
 
   @Get('me')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AtGuard)
   @ApiProfileDocs()
   @ApiBearerAuth()
   async getProfile(@Request() req: RequestWithUser) {
@@ -59,7 +59,7 @@ export class AuthController {
   }
 
   @Post('logout')
-  @UseGuards(AuthGuard('jwt'))
+  @UseGuards(AtGuard)
   @ApiLogoutDocs()
   @ApiBearerAuth()
   async logout(@Body() logoutDto: LogoutDto) {
@@ -67,7 +67,7 @@ export class AuthController {
   }
 
   @Post('create-user')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @UseGuards(AtGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiCreateUserDocs()
   @ApiBearerAuth()
@@ -96,7 +96,7 @@ export class AuthController {
 
   @Get('roles')
   @ApiGetRolesDocs()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @UseGuards(AtGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @ResponseMessage('Lấy danh sách vai trò thành công')
   getAllRoles() {
