@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../../database/database.constants';
 import * as schema from '../../../database/schema';
@@ -30,7 +30,10 @@ export class BaseUnitRepository {
 
   async findById(id: number) {
     return await this.db.query.baseUnits.findFirst({
-      where: eq(schema.baseUnits.id, id),
+      where: and(
+        eq(schema.baseUnits.id, id),
+        eq(schema.baseUnits.isActive, true),
+      ),
     });
   }
 

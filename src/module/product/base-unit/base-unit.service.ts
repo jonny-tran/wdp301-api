@@ -26,7 +26,9 @@ export class BaseUnitService {
   async findOne(id: number) {
     const baseUnit = await this.baseUnitRepository.findById(id);
     if (!baseUnit) {
-      throw new NotFoundException('Đơn vị tính không tồn tại');
+      throw new NotFoundException(
+        'Đơn vị tính không tồn tại hoặc đã bị ngừng sử dụng',
+      );
     }
     return baseUnit;
   }

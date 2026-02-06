@@ -86,6 +86,14 @@ export class ProductController {
     return await this.productService.removeProduct(id);
   }
 
+  @Get('inactive')
+  @Roles(UserRole.MANAGER)
+  @ApiOperation({ summary: 'Lấy danh sách sản phẩm không hoạt động [Manager]' })
+  @ResponseMessage('Lấy danh sách sản phẩm không hoạt động thành công')
+  async getProductsInactive() {
+    return await this.productService.getProductsInactive();
+  }
+
   @Patch(':id/restore')
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Khôi phục sản phẩm [Manager]' })
