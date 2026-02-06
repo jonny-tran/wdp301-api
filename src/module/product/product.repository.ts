@@ -16,7 +16,7 @@ export class ProductRepository {
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
-  async create(data: CreateProductDto) {
+  async create(data: CreateProductDto & { sku: string }) {
     const result = await this.db
       .insert(schema.products)
       .values(data)

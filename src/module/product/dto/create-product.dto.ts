@@ -2,14 +2,6 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsInt, IsNotEmpty, IsString, IsUrl, Min } from 'class-validator';
 
 export class CreateProductDto {
-  @ApiProperty({
-    description: 'Mã SKU duy nhất cho sản phẩm',
-    example: 'PROD-001',
-  })
-  @IsNotEmpty()
-  @IsString()
-  sku: string;
-
   @ApiProperty({ description: 'Tên sản phẩm', example: 'Gà rán KFC Original' })
   @IsNotEmpty()
   @IsString()
