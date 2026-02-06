@@ -163,7 +163,7 @@ export class WarehouseRepository {
    */
   async replaceDamagedBatchTransaction(
     warehouseId: number,
-    dto: { batch_id: number },
+    dto: { batchId: number },
     shipmentItem: { id: number; quantity: string; shipmentId: string },
     productId: number,
   ) {
@@ -184,7 +184,7 @@ export class WarehouseRepository {
         .where(
           and(
             eq(schema.inventory.warehouseId, warehouseId),
-            eq(schema.inventory.batchId, dto.batch_id),
+            eq(schema.inventory.batchId, dto.batchId),
           ),
         );
 
@@ -200,7 +200,7 @@ export class WarehouseRepository {
           and(
             eq(schema.inventory.warehouseId, warehouseId),
             eq(schema.batches.productId, productId),
-            sql`${schema.inventory.batchId} != ${dto.batch_id}`,
+            sql`${schema.inventory.batchId} != ${dto.batchId}`,
             sql`(${schema.inventory.quantity} - ${schema.inventory.reservedQuantity}) > 0`,
           ),
         )

@@ -91,8 +91,8 @@ export class WarehouseController {
   @Get('scan-check')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({ summary: '7. Quick check Batch Info by QR Code' })
-  @ApiQuery({ name: 'batch_code', required: true })
-  async scanCheck(@Query('batch_code') batchCode: string) {
+  @ApiQuery({ name: 'batchCode', required: true })
+  async scanCheck(@Query('batchCode') batchCode: string) {
     // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.scanBatchCheck(warehouseId, batchCode);
