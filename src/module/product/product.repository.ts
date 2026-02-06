@@ -52,7 +52,6 @@ export class ProductRepository {
         id: schema.products.id,
         sku: schema.products.sku,
         name: schema.products.name,
-        baseUnitId: schema.products.baseUnitId,
         baseUnitName: schema.baseUnits.name,
         shelfLifeDays: schema.products.shelfLifeDays,
         minStockLevel: schema.products.minStockLevel,
@@ -150,7 +149,6 @@ export class ProductRepository {
         id: schema.products.id,
         sku: schema.products.sku,
         name: schema.products.name,
-        baseUnitId: schema.products.baseUnitId,
         baseUnitName: schema.baseUnits.name,
         shelfLifeDays: schema.products.shelfLifeDays,
         minStockLevel: schema.products.minStockLevel,
@@ -189,6 +187,26 @@ export class ProductRepository {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  async findAllInactive() {
+    return await this.db
+      .select({
+        id: schema.products.id,
+        name: schema.products.name,
+        sku: schema.products.sku,
+        shelfLifeDays: schema.products.shelfLifeDays,
+        imageUrl: schema.products.imageUrl,
+        isActive: schema.products.isActive,
+        baseUnitName: schema.baseUnits.name,
+      })
+      .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(eq(schema.products.isActive, false))
+      .orderBy(desc(schema.products.updatedAt));
   }
 
   async restore(id: number) {
