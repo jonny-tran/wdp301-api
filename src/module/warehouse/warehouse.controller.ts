@@ -11,19 +11,19 @@ import {
 import {
   ApiBearerAuth,
   ApiOperation,
-  ApiTags,
   ApiQuery,
+  ApiTags,
 } from '@nestjs/swagger';
-import { WarehouseService } from './warehouse.service';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../auth/dto/create-user.dto';
+import { AtGuard } from '../auth/guards/auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import {
-  PickItemDto,
   FinalizeShipmentDto,
+  PickItemDto,
   ReportIssueDto,
 } from './dto/warehouse-ops.dto';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { AtGuard } from '../auth/guards/auth.guard';
-import { UserRole } from '../auth/dto/create-user.dto';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { WarehouseService } from './warehouse.service';
 
 @ApiTags('Quản lý Kho vận (Warehouse Operations)')
 @ApiBearerAuth()
