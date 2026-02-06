@@ -165,4 +165,66 @@ export class InventoryService {
       return this.db.transaction(transactionCallback);
     }
   }
+
+  // Helper Lấy ID kho bếp
+  private async getKitchenWarehouseId(): Promise<number> {
+    const id = await this.inventoryRepository.findCentralWarehouseId();
+    if (!id) throw new NotFoundException('Central Kitchen Warehouse not found');
+    return id;
+  }
+
+  // API 6: Xem tổng tồn kho
+  async getKitchenSummary(search?: string) {
+    const warehouseId = await this.getKitchenWarehouseId();
+    const rawData = await this.inventoryRepository.getKitchenSummary(
+      warehouseId,
+      search,
+    );
+
+    // Format dữ liệu trả về
+    return rawData.map((item) => {
+      const physical = item.totalPhysical || 0;
+      const reserved = item.totalReserved || 0;
+      const available = physical - reserved;
+
+      return {
+        product_id: item.productId,
+        product_name: item.productName,
+        sku: item.sku,
+        unit: item.unitName,
+        min_stock: item.minStock,
+        total_physical: physical, // Tổng thực tế
+        total_reserved: reserved, // Đang xử lý
+        available_quantity: available, // Có thể dùng
+        // Cờ cảnh báo nếu dưới định mức
+        is_low_stock: available < (item.minStock || 0),
+      };
+    });
+  }
+
+  // API 7: Xem chi tiết lô (Drill-down)
+  async getKitchenDetails(productId: number) {
+    const warehouseId = await this.getKitchenWarehouseId();
+    const batches = await this.inventoryRepository.getKitchenBatchDetails(
+      warehouseId,
+      productId,
+    );
+
+    return {
+      product_id: productId,
+      total_batches: batches.length,
+      details: batches.map((b) => {
+        const qty = parseFloat(b.quantity.toString());
+        const res = parseFloat(b.reserved.toString());
+
+        return {
+          batch_code: b.batchCode,
+          expiry_date: b.expiryDate, // Frontend tự format dd/MM/yyyy
+          physical: qty,
+          reserved: res,
+          available: qty - res,
+        };
+      }),
+    };
+  }
 }

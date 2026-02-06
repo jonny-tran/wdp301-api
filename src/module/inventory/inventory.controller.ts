@@ -108,4 +108,28 @@ export class InventoryController {
   async adjustInventory(@Body() body: InventoryAdjustmentDto) {
     return this.inventoryService.adjustInventory(body);
   }
+
+  @Get('kitchen/summary')
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'API inbound: Xem tổng tồn kho Bếp (Group by Product)',
+    description:
+      'API dành cho Bếp trưởng/Quản lý để xem tổng quan tồn kho các món',
+  })
+  async getKitchenSummary(@Query('search') search?: string) {
+    return this.inventoryService.getKitchenSummary(search);
+  }
+
+  // API 7: Xem chi tiết lô hàng của một món (Drill-down)
+  @Get('kitchen/details')
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'API 7: Xem chi tiết lô hàng của một món (Drill-down)',
+    description:
+      'Xem chi tiết các lô (Hạn sử dụng, SL thực, SL giữ chỗ) của 1 sản phẩm cụ thể',
+  })
+  async getKitchenDetails(@Query('product_id') productId: number) {
+    // productId từ @Query mặc định là string, cần ép kiểu
+    return this.inventoryService.getKitchenDetails(Number(productId));
+  }
 }
