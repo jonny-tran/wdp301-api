@@ -7,7 +7,7 @@ export class ReportIssueDto {
   @IsNumber()
   @Min(1)
   @IsNotEmpty()
-  batch_id: number;
+  batchId: number;
 
   @ApiProperty({
     example: 'damaged',
@@ -23,21 +23,21 @@ export class FinalizeShipmentDto {
   @ApiProperty({ example: 'UUID-ORDER-123', description: 'Order ID' })
   @IsUUID()
   @IsNotEmpty()
-  order_id: string;
+  orderId: string;
 }
 
 // 3. Response DTO cho Picking List (Để Swagger hiển thị đúng mẫu JSON)
 export class PickingListResponseDto {
   @ApiProperty()
-  order_id: string;
+  orderId: string;
 
   @ApiProperty({ isArray: true })
   items: {
-    product_name: string;
-    required_qty: number;
-    suggested_batches: {
-      batch_code: string;
-      qty_to_pick: number;
+    productName: string;
+    requiredQty: number;
+    suggestedBatches: {
+      batchCode: string;
+      qtyToPick: number;
       expiry: string;
       location?: string;
     }[];
@@ -49,12 +49,12 @@ export class PickItemDto {
   @ApiProperty({ description: 'Order ID đang soạn', example: 'uuid-order-123' })
   @IsUUID()
   @IsNotEmpty()
-  order_id: string;
+  orderId: string;
 
   @ApiProperty({ description: 'Product ID của món hàng', example: 10 })
   @IsNumber()
   @IsNotEmpty()
-  product_id: number;
+  productId: number;
 
   @ApiProperty({
     description: 'Mã lô nhân viên vừa quét',
@@ -62,7 +62,7 @@ export class PickItemDto {
   })
   @IsString()
   @IsNotEmpty()
-  batch_code: string;
+  batchCode: string;
 
   @ApiProperty({ description: 'Số lượng lấy', example: 5 })
   @IsNumber()
@@ -84,5 +84,5 @@ export class ScanCheckDto {
   @ApiProperty({ description: 'Mã QR trên thùng hàng', example: 'GA-2024-001' })
   @IsString()
   @IsNotEmpty()
-  batch_code: string;
+  batchCode: string;
 }

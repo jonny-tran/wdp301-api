@@ -15,7 +15,6 @@ import {
   PickItemDto,
   ReportIssueDto,
 } from './dto/warehouse-ops.dto';
-import { SuggestedBatch } from './interface/suggestedBatch.interface';
 import { WarehouseRepository } from './warehouse.repository';
 
 @Injectable()
@@ -59,82 +58,64 @@ export class WarehouseService {
 
   // --- 3. GET PICKING LIST ---
   async getPickingList(orderId: string) {
-    // 1. Lấy Warehouse ID của Bếp
-    const warehouseId = await this.getCentralWarehouseId();
+    const shipment = await this.warehouseRepo.findShipmentByOrderId(orderId);
+    if (!shipment) throw new NotFoundException('Shipment not found');
 
-    // 2. Lấy danh sách sản phẩm trong đơn hàng
-    const orderItems = await this.db
-      .select({
-        productId: schema.orderItems.productId,
-        productName: schema.products.name,
-        quantityApproved: schema.orderItems.quantityApproved,
-      })
-      .from(schema.orderItems)
-      .innerJoin(
-        schema.products,
-        eq(schema.orderItems.productId, schema.products.id),
-      )
-      .where(eq(schema.orderItems.orderId, orderId));
+    // Logic Grouping dữ liệu để trả về FE
+    const groupedItems = new Map<
+      number,
+      {
+        productName: string;
+        requiredQty: number;
+        suggestedBatches: {
+          batchCode: string;
+          qtyToPick: number;
+          expiry: string;
+        }[];
+      }
+    >();
 
-    if (orderItems.length === 0)
-      throw new NotFoundException('Đơn hàng không có dữ liệu soạn.');
+    for (const item of shipment.items) {
+      const productId = item.batch.productId;
+      if (!groupedItems.has(productId)) {
+        groupedItems.set(productId, {
+          productName: item.batch.product.name,
+          requiredQty: 0,
+          suggestedBatches: [],
+        });
+      }
+      const entry = groupedItems.get(productId);
+      if (!entry) continue; // Check an toàn
 
-    // 3. Xây dựng danh sách gợi ý
-    const itemsWithSuggestions = await Promise.all(
-      orderItems.map(async (item) => {
-        const batches = await this.warehouseRepo.findAvailableBatchesForFefo(
-          warehouseId,
-          item.productId,
-        );
-
-        let remainingToAssign = Number(item.quantityApproved);
-        const suggestedBatches: SuggestedBatch[] = [];
-
-        for (const b of batches) {
-          if (remainingToAssign <= 0) break;
-
-          const available =
-            Number(b.physicalQuantity) - Number(b.reservedQuantity);
-          const take = Math.min(available, remainingToAssign);
-
-          if (take > 0) {
-            suggestedBatches.push({
-              batchCode: b.batchCode,
-              quantityToPick: take,
-              expiryDate: b.expiryDate,
-            });
-            remainingToAssign -= take;
-          }
-        }
-
-        return {
-          productId: item.productId,
-          productName: item.productName,
-          requiredQuantity: Number(item.quantityApproved),
-          suggestedBatches: suggestedBatches,
-        };
-      }),
-    );
+      const qty = parseFloat(item.quantity);
+      entry.requiredQty += qty;
+      entry.suggestedBatches.push({
+        batchCode: item.batch.batchCode,
+        qtyToPick: qty,
+        expiry: item.batch.expiryDate,
+      });
+    }
 
     return {
       orderId: orderId,
-      items: itemsWithSuggestions,
+      shipmentId: shipment.id,
+      items: Array.from(groupedItems.values()),
     };
   }
 
   // --- 4. VALIDATE PICK ITEM (FEFO Enforcement) ---
   async validatePickItem(warehouseId: number, dto: PickItemDto) {
     const scannedBatch = await this.warehouseRepo.findBatchByCode(
-      dto.batch_code,
+      dto.batchCode,
     );
     if (!scannedBatch)
       throw new NotFoundException('Mã lô không tồn tại trong hệ thống');
-    if (scannedBatch.productId !== dto.product_id)
+    if (scannedBatch.productId !== dto.productId)
       throw new BadRequestException('Mã lô không thuộc sản phẩm này');
 
     const availableBatches = await this.warehouseRepo.findAvailableBatches(
       warehouseId,
-      dto.product_id,
+      dto.productId,
     );
 
     if (availableBatches.length === 0) {
@@ -154,8 +135,8 @@ export class WarehouseService {
     return {
       valid: true,
       message: 'Mã lô hợp lệ. Đã xác nhận.',
-      batch_code: dto.batch_code,
-      scanned_qty: dto.quantity,
+      batchCode: dto.batchCode,
+      scannedQty: dto.quantity,
     };
   }
 
@@ -174,14 +155,14 @@ export class WarehouseService {
     return {
       success: true,
       message: 'Đã đặt lại trạng thái soạn hàng.',
-      order_id: orderId,
+      orderId: orderId,
     };
   }
 
   // --- 6. FINALIZE SHIPMENT ---
   async finalizeShipment(warehouseId: number, dto: FinalizeShipmentDto) {
     const shipment = await this.warehouseRepo.findShipmentByOrderId(
-      dto.order_id,
+      dto.orderId,
     );
 
     if (!shipment) throw new NotFoundException('Shipment not found');
@@ -192,7 +173,7 @@ export class WarehouseService {
     await this.warehouseRepo.finalizeShipmentTransaction(
       warehouseId,
       shipment.id,
-      dto.order_id,
+      dto.orderId,
       shipment.items,
     );
 
@@ -205,13 +186,13 @@ export class WarehouseService {
     if (!shipment) throw new NotFoundException('Phiếu giao hàng không tồn tại');
 
     return {
-      template_type: 'INVOICE_A4',
-      shipment_id: shipment.id,
+      templateType: 'INVOICE_A4',
+      shipmentId: shipment.id,
       date: new Date().toISOString(),
-      store_name: shipment.order.store.name,
+      storeName: shipment.order.store.name,
       items: shipment.items.map((item) => ({
-        product: item.batch.product.name,
-        batch_code: item.batch.batchCode,
+        productName: item.batch.product.name,
+        batchCode: item.batch.batchCode,
         qty: item.quantity,
         expiry: item.batch.expiryDate,
       })),
@@ -229,10 +210,10 @@ export class WarehouseService {
 
     const inv = batchInfo.inventory[0];
     return {
-      product_name: batchInfo.product.name,
-      batch_code: batchInfo.batchCode,
-      expiry_date: batchInfo.expiryDate,
-      quantity_physical: inv ? parseFloat(inv.quantity) : 0,
+      productName: batchInfo.product.name,
+      batchCode: batchInfo.batchCode,
+      expiryDate: batchInfo.expiryDate,
+      quantityPhysical: inv ? parseFloat(inv.quantity) : 0,
       status:
         inv && parseFloat(inv.quantity) > 0 ? 'AVAILABLE' : 'OUT_OF_STOCK',
     };
@@ -243,13 +224,13 @@ export class WarehouseService {
     // 1. Validate Inventory
     const inventory = await this.warehouseRepo.findInventory(
       warehouseId,
-      dto.batch_id,
+      dto.batchId,
     );
     if (!inventory) throw new NotFoundException('Lô hàng không có trong kho');
 
     // 2. Validate Shipment Item
     const shipmentItem = await this.warehouseRepo.findShipmentItemByBatch(
-      dto.batch_id,
+      dto.batchId,
     );
     if (!shipmentItem)
       throw new BadRequestException('Lô hàng không nằm trong đơn đang soạn');
@@ -266,7 +247,7 @@ export class WarehouseService {
     // Ở đây tôi sẽ sử dụng findBatchByCode đã có nhưng sửa lại Repo nếu cần
     // Tạm thời gọi Repo lấy Batch Info
     const batchInfo = await this.db.query.batches.findFirst({
-      where: eq(schema.batches.id, dto.batch_id),
+      where: eq(schema.batches.id, dto.batchId),
     });
     if (!batchInfo) throw new NotFoundException('Batch info corrupted');
 
@@ -288,8 +269,8 @@ export class WarehouseService {
 
     return {
       message: 'Đã báo cáo sự cố và đổi lô hàng thành công.',
-      old_batch_id: dto.batch_id,
-      replaced_with: result.newAllocations,
+      oldBatchId: dto.batchId,
+      replacedWith: result.newAllocations,
     };
   }
 }

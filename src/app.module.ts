@@ -12,6 +12,7 @@ import { OrderModule } from './module/order/order.module';
 import { ProductModule } from './module/product/product.module';
 import { ShipmentModule } from './module/shipment/shipment.module';
 import { WarehouseModule } from './module/warehouse/warehouse.module';
+import { InboundModule } from './module/inbound/inbound.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { WarehouseModule } from './module/warehouse/warehouse.module';
     WarehouseModule,
     ProductModule,
     FranchiseStoreModule,
+    InboundModule,
   ],
   controllers: [AppController],
   providers: [AppService],

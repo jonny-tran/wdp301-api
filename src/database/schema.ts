@@ -54,6 +54,17 @@ export const claimStatusEnum = pgEnum('claim_status', [
   'approved',
   'rejected',
 ]);
+export const receiptStatusEnum = pgEnum('receipt_status', [
+  'draft',
+  'completed',
+  'cancelled',
+]);
+export const batchStatusEnum = pgEnum('batch_status', [
+  'pending',
+  'available',
+  'empty',
+  'expired',
+]);
 
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -142,9 +153,48 @@ export const batches = pgTable('batches', {
     .references(() => products.id)
     .notNull(),
   expiryDate: date('expiry_date').notNull(),
+  status: batchStatusEnum('status').default('pending').notNull(),
   imageUrl: text('image_url'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const suppliers = pgTable('suppliers', {
+  id: serial('id').primaryKey(),
+  name: text('name').notNull(),
+  contactName: text('contact_name'),
+  phone: text('phone'),
+  address: text('address'),
+  isActive: boolean('is_active').default(true),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+// Receipts (Phiếu nhập)
+export const receipts = pgTable('receipts', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  warehouseId: integer('warehouse_id')
+    .references(() => warehouses.id)
+    .notNull(),
+  supplierId: integer('supplier_id')
+    .references(() => suppliers.id)
+    .notNull(),
+  createdBy: uuid('created_by')
+    .references(() => users.id)
+    .notNull(),
+  status: receiptStatusEnum('status').default('draft').notNull(),
+  note: text('note'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Receipt Items (details)
+export const receiptItems = pgTable('receipt_items', {
+  id: serial('id').primaryKey(),
+  receiptId: uuid('receipt_id')
+    .references(() => receipts.id)
+    .notNull(),
+  batchId: integer('batch_id').references(() => batches.id), // Link tới Batch vừa tạo
+  quantity: decimal('quantity').notNull(),
 });
 
 export const inventory = pgTable(
@@ -390,3 +440,27 @@ export const inventoryTransactionRelations = relations(
     }),
   }),
 );
+// Receipt Relations
+export const receiptRelations = relations(receipts, ({ one, many }) => ({
+  supplier: one(suppliers, {
+    fields: [receipts.supplierId],
+    references: [suppliers.id],
+  }),
+  warehouse: one(warehouses, {
+    fields: [receipts.warehouseId],
+    references: [warehouses.id],
+  }),
+  user: one(users, { fields: [receipts.createdBy], references: [users.id] }),
+  items: many(receiptItems),
+}));
+
+export const receiptItemRelations = relations(receiptItems, ({ one }) => ({
+  receipt: one(receipts, {
+    fields: [receiptItems.receiptId],
+    references: [receipts.id],
+  }),
+  batch: one(batches, {
+    fields: [receiptItems.batchId],
+    references: [batches.id],
+  }),
+}));
