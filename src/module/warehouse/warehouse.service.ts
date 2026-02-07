@@ -6,15 +6,16 @@ import {
   // InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { eq } from 'drizzle-orm'; // Import eq
-import * as schema from '../../database/schema';
+import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants'; // Import DB Connection
+import * as schema from '../../database/schema';
 import {
   FinalizeShipmentDto,
   PickItemDto,
   ReportIssueDto,
 } from './dto/warehouse-ops.dto';
+import { SuggestedBatch } from './interface/suggestedBatch.interface';
 import { WarehouseRepository } from './warehouse.repository';
 
 @Injectable()
@@ -22,18 +23,14 @@ export class WarehouseService {
   constructor(
     private readonly warehouseRepo: WarehouseRepository,
     @Inject(DATABASE_CONNECTION)
-    private readonly db: NodePgDatabase<typeof schema>, // Inject DB để dùng cho getCentralWarehouseId
+    private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
-  //Helper: Lấy ID kho trung tâm (Thêm lại hàm này)
   async getCentralWarehouseId(): Promise<number> {
-    const warehouse = await this.db.query.warehouses.findFirst({
-      where: eq(schema.warehouses.type, 'central'),
-    });
-
+    const warehouse = await this.warehouseRepo.findCentralWarehouseId();
     if (!warehouse) {
       throw new NotFoundException(
-        'Không tìm thấy Kho Trung Tâm (Central Warehouse) trong hệ thống.',
+        'Không tìm thấy Kho Trung Tâm trong hệ thống.',
       );
     }
     return warehouse.id;
@@ -62,48 +59,66 @@ export class WarehouseService {
 
   // --- 3. GET PICKING LIST ---
   async getPickingList(orderId: string) {
-    const shipment = await this.warehouseRepo.findShipmentByOrderId(orderId);
-    if (!shipment) throw new NotFoundException('Shipment not found');
+    // 1. Lấy Warehouse ID của Bếp
+    const warehouseId = await this.getCentralWarehouseId();
 
-    // Logic Grouping dữ liệu để trả về FE
-    const groupedItems = new Map<
-      number,
-      {
-        product_name: string;
-        required_qty: number;
-        suggested_batches: {
-          batch_code: string;
-          qty_to_pick: number;
-          expiry: string;
-        }[];
-      }
-    >();
+    // 2. Lấy danh sách sản phẩm trong đơn hàng
+    const orderItems = await this.db
+      .select({
+        productId: schema.orderItems.productId,
+        productName: schema.products.name,
+        quantityApproved: schema.orderItems.quantityApproved,
+      })
+      .from(schema.orderItems)
+      .innerJoin(
+        schema.products,
+        eq(schema.orderItems.productId, schema.products.id),
+      )
+      .where(eq(schema.orderItems.orderId, orderId));
 
-    for (const item of shipment.items) {
-      const productId = item.batch.productId;
-      if (!groupedItems.has(productId)) {
-        groupedItems.set(productId, {
-          product_name: item.batch.product.name,
-          required_qty: 0,
-          suggested_batches: [],
-        });
-      }
-      const entry = groupedItems.get(productId);
-      if (!entry) continue; // Check an toàn
+    if (orderItems.length === 0)
+      throw new NotFoundException('Đơn hàng không có dữ liệu soạn.');
 
-      const qty = parseFloat(item.quantity);
-      entry.required_qty += qty;
-      entry.suggested_batches.push({
-        batch_code: item.batch.batchCode,
-        qty_to_pick: qty,
-        expiry: item.batch.expiryDate,
-      });
-    }
+    // 3. Xây dựng danh sách gợi ý
+    const itemsWithSuggestions = await Promise.all(
+      orderItems.map(async (item) => {
+        const batches = await this.warehouseRepo.findAvailableBatchesForFefo(
+          warehouseId,
+          item.productId,
+        );
+
+        let remainingToAssign = Number(item.quantityApproved);
+        const suggestedBatches: SuggestedBatch[] = [];
+
+        for (const b of batches) {
+          if (remainingToAssign <= 0) break;
+
+          const available =
+            Number(b.physicalQuantity) - Number(b.reservedQuantity);
+          const take = Math.min(available, remainingToAssign);
+
+          if (take > 0) {
+            suggestedBatches.push({
+              batchCode: b.batchCode,
+              quantityToPick: take,
+              expiryDate: b.expiryDate,
+            });
+            remainingToAssign -= take;
+          }
+        }
+
+        return {
+          productId: item.productId,
+          productName: item.productName,
+          requiredQuantity: Number(item.quantityApproved),
+          suggestedBatches: suggestedBatches,
+        };
+      }),
+    );
 
     return {
-      order_id: orderId,
-      shipment_id: shipment.id,
-      items: Array.from(groupedItems.values()),
+      orderId: orderId,
+      items: itemsWithSuggestions,
     };
   }
 
