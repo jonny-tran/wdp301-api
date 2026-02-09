@@ -1,13 +1,14 @@
 import { Module } from '@nestjs/common';
-import { InboundService } from './inbound.service';
+import { DatabaseModule } from '../../database/database.module';
+import { WarehouseRepository } from '../warehouse/warehouse.repository';
 import { InboundController } from './inbound.controller';
 import { InboundRepository } from './inbound.repository';
-import { DatabaseModule } from '../../database/database.module';
+import { InboundService } from './inbound.service';
 
 @Module({
   imports: [DatabaseModule],
   controllers: [InboundController],
-  providers: [InboundService, InboundRepository],
-  exports: [InboundService, InboundRepository],
+  providers: [InboundService, InboundRepository, WarehouseRepository],
+  exports: [InboundService, InboundRepository, WarehouseRepository],
 })
 export class InboundModule {}

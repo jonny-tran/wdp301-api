@@ -464,3 +464,7 @@ export const receiptItemRelations = relations(receiptItems, ({ one }) => ({
     references: [batches.id],
   }),
 }));
+
+export const supplierRelations = relations(suppliers, ({ many }) => ({
+  receipts: many(receipts),
+}));

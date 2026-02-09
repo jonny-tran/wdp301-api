@@ -65,6 +65,7 @@ export class WarehouseService {
     const groupedItems = new Map<
       number,
       {
+        productId: number;
         productName: string;
         requiredQty: number;
         suggestedBatches: {
@@ -79,13 +80,14 @@ export class WarehouseService {
       const productId = item.batch.productId;
       if (!groupedItems.has(productId)) {
         groupedItems.set(productId, {
+          productId: item.batch.productId,
           productName: item.batch.product.name,
           requiredQty: 0,
           suggestedBatches: [],
         });
       }
       const entry = groupedItems.get(productId);
-      if (!entry) continue; // Check an toàn
+      if (!entry) continue;
 
       const qty = parseFloat(item.quantity);
       entry.requiredQty += qty;
@@ -177,7 +179,7 @@ export class WarehouseService {
       shipment.items,
     );
 
-    return { success: true, message: 'Đã xuất kho thành công' };
+    return { shipmentId: shipment.id, message: 'Đã xuất kho thành công' };
   }
 
   // --- 7. GET SHIPMENT LABEL ---

@@ -1,124 +1,161 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { InboundRepository } from './inbound.repository';
-import { CreateReceiptDto } from './dto/create-receipt.dto';
-import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
-import { ReprintBatchDto } from './dto/reprint-batch.dto';
-// Import RequestWithUser
+import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { generateBatchCode } from 'src/common/utils/generate-batch-code.util';
+import { DATABASE_CONNECTION } from '../../database/database.constants';
+import * as schema from '../../database/schema';
 import { RequestWithUser } from '../auth/types/auth.types';
+import { WarehouseRepository } from './../warehouse/warehouse.repository';
+import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
+import { CreateReceiptDto } from './dto/create-receipt.dto';
+import { ReprintBatchDto } from './dto/reprint-batch.dto';
+import { generateQrData } from './helpers/inbound.util';
+import { InboundRepository } from './inbound.repository';
 
-// Định nghĩa kiểu dữ liệu cho Batch Label (khớp với kết quả query từ Repository)
-interface BatchLabelData {
-  batchCode: string;
-  sku: string;
-  expiryDate: string;
-  initialQuantity: string;
-}
 @Injectable()
 export class InboundService {
-  constructor(private readonly inboundRepo: InboundRepository) {}
+  constructor(
+    private readonly inboundRepo: InboundRepository,
+    @Inject(DATABASE_CONNECTION)
+    private readonly db: NodePgDatabase<typeof schema>,
+    private readonly WarehouseRepo: WarehouseRepository,
+  ) {}
 
   // API 1: Khởi tạo phiếu nhập
   async createReceipt(user: RequestWithUser['user'], dto: CreateReceiptDto) {
-    // Giả định logic xác định kho (ví dụ hardcode kho trung tâm)
-    const warehouseId = 1;
+    const warehouseId = await this.WarehouseRepo.findCentralWarehouseId();
+    if (!warehouseId) {
+      throw new NotFoundException('Warehouse not found');
+    }
 
     return this.inboundRepo.createReceipt({
       supplierId: dto.supplierId,
-      warehouseId: warehouseId,
+      warehouseId: warehouseId.id,
       createdBy: user.userId,
       note: dto.note,
       status: 'draft',
     });
   }
 
-  // API 4: Chốt phiếu nhập kho
+  // API 4: Chốt phiếu nhập kho (Atomic Transaction)
   async completeReceipt(receiptId: string) {
-    // 1. Validate: Phiếu tồn tại và đang ở trạng thái DRAFT
-    const receipt = await this.inboundRepo.findReceiptById(receiptId);
-    if (!receipt) throw new NotFoundException('Receipt not found');
-    if (receipt.status !== 'draft') {
-      throw new BadRequestException('Only DRAFT receipts can be completed');
-    }
+    return this.db.transaction(async (tx) => {
+      // 1. Lock & Validate Receipt
+      const receipt = await this.inboundRepo.findReceiptWithLock(tx, receiptId);
+      if (!receipt) throw new NotFoundException('Receipt not found');
+      if (receipt.status !== 'draft') {
+        throw new BadRequestException('Only DRAFT receipts can be completed');
+      }
 
-    // 2. Lấy danh sách hàng hóa trong phiếu
-    const items = await this.inboundRepo.getReceiptItemsWithBatches(receiptId);
-    if (items.length === 0) {
-      throw new BadRequestException('Cannot complete an empty receipt');
-    }
+      // 2. Lấy danh sách hàng hóa (Read-only, no lock needed on items if receipt is locked)
+      // Note: We use the repository method which uses the standard connection.
+      // Since the receipt is locked for update, no one else can modify its items effectively during this transaction
+      // if modification requires locking the receipt first (which we enforce in business logic).
+      const items =
+        await this.inboundRepo.getReceiptItemsWithBatches(receiptId);
+      if (items.length === 0) {
+        throw new BadRequestException('Cannot complete an empty receipt');
+      }
 
-    // 3. Thực thi Transaction DB
-    await this.inboundRepo.completeReceiptTransaction(
-      receiptId,
-      receipt.warehouseId,
-      items,
-    );
+      // 3. Update Receipt Status
+      await this.inboundRepo.updateReceiptStatus(tx, receiptId, 'completed');
 
-    return { message: 'Receipt completed successfully', receiptId };
+      // 4. Process Each Item
+      for (const item of items) {
+        if (!item.batchId) {
+          throw new BadRequestException(
+            `Invalid batch configuration for item in receipt`,
+          );
+        }
+
+        // A. Activate Batch
+        await this.inboundRepo.updateBatchStatus(tx, item.batchId, 'available');
+
+        // B. Upsert Inventory
+        // quantity is string/decimal
+        await this.inboundRepo.upsertInventory(
+          tx,
+          receipt.warehouseId,
+          item.batchId,
+          item.quantity,
+        );
+
+        // C. Audit Log
+        await this.inboundRepo.insertInventoryTransaction(tx, {
+          warehouseId: receipt.warehouseId,
+          batchId: item.batchId,
+          quantityChange: item.quantity,
+          referenceId: `RECEIPT_ID_${receiptId}`,
+        });
+      }
+
+      return { message: 'Success' };
+    });
   }
 
   // API 2: Thêm hàng vào phiếu (Tạo Batch)
   async addReceiptItem(receiptId: string, dto: AddReceiptItemDto) {
-    //  Validate: Ngày hết hạn phải > Hiện tại
-    const expiryDate = new Date(dto.expiryDate);
-    const now = new Date();
-    if (expiryDate <= now) {
-      throw new BadRequestException('Expiry date must be in the future');
-    }
-
-    //  Validate: Phiếu nhập phải là DRAFT
+    // 1. Validate Status
     const receipt = await this.inboundRepo.findReceiptById(receiptId);
-    if (!receipt) throw new NotFoundException('Receipt not found');
+    if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
     if (receipt.status !== 'draft') {
-      throw new BadRequestException('Cannot add items to a non-draft receipt');
+      throw new BadRequestException(
+        'Không thể thêm hàng vào phiếu không phải là DRAFT',
+      );
     }
 
-    //  Auto-gen Batch Code: SKU_YYYYMMDD_RANDOM
-    const sku = await this.inboundRepo.getProductSku(dto.productId);
-    if (!sku)
-      throw new NotFoundException(`Product ID ${dto.productId} not found`);
+    // 2. Get Product Info (SKU + ShelfLife)
+    const product = await this.inboundRepo.getProductDetails(dto.productId);
+    if (!product) throw new NotFoundException('Không tìm thấy sản phẩm');
+    if (!product.shelfLifeDays) {
+      throw new BadRequestException(
+        'Sản phẩm chưa được cấu hình hạn sử dụng (Shelf Life)',
+      );
+    }
 
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, ''); // 20260206
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000); // 4 số ngẫu nhiên
-    const batchCode = `${sku}_${dateStr}_${randomSuffix}`;
+    // 3. Auto-calculate Dates
+    const manufactureDate = new Date();
+    const expiryDate = new Date(
+      manufactureDate.getTime() + product.shelfLifeDays * 24 * 60 * 60 * 1000,
+    );
 
+    // 4. Expiry Warning Check (High-perishability: < 48 hours)
+    let warning: string | undefined;
+    if (product.shelfLifeDays < 2) {
+      warning = 'Cảnh báo: Sản phẩm có hạn sử dụng ngắn (dưới 48 giờ)';
+    }
+
+    // 5. Generate Batch Code
+    const batchCode = generateBatchCode(product.sku);
+
+    // 6. Create Batch & Receipt Item
     const batch = await this.inboundRepo.addBatchToReceipt(receiptId, {
       productId: dto.productId,
       batchCode: batchCode,
-      expiryDate: dto.expiryDate,
+      expiryDate: expiryDate.toISOString(), // Used for DB storage
       quantity: dto.quantity.toString(),
     });
 
     return {
-      message: 'Item added and Batch created successfully',
       batchId: batch.id,
       batchCode: batch.batchCode,
+      manufactureDate,
+      expiryDate,
+      warning,
     };
-  }
-
-  // Helper: Tạo dữ liệu QR Code
-  private generateQrData(batch: BatchLabelData) {
-    const qrPayload = {
-      b: batch.batchCode, // Batch Code
-      s: batch.sku, // SKU
-      e: batch.expiryDate, // Expiry Date
-      q: Number(batch.initialQuantity), // Quantity (Convert string -> number)
-    };
-
-    // Trả về chuỗi JSON để Mobile App parse
-    return JSON.stringify(qrPayload);
   }
 
   // API 3: Lấy data in tem
   async getBatchLabel(batchId: number) {
     const batch = await this.inboundRepo.getBatchDetails(batchId);
-    if (!batch) throw new NotFoundException('Batch not found');
+    if (!batch) throw new NotFoundException('Không tìm thấy lô hàng');
 
     return {
-      qrData: this.generateQrData(batch),
+      qrData: generateQrData(batch),
       readableData: {
         batchCode: batch.batchCode,
         sku: batch.sku,
@@ -141,7 +178,7 @@ export class InboundService {
     }
 
     await this.inboundRepo.deleteBatchAndItem(batchId, item.id);
-    return { message: 'Batch item deleted successfully' };
+    return { message: 'Success' };
   }
 
   // API 8: Yêu cầu in lại tem (Ghi log)
@@ -155,12 +192,77 @@ export class InboundService {
     );
 
     return {
-      qrData: this.generateQrData(batch),
+      qrData: generateQrData(batch),
       readableData: {
         batchCode: batch.batchCode,
         sku: batch.sku,
         expiryDate: batch.expiryDate,
       },
+    };
+  }
+  async getAllReceipts(page: number, limit: number) {
+    const { data, total } = await this.inboundRepo.findAllReceipts(page, limit);
+
+    return {
+      data: data.map((receipt) => ({
+        id: receipt.id,
+        status: receipt.status,
+        note: receipt.note,
+        supplierName: receipt.supplier.name,
+        createdBy: receipt.user.username,
+        createdAt: receipt.createdAt,
+      })),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  // API: Get Receipt Details
+  async getReceiptById(id: string) {
+    const receipt = await this.inboundRepo.findReceiptDetail(id);
+    if (!receipt) {
+      throw new NotFoundException(
+        'Không tìm thấy phiếu nhập (Receipt not found)',
+      );
+    }
+
+    return {
+      id: receipt.id,
+      status: receipt.status,
+      note: receipt.note,
+      createdAt: receipt.createdAt,
+      supplier: {
+        id: receipt.supplier.id,
+        name: receipt.supplier.name,
+        contactName: receipt.supplier.contactName,
+        phone: receipt.supplier.phone,
+      },
+      createdBy: {
+        id: receipt.user.id,
+        username: receipt.user.username,
+      },
+      items: receipt.items.map((item) => ({
+        id: item.id,
+        quantity: item.quantity,
+        batch: item.batch
+          ? {
+              id: item.batch.id,
+              batchCode: item.batch.batchCode,
+              expiryDate: item.batch.expiryDate,
+              status: item.batch.status,
+              product: {
+                id: item.batch.product.id,
+                name: item.batch.product.name,
+                sku: item.batch.product.sku,
+                unit: item.batch.product.baseUnit?.name || 'N/A',
+              },
+            }
+          : null,
+      })),
     };
   }
 }
