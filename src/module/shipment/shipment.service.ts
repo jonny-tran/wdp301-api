@@ -84,7 +84,6 @@ export class ShipmentService {
   }
 
   async getIncomingShipments(storeId: string) {
-    // Get warehouse ID for this store
     const warehouse =
       await this.inventoryRepository.findWarehouseByStoreId(storeId);
     if (!warehouse) {
@@ -221,6 +220,7 @@ export class ShipmentService {
       );
 
       return {
+        orderId: validShipment.orderId,
         shipmentId: validShipment.id,
         status: 'completed',
         claimCreated: claimId !== null,

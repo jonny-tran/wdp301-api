@@ -8,6 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ResponseMessage } from 'src/common/decorators/response-message.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
@@ -33,6 +34,7 @@ export class ShipmentController {
   @ApiOperation({
     summary: 'Nhận danh sách chọn hàng cho một lô hàng [Coordinator, Kitchen]',
   })
+  @ResponseMessage('Nhận danh sách chọn hàng cho một lô hàng thành công')
   async getPickingList(@Param('id') id: string) {
     return this.shipmentService.getPickingList(id);
   }
@@ -42,6 +44,7 @@ export class ShipmentController {
   @ApiOperation({
     summary: 'Danh sách hàng đang đến [Franchise Staff]',
   })
+  @ResponseMessage('Danh sách hàng đang đến thành công')
   async getIncomingShipments(@CurrentUser() user: IJwtPayload) {
     if (!user.storeId) {
       throw new BadRequestException('User không có storeId');

@@ -14,6 +14,7 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
+import { ResponseMessage } from 'src/common/decorators/response-message.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
@@ -25,85 +26,115 @@ import {
 } from './dto/warehouse-ops.dto';
 import { WarehouseService } from './warehouse.service';
 
-@ApiTags('Quản lý Kho vận (Warehouse Operations)')
+@ApiTags('Warehouse Operations')
 @ApiBearerAuth()
 @UseGuards(AtGuard, RolesGuard)
 @Controller('warehouse')
 export class WarehouseController {
   constructor(private readonly warehouseService: WarehouseService) {}
 
-  // 1. Task: Danh sách đơn cần soạn
   @Get('picking-tasks')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '1. Get list of Picking Tasks (Approved Orders)' })
+  @ApiOperation({
+    summary:
+      'Lấy danh sách các đơn hàng đã duyệt để bắt đầu soạn hàng [Kitchen]',
+    description: 'Trả về danh sách các đơn hàng đang ở trạng thái APPROVED',
+  })
   @ApiQuery({ name: 'date', required: false })
+  @ResponseMessage('Lấy danh sách đơn cần soạn thành công')
   async getPickingTasks(@Query('date') date?: string) {
-    // Lấy warehouseId động (Central) thay vì hardcode
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.getTasks(warehouseId, date);
   }
 
-  // 2. Picking: Chi tiết danh sách soạn hàng
-  @Get('picking-tasks/:orderId')
+  @Get('picking-tasks/:id')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '2. Get Picking List details (FEFO Suggestion)' })
-  async getPickingList(@Param('orderId') orderId: string) {
-    return this.warehouseService.getPickingList(orderId);
+  @ApiOperation({
+    summary:
+      'Xem chi tiết danh sách mặt hàng và lô hàng gợi ý cần soạn [Kitchen]',
+    description:
+      'Dựa trên quy tắc FEFO, hệ thống sẽ gợi ý các lô hàng (Batch) cần lấy cho đơn hàng này.',
+  })
+  @ResponseMessage('Lấy chi tiết danh sách soạn hàng thành công')
+  async getPickingList(@Param('id') id: string) {
+    return this.warehouseService.getPickingList(id);
   }
 
-  // 3. Picking: Xác nhận quét mã Lô (Validate)
   @Post('pick-item')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '3. Verify scanned Batch Code (FEFO Enforcement)' })
+  @ApiOperation({
+    summary: 'Xác nhận đã lấy đúng lô hàng bằng cách quét mã QR [Kitchen]',
+    description:
+      'Kiểm tra chéo mã lô quét được với danh sách gợi ý và cập nhật hàng vào khu vực chờ giao.',
+  })
+  @ResponseMessage('Xác nhận quét mã Lô thành công')
   async pickItem(@Body() dto: PickItemDto) {
-    // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.validatePickItem(warehouseId, dto);
   }
 
-  // 4. Picking: Làm lại lượt soạn hàng
   @Patch('picking-tasks/:orderId/reset')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '4. Reset picking status for an order' })
+  @ApiOperation({
+    summary: 'Hủy kết quả soạn hàng hiện tại và làm lại từ đầu [Kitchen]',
+    description:
+      'Dùng khi nhân viên kho chọn nhầm lô quá nhiều hoặc muốn reset lại tiến độ soạn hàng.',
+  })
+  @ResponseMessage('Làm lại lượt soạn hàng thành công')
   async resetPickingTask(@Param('orderId') orderId: string) {
     return this.warehouseService.resetPickingTask(orderId);
   }
 
-  // 5. Shipment: Tạo phiếu giao hàng (Finalize)
   @Post('shipments')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '5. Finalize Shipment & Deduct Stock' })
+  @ApiOperation({
+    summary:
+      'Chốt danh sách đã soạn và chính thức tạo phiếu xuất kho [Kitchen]',
+    description:
+      'Chuyển trạng thái đơn hàng sang DELIVERING và trừ tồn kho vật lý.',
+  })
+  @ResponseMessage('Tạo phiếu giao hàng thành công')
   async createShipment(@Body() dto: FinalizeShipmentDto) {
-    // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.finalizeShipment(warehouseId, dto);
   }
 
-  // 6. Shipment: In phiếu giao hàng
   @Get('shipments/:id/label')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '6. Get Shipment Invoice/Label data' })
+  @ApiOperation({
+    summary: 'Lấy dữ liệu in Phiếu Giao Hàng (Delivery Note) [Kitchen]',
+    description:
+      'Trả về thông tin để Frontend hiển thị form in ấn dán lên thùng hàng trước khi xe lăn bánh.',
+  })
+  @ResponseMessage('In phiếu giao hàng thành công')
   async getShipmentLabel(@Param('id') id: string) {
     return this.warehouseService.getShipmentLabel(id);
   }
 
-  // 7. Inventory: Kiểm tra thông tin Lô (Scan Check)
   @Get('scan-check')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: '7. Quick check Batch Info by QR Code' })
-  @ApiQuery({ name: 'batch_code', required: true })
-  async scanCheck(@Query('batch_code') batchCode: string) {
-    // Lấy warehouseId động (Central)
+  @ApiOperation({
+    summary: 'Kiểm tra nhanh thông tin bất kỳ lô hàng nào qua mã QR [Kitchen]',
+    description:
+      'Quét mã lô để xem tên sản phẩm, hạn sử dụng và số lượng còn lại trong kho.',
+  })
+  @ApiQuery({ name: 'batchCode', required: true })
+  @ResponseMessage('Quick check Batch Info by QR Code thành công')
+  async scanCheck(@Query('batchCode') batchCode: string) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.scanBatchCheck(warehouseId, batchCode);
   }
 
-  // (Optional) Report Issue
   @Post('batch/report-issue')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: 'Report damaged batch and suggest replacement' })
+  @ApiOperation({
+    summary:
+      'Báo cáo hàng hỏng trong khi soạn và yêu cầu lô thay thế [Kitchen]',
+    description:
+      'Khi phát hiện lô hàng bị hỏng, hệ thống sẽ tự động tìm lô khác cùng loại để bù vào đơn.',
+  })
+  @ResponseMessage('Báo cáo lô hàng bị hỏng thành công')
   async reportIssue(@Body() dto: ReportIssueDto) {
-    // Lấy warehouseId động (Central)
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.reportIssue(warehouseId, dto);
   }

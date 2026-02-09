@@ -7,10 +7,12 @@ import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './module/auth/auth.module';
 import { ClaimModule } from './module/claim/claim.module';
 import { FranchiseStoreModule } from './module/franchise-store/franchise-store.module';
+import { InboundModule } from './module/inbound/inbound.module';
 import { InventoryModule } from './module/inventory/inventory.module';
 import { OrderModule } from './module/order/order.module';
 import { ProductModule } from './module/product/product.module';
 import { ShipmentModule } from './module/shipment/shipment.module';
+import { SupplierModule } from './module/supplier/supplier.module';
 import { WarehouseModule } from './module/warehouse/warehouse.module';
 
 @Module({
@@ -38,6 +40,8 @@ import { WarehouseModule } from './module/warehouse/warehouse.module';
     WarehouseModule,
     ProductModule,
     FranchiseStoreModule,
+    InboundModule,
+    SupplierModule,
   ],
   controllers: [AppController],
   providers: [AppService],

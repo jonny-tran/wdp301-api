@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, gt, ilike, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, ilike, lte, sql, asc } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -314,5 +314,90 @@ export class InventoryRepository {
       .returning();
 
     return updated;
+  }
+
+  //// Helper: Tìm ID của Kho Trung Tâm (Central Kitchen)
+  async findCentralWarehouseId() {
+    const warehouse = await this.db.query.warehouses.findFirst({
+      where: eq(schema.warehouses.type, 'central'),
+    });
+    return warehouse?.id;
+  }
+
+  //  Group theo Product để xem tổng quan
+  async getKitchenSummary(warehouseId: number, search?: string) {
+    const searchTerm = search?.trim();
+
+    const query = this.db
+      .select({
+        productId: schema.products.id,
+        productName: schema.products.name,
+        sku: schema.products.sku,
+        unitName: schema.baseUnits.name,
+        minStock: schema.products.minStockLevel,
+        // Tổng tồn kho vật lý
+        totalPhysical: sql<number>`CAST(SUM(${schema.inventory.quantity}) AS FLOAT)`,
+        // Tổng đang giữ chỗ (Reserved)
+        totalReserved: sql<number>`CAST(SUM(${schema.inventory.reservedQuantity}) AS FLOAT)`,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          // --- CẬP NHẬT LOGIC TẠI ĐÂY ---
+          // Chỉ filter nếu searchTerm có giá trị (không null, không rỗng)
+          searchTerm
+            ? sql`(${schema.products.name} ILIKE ${`%${searchTerm}%`} OR ${schema.products.sku} ILIKE ${`%${searchTerm}%`})`
+            : undefined,
+          // -------------------------------
+        ),
+      )
+      .groupBy(
+        schema.products.id,
+        schema.products.name,
+        schema.products.sku,
+        schema.baseUnits.name,
+        schema.products.minStockLevel,
+      );
+
+    return await query;
+  }
+
+  // API 7: Drill-down chi tiết từng Lô (Batch) của 1 Product
+  async getKitchenBatchDetails(warehouseId: number, productId: number) {
+    return await this.db
+      .select({
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+        quantity: schema.inventory.quantity,
+        reserved: schema.inventory.reservedQuantity,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.batches.productId, productId),
+          // Chỉ lấy các lô còn hàng (> 0)
+          sql`${schema.inventory.quantity} > 0`,
+        ),
+      )
+      .orderBy(asc(schema.batches.expiryDate)); // FEFO: Ưu tiên lô hết hạn trước
   }
 }

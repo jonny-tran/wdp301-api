@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
-import * as schema from '../../database/schema';
+import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
+import * as schema from '../../database/schema';
 import { OrderStatus } from '../order/constants/order-status.enum';
 
 @Injectable()
@@ -19,6 +19,12 @@ export class WarehouseRepository {
 
   // --- Queries & Mutations ---
 
+  async findCentralWarehouseId() {
+    return this.db.query.warehouses.findFirst({
+      where: eq(schema.warehouses.type, 'central'),
+    });
+  }
+
   async createWarehouse(
     data: typeof schema.warehouses.$inferInsert,
     tx?: NodePgDatabase<typeof schema>,
@@ -29,11 +35,9 @@ export class WarehouseRepository {
   async findApprovedOrders(date?: string) {
     const conditions = [eq(schema.orders.status, OrderStatus.APPROVED)];
 
-    // Nếu có date truyền vào, thêm điều kiện lọc
     if (date) {
       conditions.push(sql`DATE(${schema.orders.deliveryDate}) = ${date}`);
     }
-    // Thêm logic filter date ở đây nếu cần
     return this.db.query.orders.findMany({
       where: eq(schema.orders.status, OrderStatus.APPROVED),
       with: { store: true },
@@ -62,6 +66,32 @@ export class WarehouseRepository {
         },
       },
     });
+  }
+
+  // warehouse.repository.ts
+
+  async findAvailableBatchesForFefo(warehouseId: number, productId: number) {
+    return this.db
+      .select({
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+        physicalQuantity: schema.inventory.quantity,
+        reservedQuantity: schema.inventory.reservedQuantity,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.batches.productId, productId),
+          sql`${schema.inventory.quantity} - ${schema.inventory.reservedQuantity} > 0`,
+        ),
+      )
+      .orderBy(asc(schema.batches.expiryDate));
   }
 
   async findBatchByCode(batchCode: string) {
@@ -163,7 +193,7 @@ export class WarehouseRepository {
    */
   async replaceDamagedBatchTransaction(
     warehouseId: number,
-    dto: { batch_id: number },
+    dto: { batchId: number },
     shipmentItem: { id: number; quantity: string; shipmentId: string },
     productId: number,
   ) {
@@ -184,7 +214,7 @@ export class WarehouseRepository {
         .where(
           and(
             eq(schema.inventory.warehouseId, warehouseId),
-            eq(schema.inventory.batchId, dto.batch_id),
+            eq(schema.inventory.batchId, dto.batchId),
           ),
         );
 
@@ -200,7 +230,7 @@ export class WarehouseRepository {
           and(
             eq(schema.inventory.warehouseId, warehouseId),
             eq(schema.batches.productId, productId),
-            sql`${schema.inventory.batchId} != ${dto.batch_id}`,
+            sql`${schema.inventory.batchId} != ${dto.batchId}`,
             sql`(${schema.inventory.quantity} - ${schema.inventory.reservedQuantity}) > 0`,
           ),
         )
