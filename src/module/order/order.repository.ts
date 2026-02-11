@@ -110,16 +110,6 @@ export class OrderRepository {
     });
   }
 
-  async getOrdersForCoordinator(status: OrderStatus = OrderStatus.PENDING) {
-    return this.db.query.orders.findMany({
-      where: eq(schema.orders.status, status),
-      orderBy: [desc(schema.orders.createdAt)],
-      with: {
-        store: true,
-      },
-    });
-  }
-
   async getCentralWarehouseId(tx?: NodePgDatabase<typeof schema>) {
     const database = tx || this.db;
     const warehouse = await database.query.warehouses.findFirst({
