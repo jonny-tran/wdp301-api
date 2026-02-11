@@ -10,6 +10,8 @@ import { IJwtPayload } from '../auth/types/auth.types';
 import { ShipmentService } from '../shipment/shipment.service';
 import { OrderStatus } from './constants/order-status.enum';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { GetCatalogDto } from './dto/get-catalog.dto';
+import { GetOrdersDto } from './dto/get-orders.dto';
 import { OrderRepository } from './order.repository';
 
 @Injectable()
@@ -19,8 +21,12 @@ export class OrderService {
     private readonly shipmentService: ShipmentService,
   ) {}
 
-  async getCatalog() {
-    return this.orderRepository.getActiveProducts();
+  async getCatalog(query: GetCatalogDto) {
+    return this.orderRepository.getActiveProducts(query);
+  }
+
+  async findAll(query: GetOrdersDto) {
+    return this.orderRepository.findAll(query);
   }
 
   async createOrder(user: IJwtPayload, dto: CreateOrderDto) {

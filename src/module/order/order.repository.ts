@@ -1,10 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
+import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { OrderStatus } from './constants/order-status.enum';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { GetCatalogDto } from './dto/get-catalog.dto';
+import { GetOrdersDto } from './dto/get-orders.dto';
 
 @Injectable()
 export class OrderRepository {
@@ -13,21 +17,35 @@ export class OrderRepository {
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
-  async getActiveProducts() {
-    return this.db
-      .select({
-        id: schema.products.id,
-        name: schema.products.name,
-        sku: schema.products.sku,
-        unit: schema.baseUnits.name,
-        imageUrl: schema.products.imageUrl,
-      })
-      .from(schema.products)
-      .innerJoin(
-        schema.baseUnits,
-        eq(schema.products.baseUnitId, schema.baseUnits.id),
-      )
-      .where(eq(schema.products.isActive, true));
+  private readonly filterMap: FilterMap<typeof schema.orders> = {
+    status: { column: schema.orders.status, operator: 'eq' },
+    storeId: { column: schema.orders.storeId, operator: 'eq' },
+    search: { column: schema.orders.id, operator: 'ilike' },
+    fromDate: { column: schema.orders.createdAt, operator: 'gte' },
+    toDate: { column: schema.orders.createdAt, operator: 'lte' },
+  };
+
+  private readonly catalogFilterMap: FilterMap<typeof schema.products> = {
+    search: { column: schema.products.name, operator: 'ilike' },
+    isActive: { column: schema.products.isActive, operator: 'eq' },
+  };
+
+  async findAll(query: GetOrdersDto) {
+    return paginate(
+      this.db,
+      schema.orders,
+      query as PaginationParamsDto & Record<string, unknown>,
+      this.filterMap,
+    );
+  }
+
+  async getActiveProducts(query: GetCatalogDto) {
+    return paginate(
+      this.db,
+      schema.products,
+      query as PaginationParamsDto & Record<string, unknown>,
+      this.catalogFilterMap,
+    );
   }
 
   async findActiveProductsByIds(productIds: number[]) {
