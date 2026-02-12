@@ -208,7 +208,7 @@ export class ShipmentRepository {
     const database = tx || this.db;
     const [updated] = await database
       .update(schema.shipments)
-      .set({ status })
+      .set({ status, updatedAt: new Date() })
       .where(eq(schema.shipments.id, shipmentId))
       .returning();
     return updated;

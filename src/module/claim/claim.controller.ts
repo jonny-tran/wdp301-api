@@ -10,6 +10,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ResponseMessage } from '../../common/decorators/response-message.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
@@ -68,6 +69,7 @@ export class ClaimController {
 
   @Post()
   @ApiOperation({ summary: 'Tạo khiếu nại thủ công' })
+  @ResponseMessage('Tạo khiếu nại thành công. Tồn kho đã được điều chỉnh.')
   @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   async createClaim(
     @Body() dto: CreateManualClaimDto,

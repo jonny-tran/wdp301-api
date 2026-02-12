@@ -14,9 +14,10 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { FinalizeShipmentDto } from './dto/finalize-shipment.dto';
+import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
+
 import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
-import { PickItemDto } from './dto/pick-item.dto';
+
 import { ReportIssueDto } from './dto/report-issue.dto';
 import { ScanCheckDto } from './dto/scan-check.dto';
 import { WarehouseService } from './warehouse.service';
@@ -53,19 +54,6 @@ export class WarehouseController {
     return this.warehouseService.getPickingList(id);
   }
 
-  @Post('pick-item')
-  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({
-    summary: 'Xác nhận soạn mặt hàng (Quét mã vạch/Lô) [Kitchen]',
-    description:
-      'Kiểm tra chéo mã lô quét được với danh sách gợi ý và cập nhật hàng vào khu vực chờ giao.',
-  })
-  @ResponseMessage('Xác nhận soạn mặt hàng thành công')
-  async pickItem(@Body() dto: PickItemDto) {
-    const warehouseId = await this.warehouseService.getCentralWarehouseId();
-    return this.warehouseService.validatePickItem(warehouseId, dto);
-  }
-
   @Patch('picking-tasks/:orderId/reset')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
@@ -78,25 +66,25 @@ export class WarehouseController {
     return this.warehouseService.resetPickingTask(orderId);
   }
 
-  @Post('shipments')
+  @Patch('shipments/finalize-bulk')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Hoàn tất soạn hàng & Xuất kho [Kitchen]',
+    summary: 'Duyệt & Xuất kho đơn hàng [Kitchen]',
     description:
-      'Chuyển trạng thái đơn hàng sang DELIVERING và trừ tồn kho vật lý.',
+      'Có thể gom nhiều đơn hàng vào một chuyến xe, trừ kho và cập nhật trạng thái DELIVERING đồng loạt. Hỗ trợ Transaction an toàn.',
   })
-  @ResponseMessage('Hoàn tất soạn hàng và xuất kho thành công')
-  async createShipment(@Body() dto: FinalizeShipmentDto) {
+  @ResponseMessage('Duyệt & Xuất kho đơn hàng thành công')
+  async finalizeBulkShipment(@Body() dto: FinalizeBulkShipmentDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
-    return this.warehouseService.finalizeShipment(warehouseId, dto);
+    return this.warehouseService.finalizeBulkShipment(warehouseId, dto);
   }
 
   @Get('shipments/:id/label')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Lấy dữ liệu in Phiếu Giao Hàng (Delivery Note) [Kitchen]',
+    summary: 'Lấy dữ liệu in phiếu giao hàng [Kitchen]',
     description:
-      'Trả về thông tin để Frontend hiển thị form in ấn dán lên thùng hàng trước khi xe lăn bánh.',
+      'Trả về thông tin để Frontend hiển thị form in phiếu giao hàng trước khi xe lăn bánh.',
   })
   @ResponseMessage('Lấy dữ liệu in phiếu giao hàng thành công')
   async getShipmentLabel(@Param('id') id: string) {

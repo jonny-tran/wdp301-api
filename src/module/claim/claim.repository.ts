@@ -34,6 +34,26 @@ export class ClaimRepository {
     );
   }
 
+  async getShipmentForValidation(shipmentId: string) {
+    return this.db.query.shipments.findFirst({
+      where: eq(schema.shipments.id, shipmentId),
+      columns: {
+        id: true,
+        status: true,
+        updatedAt: true,
+        toWarehouseId: true,
+        orderId: true,
+      },
+      with: {
+        order: {
+          columns: {
+            storeId: true,
+          },
+        },
+      },
+    });
+  }
+
   async createClaim(
     shipmentId: string,
     createdBy: string,

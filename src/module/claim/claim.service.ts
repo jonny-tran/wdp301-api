@@ -1,22 +1,21 @@
 import {
+  BadRequestException,
   ForbiddenException,
-  HttpException,
-  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../../database/schema';
 import { UnitOfWork } from '../../database/unit-of-work';
+import { InventoryRepository } from '../inventory/inventory.repository';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { ShipmentStatus } from '../shipment/constants/shipment-status.enum';
 import { ShipmentRepository } from '../shipment/shipment.repository';
 import { ClaimRepository } from './claim.repository';
 import { ClaimStatus } from './constants/claim-status.enum';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
-import { ResolveClaimDto } from './dto/resolve-claim.dto';
-
 import { GetClaimsDto } from './dto/get-claims.dto';
+import { ResolveClaimDto } from './dto/resolve-claim.dto';
 
 @Injectable()
 export class ClaimService {
@@ -27,6 +26,7 @@ export class ClaimService {
   constructor(
     private readonly claimRepository: ClaimRepository,
     private readonly shipmentRepository: ShipmentRepository,
+    private readonly inventoryRepository: InventoryRepository,
     private readonly uow: UnitOfWork,
   ) {}
 
@@ -40,8 +40,8 @@ export class ClaimService {
     storeId: string,
   ) {
     return this.uow.runInTransaction(async (tx) => {
-      // 1. Get Shipment
-      const shipment = await this.shipmentRepository.getShipmentWithItems(
+      // Step A: Validation - Fetch shipment details for validation
+      const shipment = await this.claimRepository.getShipmentForValidation(
         dto.shipmentId,
       );
 
@@ -49,57 +49,80 @@ export class ClaimService {
         throw new NotFoundException('Không tìm thấy chuyến hàng');
       }
 
-      // 2. Validate Ownership
-      if (shipment.order.store.id !== storeId) {
-        throw new ForbiddenException('Chuyến hàng không thuộc cửa hàng này');
+      // Rule 1: Store Ownership Validation
+      if (shipment.order.storeId !== storeId) {
+        throw new ForbiddenException(
+          'Bạn không có quyền tạo khiếu nại cho chuyến hàng này',
+        );
       }
 
-      // 3. Validate Status
+      // Rule 2: Status Validation - Must be COMPLETED
       if (shipment.status !== (this.shipmentStatusEnum.COMPLETED as string)) {
-        throw new HttpException(
-          'Chuyến hàng chưa hoàn thành, không thể tạo khiếu nại',
-          HttpStatus.BAD_REQUEST,
+        throw new BadRequestException(
+          'Chỉ có thể tạo khiếu nại cho chuyến hàng đã hoàn thành',
         );
       }
 
-      // 4. Validate Items
+      // Rule 3: Golden Time Window (24 hours)
+      const now = new Date();
+      const shipmentCompletedTime = new Date(shipment.updatedAt!);
+      const hoursDiff =
+        (now.getTime() - shipmentCompletedTime.getTime()) / (1000 * 60 * 60);
+
+      if (hoursDiff > 24) {
+        throw new BadRequestException(
+          'Đã quá thời gian cho phép tạo khiếu nại (24 giờ kể từ khi hoàn thành)',
+        );
+      }
+
+      // Step B: Quantity Check - Validate store has enough stock for each claimed item
+      const storeWarehouseId = shipment.toWarehouseId;
+
       for (const item of dto.items) {
-        // Check Batch in Shipment
-        const shipmentItem = shipment.items.find(
-          (si) => si.batchId === item.batchId,
+        const totalClaimedQty = item.quantityMissing + item.quantityDamaged;
+
+        if (totalClaimedQty <= 0) {
+          throw new BadRequestException(
+            `Số lượng khiếu nại phải lớn hơn 0 cho sản phẩm ${item.productId}`,
+          );
+        }
+
+        // Check current inventory
+        const inventoryRecord = await this.inventoryRepository.getBatchQuantity(
+          storeWarehouseId,
+          item.batchId,
         );
-        if (!shipmentItem) {
-          throw new HttpException(
-            `Batch ${item.batchId} không có trong chuyến hàng này`,
-            HttpStatus.BAD_REQUEST,
+
+        if (!inventoryRecord) {
+          throw new BadRequestException(
+            `Không tìm thấy tồn kho cho batch ${item.batchId} tại kho cửa hàng`,
           );
         }
 
-        // Check Product match
-        if (shipmentItem.batch.productId !== item.productId) {
-          throw new HttpException(
-            `Product ID không khớp với Batch ID`,
-            HttpStatus.BAD_REQUEST,
+        const currentQty = parseFloat(inventoryRecord.quantity);
+        if (currentQty < totalClaimedQty) {
+          throw new BadRequestException(
+            `Số lượng tồn kho không đủ. Hiện có: ${currentQty}, Yêu cầu: ${totalClaimedQty} (Batch ${item.batchId})`,
           );
         }
 
-        // Check Evidence
+        // Evidence validation for damaged goods
         if (item.quantityDamaged > 0 && !item.imageProofUrl) {
-          throw new HttpException(
-            `Hàng hỏng (SP: ${item.productId}) bắt buộc phải có ảnh bằng chứng`,
-            HttpStatus.BAD_REQUEST,
+          throw new BadRequestException(
+            `Hàng hỏng bắt buộc phải có ảnh bằng chứng (Batch ${item.batchId})`,
           );
         }
       }
 
-      // 5. Create Claim
+      // Step C: Action - Create claim and adjust inventory within transaction
+      // C1: Create Claim
       const claim = await this.claimRepository.createClaim(
         dto.shipmentId,
         userId,
         tx,
       );
 
-      // 6. Create Items
+      // C2: Create Claim Items
       const claimItemsPayload = dto.items.map((item) => ({
         claimId: claim.id,
         productId: item.productId,
@@ -111,7 +134,31 @@ export class ClaimService {
 
       await this.claimRepository.createClaimItems(claimItemsPayload, tx);
 
-      // 7. Update Order Status
+      // C3: Immediate Inventory Impact - Decrease store stock for claimed goods
+      for (const item of dto.items) {
+        const totalClaimedQty = item.quantityMissing + item.quantityDamaged;
+
+        // Decrease inventory (negative adjustment)
+        await this.inventoryRepository.adjustBatchQuantity(
+          storeWarehouseId,
+          item.batchId,
+          -totalClaimedQty,
+          tx,
+        );
+
+        // Log inventory transaction for audit trail
+        await this.inventoryRepository.createInventoryTransaction(
+          storeWarehouseId,
+          item.batchId,
+          'adjustment',
+          -totalClaimedQty,
+          claim.id,
+          `Manual Claim: Missing: ${item.quantityMissing}, Damaged: ${item.quantityDamaged}`,
+          tx,
+        );
+      }
+
+      // C4: Update Order Status to CLAIMED
       await this.shipmentRepository.updateOrderStatus(
         shipment.orderId,
         this.orderStatusEnum.CLAIMED,
@@ -130,10 +177,7 @@ export class ClaimService {
     }
 
     if (claim.status !== (this.claimStatusEnum.PENDING as string)) {
-      throw new HttpException(
-        'Khiếu nại đã được xử lý',
-        HttpStatus.BAD_REQUEST,
-      );
+      throw new BadRequestException('Khiếu nại đã được xử lý');
     }
 
     return await this.claimRepository.updateClaimStatus(id, dto.status);

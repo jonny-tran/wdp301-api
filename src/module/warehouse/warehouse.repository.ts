@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, count, eq, gt, ilike, or, sql, SQL } from 'drizzle-orm';
+import { and, asc, count, eq, ilike, or, sql, SQL } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -123,58 +123,6 @@ export class WarehouseRepository {
 
   // warehouse.repository.ts
 
-  async findAvailableBatchesForFefo(warehouseId: number, productId: number) {
-    return this.db
-      .select({
-        batchId: schema.batches.id,
-        batchCode: schema.batches.batchCode,
-        expiryDate: schema.batches.expiryDate,
-        physicalQuantity: schema.inventory.quantity,
-        reservedQuantity: schema.inventory.reservedQuantity,
-      })
-      .from(schema.inventory)
-      .innerJoin(
-        schema.batches,
-        eq(schema.inventory.batchId, schema.batches.id),
-      )
-      .where(
-        and(
-          eq(schema.inventory.warehouseId, warehouseId),
-          eq(schema.batches.productId, productId),
-          sql`${schema.inventory.quantity} - ${schema.inventory.reservedQuantity} > 0`,
-        ),
-      )
-      .orderBy(asc(schema.batches.expiryDate));
-  }
-
-  async findBatchByCode(batchCode: string) {
-    return this.db.query.batches.findFirst({
-      where: eq(schema.batches.batchCode, batchCode),
-    });
-  }
-
-  async findAvailableBatches(warehouseId: number, productId: number) {
-    return this.db
-      .select({
-        batchId: schema.batches.id,
-        batchCode: schema.batches.batchCode,
-        expiryDate: schema.batches.expiryDate,
-      })
-      .from(schema.inventory)
-      .innerJoin(
-        schema.batches,
-        eq(schema.inventory.batchId, schema.batches.id),
-      )
-      .where(
-        and(
-          eq(schema.inventory.warehouseId, warehouseId),
-          eq(schema.batches.productId, productId),
-          gt(schema.inventory.quantity, '0'),
-        ),
-      )
-      .orderBy(asc(schema.batches.expiryDate));
-  }
-
   async findBatchWithInventory(warehouseId: number, batchCode: string) {
     return this.db.query.batches.findFirst({
       where: eq(schema.batches.batchCode, batchCode),
@@ -192,54 +140,6 @@ export class WarehouseRepository {
   /**
    * Thực hiện Transaction trừ kho và cập nhật trạng thái đơn hàng
    */
-  async finalizeShipmentTransaction(
-    warehouseId: number,
-    shipmentId: string,
-    orderId: string,
-    shipmentItems: (typeof schema.shipmentItems.$inferSelect)[],
-  ) {
-    return this.db.transaction(async (tx) => {
-      // 1. Trừ kho (Physical & Reserved)
-      for (const item of shipmentItems) {
-        const qty = parseFloat(item.quantity);
-        await tx
-          .update(schema.inventory)
-          .set({
-            quantity: sql`${schema.inventory.quantity} - ${qty}`,
-            reservedQuantity: sql`${schema.inventory.reservedQuantity} - ${qty}`,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(schema.inventory.warehouseId, warehouseId),
-              eq(schema.inventory.batchId, item.batchId),
-            ),
-          );
-
-        // Ghi log inventory transaction
-        await tx.insert(schema.inventoryTransactions).values({
-          warehouseId,
-          batchId: item.batchId,
-          type: 'export',
-          quantityChange: (-qty).toString(),
-          referenceId: shipmentId,
-          reason: 'Order Dispatch',
-        });
-      }
-
-      // 2. Update Shipment Status
-      await tx
-        .update(schema.shipments)
-        .set({ status: 'in_transit', shipDate: new Date() })
-        .where(eq(schema.shipments.id, shipmentId));
-
-      // 3. Update Order Status
-      await tx
-        .update(schema.orders)
-        .set({ status: OrderStatus.DELIVERING })
-        .where(eq(schema.orders.id, orderId));
-    });
-  }
 
   /**
    * Transaction xử lý báo cáo hàng hỏng và đổi lô
@@ -339,5 +239,27 @@ export class WarehouseRepository {
     return this.db.query.shipmentItems.findFirst({
       where: eq(schema.shipmentItems.batchId, batchId),
     });
+  }
+
+  async decreaseStockFinal(
+    warehouseId: number,
+    batchId: number,
+    amount: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    if (amount <= 0) return;
+    return this.getDb(tx)
+      .update(schema.inventory)
+      .set({
+        quantity: sql`${schema.inventory.quantity} - ${amount}`,
+        reservedQuantity: sql`${schema.inventory.reservedQuantity} - ${amount}`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      );
   }
 }
