@@ -22,7 +22,7 @@ import { ReportIssueDto } from './dto/report-issue.dto';
 import { ScanCheckDto } from './dto/scan-check.dto';
 import { WarehouseService } from './warehouse.service';
 
-@ApiTags('Vận hành kho Trung tâm')
+@ApiTags('Warehouse Operation')
 @ApiBearerAuth()
 @UseGuards(AtGuard, RolesGuard)
 @Controller('warehouse')
