@@ -20,7 +20,7 @@ import { GetSuppliersDto } from './dto/get-suppliers.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { SupplierService } from './supplier.service';
 
-@ApiTags('Quản lý Nhà cung cấp')
+@ApiTags('Suppliers Management')
 @Controller('suppliers')
 @UseGuards(AtGuard)
 @ApiBearerAuth()
