@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { desc, eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -30,10 +31,10 @@ export class SupplierRepository {
 
   async findAll(query: GetSuppliersDto) {
     return paginate(
-      this.db as any,
+      this.db,
       schema.suppliers,
-      query as any,
-      this.supplierFilterMap as any,
+      query as PaginationParamsDto & Record<string, any>,
+      this.supplierFilterMap,
     );
   }
 

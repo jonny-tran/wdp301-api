@@ -28,7 +28,7 @@ export class GetInventoryTransactionsDto extends PaginationParamsDto {
 
   @ApiPropertyOptional({
     description: 'Đến ngày (YYYY-MM-DD)',
-    example: '2024-01-31',
+    example: '2026-02-12',
   })
   @IsOptional()
   @IsDateString()
