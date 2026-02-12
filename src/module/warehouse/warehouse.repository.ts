@@ -1,9 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, ilike, or, sql, SQL } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { OrderStatus } from '../order/constants/order-status.enum';
+import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
 
 @Injectable()
 export class WarehouseRepository {
@@ -32,17 +33,69 @@ export class WarehouseRepository {
     return this.getDb(tx).insert(schema.warehouses).values(data).returning();
   }
 
-  async findApprovedOrders(date?: string) {
-    const conditions = [eq(schema.orders.status, OrderStatus.APPROVED)];
+  async findApprovedOrders(query: GetPickingTasksDto) {
+    const { page = 1, limit = 10, search, date } = query;
+    const offset = (page - 1) * limit;
+
+    const whereConditions: SQL[] = [
+      eq(schema.orders.status, OrderStatus.APPROVED),
+    ];
 
     if (date) {
-      conditions.push(sql`DATE(${schema.orders.deliveryDate}) = ${date}`);
+      whereConditions.push(sql`DATE(${schema.orders.deliveryDate}) = ${date}`);
     }
-    return this.db.query.orders.findMany({
-      where: eq(schema.orders.status, OrderStatus.APPROVED),
-      with: { store: true },
-      orderBy: [asc(schema.orders.deliveryDate)],
-    });
+
+    if (search) {
+      const searchCondition = or(
+        ilike(schema.orders.id, `%${search}%`),
+        ilike(schema.stores.name, `%${search}%`),
+      );
+      if (searchCondition) {
+        whereConditions.push(searchCondition);
+      }
+    }
+
+    // Main Query
+    const data = await this.db
+      .select({
+        id: schema.orders.id,
+        status: schema.orders.status,
+        deliveryDate: schema.orders.deliveryDate,
+        createdAt: schema.orders.createdAt,
+        storeName: schema.stores.name,
+        itemCount: sql<number>`count(${schema.orderItems.id})`,
+      })
+      .from(schema.orders)
+      .innerJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
+      .leftJoin(
+        schema.orderItems,
+        eq(schema.orders.id, schema.orderItems.orderId),
+      )
+      .where(whereConditions.length ? and(...whereConditions) : undefined)
+      .limit(limit)
+      .offset(offset)
+      .groupBy(schema.orders.id, schema.stores.id)
+      .orderBy(asc(schema.orders.deliveryDate));
+
+    // Count Query (Distinct Orders)
+    const totalResult = await this.db
+      .select({ count: count(schema.orders.id) })
+      .from(schema.orders)
+      .innerJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
+      .where(whereConditions.length ? and(...whereConditions) : undefined);
+
+    const total = Number(totalResult[0]?.count || 0);
+
+    return {
+      items: data,
+      meta: {
+        totalItems: total,
+        itemCount: data.length,
+        itemsPerPage: limit,
+        totalPages: Math.ceil(total / limit),
+        currentPage: page,
+      },
+    };
   }
 
   async findShipmentByOrderId(orderId: string) {

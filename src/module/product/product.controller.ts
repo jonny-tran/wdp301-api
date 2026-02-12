@@ -16,10 +16,9 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { BatchFilterDto } from './dto/batch-filter.dto';
-import { CreateBatchDto } from './dto/create-batch.dto';
 import { CreateProductDto } from './dto/create-product.dto';
-import { ProductFilterDto } from './dto/product-filter.dto';
+import { GetBatchesDto } from './dto/get-batches.dto';
+import { GetProductsDto } from './dto/get-products.dto';
 import { UpdateBatchDto } from './dto/update-batch.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductService } from './product.service';
@@ -45,7 +44,7 @@ export class ProductController {
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Manager]' })
   @ResponseMessage('Lấy danh sách sản phẩm thành công')
-  async findAll(@Query() filter: ProductFilterDto) {
+  async findAll(@Query() filter: GetProductsDto) {
     return await this.productService.getProducts(filter);
   }
 
@@ -55,7 +54,7 @@ export class ProductController {
     summary: 'Lấy danh sách lô hàng [Manager, Central Kitchen Staff]',
   })
   @ResponseMessage('Lấy danh sách lô hàng thành công')
-  async findAllBatches(@Query() filter: BatchFilterDto) {
+  async findAllBatches(@Query() filter: GetBatchesDto) {
     return await this.productService.getBatches(filter);
   }
 
@@ -86,14 +85,6 @@ export class ProductController {
     return await this.productService.removeProduct(id);
   }
 
-  @Get('inactive')
-  @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Lấy danh sách sản phẩm không hoạt động [Manager]' })
-  @ResponseMessage('Lấy danh sách sản phẩm không hoạt động thành công')
-  async getProductsInactive() {
-    return await this.productService.getProductsInactive();
-  }
-
   @Patch(':id/restore')
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Khôi phục sản phẩm [Manager]' })
@@ -112,19 +103,6 @@ export class ProductController {
   @ResponseMessage('Lấy chi tiết lô hàng thành công')
   async findOneBatch(@Param('id', ParseIntPipe) id: number) {
     return await this.productService.getBatch(id);
-  }
-
-  @Post(':id/batches')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({
-    summary: 'Tạo lô hàng mới cho sản phẩm [Manager, Central Kitchen Staff]',
-  })
-  @ResponseMessage('Tạo lô hàng mới thành công')
-  async createBatch(
-    @Param('id', ParseIntPipe) productId: number,
-    @Body() createBatchDto: CreateBatchDto,
-  ) {
-    return await this.productService.createBatch(productId, createBatchDto);
   }
 
   @Patch('batches/:id')

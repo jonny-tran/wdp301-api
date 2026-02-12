@@ -1,11 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, count, desc, eq, ilike, or, SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import {
+  PaginationParamsDto,
+  SortOrder,
+} from 'src/common/dto/pagination-params.dto';
+import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
-import { BatchFilterDto } from './dto/batch-filter.dto';
 import { CreateProductDto } from './dto/create-product.dto';
-import { ProductFilterDto } from './dto/product-filter.dto';
+import { GetBatchesDto } from './dto/get-batches.dto';
+import { GetProductsDto } from './dto/get-products.dto';
 import { UpdateBatchDto } from './dto/update-batch.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 
@@ -15,6 +20,18 @@ export class ProductRepository {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  private readonly productFilterMap: FilterMap<typeof schema.products> = {
+    search: { column: schema.products.name, operator: 'ilike' },
+    isActive: { column: schema.products.isActive, operator: 'eq' },
+    // categoryId: { column: schema.products.categoryId, operator: 'eq' },
+  };
+
+  private readonly batchFilterMap: FilterMap<typeof schema.batches> = {
+    productId: { column: schema.batches.productId, operator: 'eq' },
+    fromDate: { column: schema.batches.expiryDate, operator: 'gte' },
+    toDate: { column: schema.batches.expiryDate, operator: 'lte' },
+  };
 
   async create(data: CreateProductDto & { sku: string }) {
     const [inserted] = await this.db
@@ -128,65 +145,32 @@ export class ProductRepository {
     return result[0];
   }
 
-  async findAll(filter: ProductFilterDto) {
-    const { page = 1, limit = 10, search } = filter;
-    const offset = (page - 1) * limit;
+  async findAll(filter: GetProductsDto) {
+    const { items, meta } = await paginate(
+      this.db,
+      schema.products,
+      filter as PaginationParamsDto & Record<string, unknown>,
+      this.productFilterMap,
+    );
 
-    const whereClause: (SQL | undefined)[] = [
-      eq(schema.products.isActive, true),
-    ];
-    if (search) {
-      whereClause.push(
-        or(
-          ilike(schema.products.name, `%${search}%`),
-          ilike(schema.products.sku, `%${search}%`),
-        ),
-      );
+    // Enrich with baseUnitName
+    const baseUnitIds = [...new Set(items.map((p) => p.baseUnitId))];
+    const baseUnitsMap = new Map<number, string>();
+
+    if (baseUnitIds.length > 0) {
+      const units = await this.db
+        .select({ id: schema.baseUnits.id, name: schema.baseUnits.name })
+        .from(schema.baseUnits)
+        .where(inArray(schema.baseUnits.id, baseUnitIds));
+      units.forEach((u) => baseUnitsMap.set(u.id, u.name));
     }
 
-    const data = await this.db
-      .select({
-        id: schema.products.id,
-        sku: schema.products.sku,
-        name: schema.products.name,
-        baseUnitName: schema.baseUnits.name,
-        shelfLifeDays: schema.products.shelfLifeDays,
-        minStockLevel: schema.products.minStockLevel,
-        imageUrl: schema.products.imageUrl,
-        isActive: schema.products.isActive,
-        createdAt: schema.products.createdAt,
-        updatedAt: schema.products.updatedAt,
-      })
-      .from(schema.products)
-      .innerJoin(
-        schema.baseUnits,
-        eq(schema.products.baseUnitId, schema.baseUnits.id),
-      )
-      .where(whereClause.length ? and(...whereClause) : undefined)
-      .limit(limit)
-      .offset(offset)
-      .orderBy(desc(schema.products.createdAt));
+    const enrichedItems = items.map((item) => ({
+      ...item,
+      baseUnitName: baseUnitsMap.get(item.baseUnitId) || null,
+    }));
 
-    const totalResult = await this.db
-      .select({ count: count() })
-      .from(schema.products)
-      .innerJoin(
-        schema.baseUnits,
-        eq(schema.products.baseUnitId, schema.baseUnits.id),
-      ) // innerJoin here too to match filters if any
-      .where(whereClause.length ? and(...whereClause) : undefined);
-
-    const total = Number(totalResult[0]?.count || 0);
-
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+    return { items: enrichedItems, meta };
   }
 
   async findAllInactive() {
@@ -307,52 +291,63 @@ export class ProductRepository {
     });
   }
 
-  async findAllBatches(filter: BatchFilterDto) {
-    const { page = 1, limit = 10, productId, expiryDate } = filter;
-    const offset = (page - 1) * limit;
-
-    const whereClause: (SQL | undefined)[] = [];
-    if (productId) whereClause.push(eq(schema.batches.productId, productId));
-    if (expiryDate) whereClause.push(eq(schema.batches.expiryDate, expiryDate));
-
-    // Note: Drizzle select with joins returns flat objects unless mapped.
-    const data = await this.db
-      .select({
-        id: schema.batches.id,
-        batchCode: schema.batches.batchCode,
-        productId: schema.batches.productId,
-        expiryDate: schema.batches.expiryDate,
-        imageUrl: schema.batches.imageUrl,
-        createdAt: schema.batches.createdAt,
-        updatedAt: schema.batches.updatedAt,
-        currentQuantity: schema.inventory.quantity,
-      })
-      .from(schema.batches)
-      .leftJoin(
-        schema.inventory,
-        eq(schema.batches.id, schema.inventory.batchId),
-      )
-      .where(whereClause.length ? and(...whereClause) : undefined)
-      .limit(limit)
-      .offset(offset)
-      .orderBy(asc(schema.batches.expiryDate));
-
-    const totalResult = await this.db
-      .select({ count: count() })
-      .from(schema.batches)
-      .where(whereClause.length ? and(...whereClause) : undefined);
-
-    const total = Number(totalResult[0]?.count || 0);
-
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+  async findAllBatches(filter: GetBatchesDto) {
+    // Default Sort: Expiry Date ASC
+    const dto = {
+      ...filter,
+      sortBy: filter.sortBy || 'expiryDate',
+      sortOrder: filter.sortOrder || SortOrder.ASC,
     };
+
+    const { items, meta } = await paginate(
+      this.db,
+      schema.batches,
+      dto,
+      this.batchFilterMap,
+    );
+
+    // Enrich with currentQuantity
+    const batchIds = items.map((b) => b.id);
+    const quantityMap = new Map<number, number>();
+
+    if (batchIds.length > 0) {
+      const quantities = await this.db
+        .select({
+          batchId: schema.inventory.batchId,
+          total: sql<number>`sum(${schema.inventory.quantity})`,
+        })
+        .from(schema.inventory)
+        .where(inArray(schema.inventory.batchId, batchIds))
+        .groupBy(schema.inventory.batchId);
+
+      quantities.forEach((q) => quantityMap.set(q.batchId, Number(q.total)));
+    }
+
+    const enrichedItems = items.map((item) => ({
+      ...item,
+      currentQuantity: quantityMap.get(item.id)?.toString() || '0',
+    }));
+
+    return { items: enrichedItems, meta };
+  }
+
+  async createBatch(data: {
+    productId: number;
+    batchCode: string;
+    expiryDate: string;
+    imageUrl?: string;
+  }) {
+    const [batch] = await this.db
+      .insert(schema.batches)
+      .values({
+        productId: data.productId,
+        batchCode: data.batchCode,
+        expiryDate: data.expiryDate,
+        imageUrl: data.imageUrl,
+        status: 'pending',
+      })
+      .returning();
+    return batch;
   }
 
   async createBatchWithInventory(

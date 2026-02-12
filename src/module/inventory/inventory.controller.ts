@@ -11,7 +11,12 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import type { IJwtPayload } from '../auth/types/auth.types';
-import { InventoryAdjustmentDto, InventoryDto } from './inventory.dto';
+import { GetInventorySummaryDto } from './dto/get-inventory-summary.dto';
+import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
+import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
+import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
+import { InventoryAdjustmentDto } from './dto/inventory-adjustment.dto';
+import { InventoryDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
 
 @ApiTags('Inventory')
@@ -31,12 +36,15 @@ export class InventoryController {
     type: [InventoryDto],
   })
   @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
-  async getStoreInventory(@CurrentUser() user: IJwtPayload) {
+  async getStoreInventory(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: GetStoreInventoryDto,
+  ) {
     if (!user.storeId) {
       throw new Error('User không có storeId');
     }
 
-    return this.inventoryService.getInventoryByStoreId(user.storeId);
+    return this.inventoryService.getInventoryByStoreId(user.storeId, query);
   }
 
   @Get('store/transactions')
@@ -46,19 +54,13 @@ export class InventoryController {
   @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   async getStoreTransactions(
     @CurrentUser() user: IJwtPayload,
-    @Query('type') type?: 'import' | 'export' | 'waste' | 'adjustment',
-    @Query('limit') limit?: number,
-    @Query('offset') offset?: number,
+    @Query() query: GetInventoryTransactionsDto,
   ) {
     if (!user.storeId) {
       throw new Error('User không có storeId');
     }
 
-    return this.inventoryService.getStoreTransactions(user.storeId, {
-      type,
-      limit: limit ? Number(limit) : 20,
-      offset: offset ? Number(offset) : 0,
-    });
+    return this.inventoryService.getStoreTransactions(user.storeId, query);
   }
 
   @Get('summary')
@@ -66,25 +68,15 @@ export class InventoryController {
     summary: 'Tổng hợp tồn kho (Manager)',
   })
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
-  async getInventorySummary(
-    @Query('warehouseId') warehouseId?: number,
-    @Query('categoryId') categoryId?: number,
-    @Query('searchTerm') searchTerm?: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-  ) {
-    const pageNumber = page ? Number(page) : 1;
-    const limitNumber = limit ? Number(limit) : 20;
-
+  async getInventorySummary(@Query() query: GetInventorySummaryDto) {
     return this.inventoryService.getInventorySummary(
       {
-        warehouseId: warehouseId ? Number(warehouseId) : undefined,
-        categoryId: categoryId ? Number(categoryId) : undefined,
-        searchTerm,
+        warehouseId: query.warehouseId,
+        searchTerm: query.searchTerm,
       },
       {
-        limit: limitNumber,
-        offset: (pageNumber - 1) * limitNumber,
+        limit: query.limit || 20,
+        offset: (query.page ? query.page - 1 : 0) * (query.limit || 20),
       },
     );
   }
@@ -116,8 +108,8 @@ export class InventoryController {
     description:
       'API dành cho Bếp trưởng/Quản lý để xem tổng quan tồn kho các món',
   })
-  async getKitchenSummary(@Query('search') search?: string) {
-    return this.inventoryService.getKitchenSummary(search);
+  async getKitchenSummary(@Query() query: GetKitchenInventoryDto) {
+    return this.inventoryService.getKitchenSummary(query);
   }
 
   // API 7: Xem chi tiết lô hàng của một món (Drill-down)

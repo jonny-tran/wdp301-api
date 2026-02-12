@@ -5,13 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { generateBatchCode } from 'src/common/utils/generate-batch-code.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { RequestWithUser } from '../auth/types/auth.types';
+import { ProductService } from '../product/product.service';
 import { WarehouseRepository } from './../warehouse/warehouse.repository';
 import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
+import { GetReceiptsDto } from './dto/get-receipts.dto';
 import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import { generateQrData } from './helpers/inbound.util';
 import { InboundRepository } from './inbound.repository';
@@ -23,6 +24,7 @@ export class InboundService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly WarehouseRepo: WarehouseRepository,
+    private readonly productService: ProductService,
   ) {}
 
   // API 1: Khởi tạo phiếu nhập
@@ -117,34 +119,23 @@ export class InboundService {
       );
     }
 
-    // 3. Auto-calculate Dates
-    const manufactureDate = new Date();
-    const expiryDate = new Date(
-      manufactureDate.getTime() + product.shelfLifeDays * 24 * 60 * 60 * 1000,
-    );
-
-    // 4. Expiry Warning Check (High-perishability: < 48 hours)
+    // 3. Expiry Warning Check (High-perishability: < 48 hours)
     let warning: string | undefined;
     if (product.shelfLifeDays < 2) {
       warning = 'Cảnh báo: Sản phẩm có hạn sử dụng ngắn (dưới 48 giờ)';
     }
 
-    // 5. Generate Batch Code
-    const batchCode = generateBatchCode(product.sku);
+    // 4. Create Batch via ProductService (Centralized Logic)
+    const batch = await this.productService.createBatch(dto.productId);
 
-    // 6. Create Batch & Receipt Item
-    const batch = await this.inboundRepo.addBatchToReceipt(receiptId, {
-      productId: dto.productId,
-      batchCode: batchCode,
-      expiryDate: expiryDate.toISOString(), // Used for DB storage
-      quantity: dto.quantity.toString(),
-    });
+    // 5. Add Receipt Item
+    await this.inboundRepo.addReceiptItem(receiptId, batch.id, dto.quantity);
 
     return {
       batchId: batch.id,
       batchCode: batch.batchCode,
-      manufactureDate,
-      expiryDate,
+      manufactureDate: new Date(),
+      expiryDate: new Date(batch.expiryDate),
       warning,
     };
   }
@@ -200,25 +191,8 @@ export class InboundService {
       },
     };
   }
-  async getAllReceipts(page: number, limit: number) {
-    const { data, total } = await this.inboundRepo.findAllReceipts(page, limit);
-
-    return {
-      data: data.map((receipt) => ({
-        id: receipt.id,
-        status: receipt.status,
-        note: receipt.note,
-        supplierName: receipt.supplier.name,
-        createdBy: receipt.user.username,
-        createdAt: receipt.createdAt,
-      })),
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+  async getAllReceipts(query: GetReceiptsDto) {
+    return this.inboundRepo.findAllReceipts(query);
   }
 
   // API: Get Receipt Details

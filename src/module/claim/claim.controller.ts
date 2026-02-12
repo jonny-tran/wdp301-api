@@ -1,10 +1,12 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -16,6 +18,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import type { IJwtPayload } from '../auth/types/auth.types';
 import { ClaimService } from './claim.service';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
+import { GetClaimsDto } from './dto/get-claims.dto';
 import { ResolveClaimDto } from './dto/resolve-claim.dto';
 
 @ApiTags('Claims')
@@ -26,15 +29,27 @@ export class ClaimController {
   constructor(private readonly claimService: ClaimService) {}
 
   @Get()
+  @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'Danh sách khiếu nại [Coordinator, Kitchen]',
+    summary: 'Danh sách khiếu nại [Manager, Coordinator, Admin]',
   })
-  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.CENTRAL_KITCHEN_STAFF)
-  async getClaims(@CurrentUser() user: IJwtPayload) {
-    if (!user.storeId) {
-      throw new Error('User không có storeId');
+  async findAll(@Query() query: GetClaimsDto) {
+    return this.claimService.findAll(query);
+  }
+
+  @Get('my-store')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @ApiOperation({
+    summary: 'Danh sách khiếu nại của cửa hàng [Store Staff]',
+  })
+  async getMyStoreClaims(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: GetClaimsDto,
+  ) {
+    if (user.storeId) {
+      query.storeId = user.storeId;
     }
-    return this.claimService.getClaimsByStore(user.storeId);
+    return this.claimService.findAll(query);
   }
 
   @Get(':id')
@@ -59,7 +74,7 @@ export class ClaimController {
     @CurrentUser() user: IJwtPayload,
   ) {
     if (!user.storeId) {
-      throw new Error('User không có storeId');
+      throw new BadRequestException('Tài khoản không có kho hàng');
     }
     return this.claimService.createManualClaim(dto, user.sub, user.storeId);
   }

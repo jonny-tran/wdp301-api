@@ -9,6 +9,7 @@ export class GetCatalogDto extends PaginationParamsDto {
   @IsString()
   search?: string;
 
+  @ApiPropertyOptional({ description: 'Lọc theo trạng thái hoạt động' })
   @IsOptional()
   @IsBoolean()
   @Transform(({ value }) => value === 'true' || value === true)

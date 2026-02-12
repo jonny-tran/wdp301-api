@@ -13,6 +13,7 @@ import { InventoryRepository } from '../inventory/inventory.repository';
 import { InventoryService } from '../inventory/inventory.service';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { ShipmentStatus } from './constants/shipment-status.enum';
+import { GetShipmentsDto } from './dto/get-shipments.dto';
 import { ReceiveShipmentDto } from './dto/receive-shipment.dto';
 import { ShipmentHelper } from './helper/shipment.helper';
 import { ShipmentRepository } from './shipment.repository';
@@ -30,6 +31,10 @@ export class ShipmentService {
     @Inject(forwardRef(() => ClaimService))
     private readonly claimService: ClaimService,
   ) {}
+
+  async findAll(query: GetShipmentsDto) {
+    return this.shipmentRepository.findAll(query);
+  }
 
   async createShipmentForOrder(
     orderId: string,

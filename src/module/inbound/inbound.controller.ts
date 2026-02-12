@@ -19,6 +19,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { RequestWithUser } from '../auth/types/auth.types';
 import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
+import { GetReceiptsDto } from './dto/get-receipts.dto';
 import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import { InboundService } from './inbound.service';
 
@@ -46,16 +47,12 @@ export class InboundController {
   @Get('receipts')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Xem danh sách tất cả các phiếu nhập hàng (Có phân trang) [Kitchen]',
+    summary: 'Xem danh sách tất cả các phiếu nhập hàng [Kitchen]',
     description: 'Dùng để theo dõi lịch sử và các phiếu đang chờ hoàn tất.',
   })
   @ResponseMessage('Lấy danh sách phiếu nhập thành công')
-  async getAllReceipts(
-    @Query('page') page: number,
-    @Query('limit') limit: number,
-  ) {
-    return this.inboundService.getAllReceipts(page, limit);
+  async getAllReceipts(@Query() query: GetReceiptsDto) {
+    return this.inboundService.getAllReceipts(query);
   }
 
   @Get('receipts/:id')

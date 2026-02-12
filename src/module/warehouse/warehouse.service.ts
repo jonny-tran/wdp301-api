@@ -3,18 +3,16 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
-  // InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { eq } from 'drizzle-orm'; // Import eq
+import { eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { DATABASE_CONNECTION } from '../../database/database.constants'; // Import DB Connection
+import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
-import {
-  FinalizeShipmentDto,
-  PickItemDto,
-  ReportIssueDto,
-} from './dto/warehouse-ops.dto';
+import { FinalizeShipmentDto } from './dto/finalize-shipment.dto';
+import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
+import { PickItemDto } from './dto/pick-item.dto';
+import { ReportIssueDto } from './dto/report-issue.dto';
 import { WarehouseRepository } from './warehouse.repository';
 
 @Injectable()
@@ -52,8 +50,9 @@ export class WarehouseService {
   }
 
   // --- 2. GET TASKS ---
-  async getTasks(warehouseId: number, date?: string) {
-    return this.warehouseRepo.findApprovedOrders(date);
+  async getTasks(warehouseId: number, query: GetPickingTasksDto) {
+    // Note: warehouseId currently unused in repo call as per requirements focused on status/date/search
+    return this.warehouseRepo.findApprovedOrders(query);
   }
 
   // --- 3. GET PICKING LIST ---
@@ -237,17 +236,7 @@ export class WarehouseService {
     if (!shipmentItem)
       throw new BadRequestException('Lô hàng không nằm trong đơn đang soạn');
 
-    // 3. Lấy Product ID từ Batch (Để tìm lô thay thế cùng loại)
-    // Cần phải chắc chắn inventory.batchId là đúng
-    // Ở đây ta gọi lại DB để lấy thông tin batch đầy đủ vì inventory chỉ có batchId
-    // (Hoặc nếu repo.findInventory join sẵn batch thì tốt, ở đây giả định phải query)
-
-    // Lưu ý: Cần thêm hàm findBatchById vào Repo hoặc dùng query raw.
-    // Giả sử dùng tạm logic lấy batchCode rồi tìm lại (hơi thừa nhưng an toàn với code hiện tại)
-    // Cách tốt nhất: Service gọi Repo transaction
-
-    // Ở đây tôi sẽ sử dụng findBatchByCode đã có nhưng sửa lại Repo nếu cần
-    // Tạm thời gọi Repo lấy Batch Info
+    // 3. Lấy Product ID từ Batch
     const batchInfo = await this.db.query.batches.findFirst({
       where: eq(schema.batches.id, dto.batchId),
     });

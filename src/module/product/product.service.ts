@@ -6,10 +6,9 @@ import {
 import { generateBatchCode } from 'src/common/utils/generate-batch-code.util';
 import { SkuUtil } from 'src/common/utils/generate-product-sku.util';
 import { BaseUnitRepository } from './base-unit/base-unit.repository';
-import { BatchFilterDto } from './dto/batch-filter.dto';
-import { CreateBatchDto } from './dto/create-batch.dto';
 import { CreateProductDto } from './dto/create-product.dto';
-import { ProductFilterDto } from './dto/product-filter.dto';
+import { GetBatchesDto } from './dto/get-batches.dto';
+import { GetProductsDto } from './dto/get-products.dto';
 import { UpdateBatchDto } from './dto/update-batch.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductRepository } from './product.repository';
@@ -63,7 +62,7 @@ export class ProductService {
     return product;
   }
 
-  async getProducts(filter: ProductFilterDto) {
+  async getProducts(filter: GetProductsDto) {
     return await this.productRepository.findAll(filter);
   }
 
@@ -94,7 +93,7 @@ export class ProductService {
 
   // --- Batch Services ---
 
-  async getBatches(filter: BatchFilterDto) {
+  async getBatches(filter: GetBatchesDto) {
     return await this.productRepository.findAllBatches(filter);
   }
 
@@ -130,7 +129,12 @@ export class ProductService {
     );
   }
 
-  async createBatch(productId: number, dto: CreateBatchDto) {
+  /**
+   * Centralized Batch Creation Logic
+   * Used by Inbound Module and other internal processes.
+   * Does NOT accept arbitrary quantity. Quantity is handled by specific flows (Inbound/Adjustment).
+   */
+  async createBatch(productId: number, imageUrl?: string) {
     const product = await this.productRepository.findById(productId);
     if (!product) {
       throw new NotFoundException('Sản phẩm không tồn tại');
@@ -138,30 +142,17 @@ export class ProductService {
 
     const generatedBatchCode = generateBatchCode(product.sku);
 
-    // FEFO Logic: Calculate expiry date
+    // FEFO Logic: Calculate expiry date from TODAY
     const today = new Date();
     const expiryDate = new Date(today);
     expiryDate.setDate(today.getDate() + product.shelfLifeDays);
     const expiryDateStr = expiryDate.toISOString().split('T')[0];
 
-    // Get Central Warehouse ID
-    const centralWarehouseId =
-      await this.productRepository.findCentralWarehouseId();
-    if (!centralWarehouseId) {
-      throw new BadRequestException('Kho tổng chưa được cấu hình');
-    }
-
-    return await this.productRepository.createBatchWithInventory(
-      {
-        productId: productId,
-        batchCode: generatedBatchCode,
-        expiryDate: expiryDateStr,
-        imageUrl: dto.imageUrl,
-      },
-      {
-        warehouseId: centralWarehouseId,
-        initialQuantity: dto.initialQuantity,
-      },
-    );
+    return await this.productRepository.createBatch({
+      productId: productId,
+      batchCode: generatedBatchCode,
+      expiryDate: expiryDateStr,
+      imageUrl: imageUrl,
+    });
   }
 }

@@ -1,10 +1,22 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  ilike,
+  lte,
+  or,
+  sql,
+  SQL,
+} from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { ShipmentStatus } from './constants/shipment-status.enum';
+import { GetShipmentsDto } from './dto/get-shipments.dto';
 
 @Injectable()
 export class ShipmentRepository {
@@ -15,6 +27,84 @@ export class ShipmentRepository {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  async findAll(query: GetShipmentsDto) {
+    const {
+      page = 1,
+      limit = 10,
+      status,
+      storeId,
+      search,
+      fromDate,
+      toDate,
+    } = query;
+    const offset = (page - 1) * limit;
+
+    const whereConditions: SQL[] = [];
+
+    if (status) {
+      whereConditions.push(eq(schema.shipments.status, status));
+    }
+
+    if (storeId) {
+      whereConditions.push(eq(schema.orders.storeId, storeId));
+    }
+
+    if (search) {
+      const searchCondition = or(
+        ilike(sql`${schema.shipments.id}::text`, `%${search}%`),
+        ilike(sql`${schema.orders.id}::text`, `%${search}%`),
+      );
+      if (searchCondition) {
+        whereConditions.push(searchCondition);
+      }
+    }
+
+    if (fromDate) {
+      whereConditions.push(gte(schema.shipments.createdAt, new Date(fromDate)));
+    }
+
+    if (toDate) {
+      whereConditions.push(lte(schema.shipments.createdAt, new Date(toDate)));
+    }
+
+    const data = await this.db
+      .select({
+        id: schema.shipments.id,
+        orderId: schema.shipments.orderId,
+        storeName: schema.stores.name,
+        status: schema.shipments.status,
+        shipDate: schema.shipments.shipDate,
+        createdAt: schema.shipments.createdAt,
+      })
+      .from(schema.shipments)
+      .innerJoin(schema.orders, eq(schema.shipments.orderId, schema.orders.id))
+      .innerJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
+      .where(whereConditions.length ? and(...whereConditions) : undefined)
+      .limit(limit)
+      .offset(offset)
+      .orderBy(desc(schema.shipments.createdAt));
+
+    const totalResult = await this.db
+      .select({ count: count() })
+      .from(schema.shipments)
+      .innerJoin(schema.orders, eq(schema.shipments.orderId, schema.orders.id))
+      .innerJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
+      .where(whereConditions.length ? and(...whereConditions) : undefined);
+
+    const total = Number(totalResult[0]?.count || 0);
+
+    return {
+      items: data,
+      meta: {
+        totalItems: total,
+        itemCount: data.length,
+        itemsPerPage: limit,
+        totalPages: Math.ceil(total / limit),
+        currentPage: page,
+      },
+    };
+  }
 
   async createShipment(
     orderId: string,
