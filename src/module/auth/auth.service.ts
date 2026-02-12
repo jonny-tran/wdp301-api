@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import * as argon2 from 'argon2';
 import { MailService } from 'src/common/service/mail.service';
 import { OtpUtil } from 'src/common/utils/otp.util';
@@ -256,5 +257,17 @@ export class AuthService {
     await this.authRepository.markOtpAsUsed(validOtp.id);
 
     return { message: 'Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại.' };
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  async clearExpiredTokens() {
+    const count = await this.authRepository.clearExpiredTokens();
+    console.log(`Cleared ${count} expired tokens`);
+  }
+
+  @Cron(CronExpression.EVERY_DAY_AT_2AM)
+  async clearExpiredOtp() {
+    const count = await this.authRepository.clearExpiredOtp();
+    console.log(`Cleared ${count} expired OTPs`);
   }
 }
