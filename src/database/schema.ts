@@ -284,6 +284,7 @@ export const shipments = pgTable('shipments', {
   status: shipmentStatusEnum('status').default('preparing').notNull(),
   shipDate: timestamp('ship_date'),
   createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
 });
 
 export const shipmentItems = pgTable('shipment_items', {

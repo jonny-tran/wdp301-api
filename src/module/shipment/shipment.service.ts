@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   forwardRef,
   Inject,
@@ -15,7 +16,6 @@ import { OrderStatus } from '../order/constants/order-status.enum';
 import { ShipmentStatus } from './constants/shipment-status.enum';
 import { GetShipmentsDto } from './dto/get-shipments.dto';
 import { ReceiveShipmentDto } from './dto/receive-shipment.dto';
-import { ShipmentHelper } from './helper/shipment.helper';
 import { ShipmentRepository } from './shipment.repository';
 
 @Injectable()
@@ -150,86 +150,153 @@ export class ShipmentService {
     storeId: string,
   ) {
     return this.uow.runInTransaction(async (tx) => {
-      // 1. Get shipment & warehouse
+      // 1. Get Shipment
       const shipment =
-        await this.shipmentRepository.getShipmentById(shipmentId);
+        await this.shipmentRepository.getShipmentWithItems(shipmentId);
 
-      const warehouse = shipment
-        ? await this.shipmentRepository.findWarehouseById(
-            shipment.toWarehouseId,
-            tx,
-          )
-        : null;
+      if (!shipment) {
+        throw new NotFoundException('Không tìm thấy chuyến hàng');
+      }
 
-      // 2. Validate Access & Status
-      ShipmentHelper.validateShipmentAccess(shipment, warehouse, storeId);
-
-      // After validation, safely assert existence
-      const validShipment = shipment!;
-      const validWarehouse = warehouse!;
-
-      // 3. Validate Batch Consistency
-      ShipmentHelper.validateBatchConsistency(validShipment, dto);
-
-      // 4. Process Items
-      const { inventoryUpdates, discrepancies } =
-        ShipmentHelper.processReceivedItems(validShipment, dto);
-
-      // 5. Update Inventory
-      for (const update of inventoryUpdates) {
-        await this.inventoryService.updateInventory(
-          validWarehouse.id,
-          update.batchId,
-          update.goodQty,
-          tx,
-        );
-
-        await this.inventoryService.logInventoryTransaction(
-          validWarehouse.id,
-          update.batchId,
-          'import',
-          update.goodQty,
-          shipmentId,
-          update.reason,
-          tx,
+      // 2. Validate Ownership & Status
+      // If storeId is provided, enforce it
+      if (shipment.order.storeId !== storeId) {
+        throw new ForbiddenException(
+          'Chuyến hàng không thuộc về cửa hàng của bạn',
         );
       }
 
-      // 6. Update shipment status
+      if (shipment.status !== (this.shipmentStatusEnum.IN_TRANSIT as any)) {
+        throw new BadRequestException(
+          `Chuyến hàng đang ở trạng thái "${shipment.status}", chỉ có thể nhận hàng khi hàng đang trên đường.`,
+        );
+      }
+
+      // 3. Process Items
+      const claimItems: {
+        productId: number;
+        quantityMissing: number;
+        quantityDamaged: number;
+        reason: string;
+        imageUrl?: string;
+      }[] = [];
+
+      // Map DTO items for fast lookup
+      const receivedMap = new Map<
+        number,
+        { actual: number; damaged: number; evidence: string[] }
+      >();
+      if (dto.items && dto.items.length > 0) {
+        dto.items.forEach((item) => {
+          receivedMap.set(item.batchId, {
+            actual: item.actualQty,
+            damaged: item.damagedQty,
+            evidence: item.evidenceUrls || [], // Optional
+          });
+        });
+      }
+
+      // Loop through ALL Shipped Items from DB
+      for (const shippedItem of shipment.items) {
+        const shippedQty = parseFloat(shippedItem.quantity);
+        let actualQty = shippedQty;
+        let damagedQty = 0;
+        let evidence: string[] = [];
+
+        // If exists in DTO, use strict reported values
+        if (receivedMap.has(shippedItem.batchId)) {
+          const report = receivedMap.get(shippedItem.batchId)!;
+          actualQty = report.actual;
+          damagedQty = report.damaged;
+          evidence = report.evidence;
+        }
+        // Else: Assume Receive Full (Default)
+
+        // Calculate Discrepancy
+        const missingQty = shippedQty - actualQty;
+        const goodQty = actualQty - damagedQty;
+
+        // Validation
+        if (goodQty < 0) {
+          throw new BadRequestException(
+            `Lỗi dữ liệu lô ${shippedItem.batch.batchCode}: Số lượng hỏng (${damagedQty}) lớn hơn số lượng thực nhận (${actualQty}).`,
+          );
+        }
+
+        // 4. Update Inventory (Good Stocks)
+        if (goodQty > 0) {
+          await this.inventoryService.updateInventory(
+            shipment.toWarehouseId,
+            shippedItem.batchId,
+            goodQty,
+            tx,
+          );
+
+          await this.inventoryService.logInventoryTransaction(
+            shipment.toWarehouseId,
+            shippedItem.batchId,
+            'import',
+            goodQty,
+            shipmentId,
+            'Shipment Receipt',
+            tx,
+          );
+        }
+
+        // 5. Prepare Claim if needed
+        if (missingQty > 0 || damagedQty > 0) {
+          // Basic reason construction
+          const reasons: string[] = [];
+          if (missingQty > 0) reasons.push(`Thiếu: ${missingQty}`);
+          if (damagedQty > 0) reasons.push(`Hỏng: ${damagedQty}`);
+
+          claimItems.push({
+            productId: shippedItem.batch.productId,
+            quantityMissing: Math.max(0, missingQty),
+            quantityDamaged: Math.max(0, damagedQty),
+            reason: reasons.join(', '),
+            imageUrl: evidence.length > 0 ? evidence.join(',') : undefined,
+          });
+        }
+      }
+
+      // 6. Update Shipment Status
       await this.shipmentRepository.updateShipmentStatus(
         shipmentId,
         this.shipmentStatusEnum.COMPLETED,
         tx,
       );
 
-      // 7. Create claim if there are discrepancies
+      // 7. Create Claim if Discrepancies exist
       let claimId: string | null = null;
-      if (discrepancies.length > 0) {
+      if (claimItems.length > 0) {
         const claim = await this.claimService.createClaim(
           shipmentId,
           userId,
-          discrepancies,
+          claimItems,
           tx,
         );
         claimId = claim.id;
       }
 
-      // 8. Update order status
+      // 8. Update Order Status
+      // If Claim created -> CLAIMED, else COMPLETED
       const newOrderStatus = claimId
         ? this.orderStatusEnum.CLAIMED
         : this.orderStatusEnum.COMPLETED;
+
       await this.shipmentRepository.updateOrderStatus(
-        validShipment.orderId,
+        shipment.orderId,
         newOrderStatus,
         tx,
       );
 
       return {
-        orderId: validShipment.orderId,
-        shipmentId: validShipment.id,
+        message: 'Xác nhận nhận hàng thành công.',
+        shipmentId: shipment.id,
         status: 'completed',
-        claimCreated: claimId !== null,
-        claimId,
+        hasDiscrepancy: claimId !== null,
+        claimId: claimId,
       };
     });
   }

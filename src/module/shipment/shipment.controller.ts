@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -74,40 +75,53 @@ export class ShipmentController {
   @ApiOperation({
     summary: 'Chi tiết lô hàng [Franchise Staff]',
   })
+  @ResponseMessage('Lấy chi tiết lô hàng thành công')
   async getShipmentDetail(
     @Param('id') id: string,
     @CurrentUser() user: IJwtPayload,
   ) {
     if (!user.storeId && user.role !== (UserRole.ADMIN as any)) {
-      // Admin might not have storeId, but service checks ownership based on storeId logic.
-      // If Admin, pass undefined? Service logic: "if (!warehouse || warehouse.storeId !== storeId)".
-      // Service expects a storeId to validate content.
-      // If Admin views, maybe bypass validation or pass targeted storeId?
-      // Current logic requires storeId.
-      // For now, I'll keep existing logic: User must has storeId check in Controller, OR Service needs update.
-      // Existing logic threw error if !user.storeId.
-      // Ideally Admin can view any?
-      // Given prompt "Refactor Controller... Endpoint 2... Role: Franchise Store Staff".
-      // Detail endpoint logic was not explicitly requested to change for Admin.
-      // I'll stick to existing logic for detail.
-      // But for "getMyStoreShipments", it forces `query.storeId`.
-      // For detail, I'll keep as is.
       throw new BadRequestException('User không có storeId');
     }
-    // Note: If Admin accesses this, they might fail if they don't have storeId.
-    // I will allow Admin to pass if user.role is admin, but service needs update to allow admin.
-    // I will just keep logic safe: ensure storeId exists.
     if (!user.storeId) {
+      // extra check redundant but keeping logic similar to existing
       throw new BadRequestException('User không có storeId');
     }
     return this.shipmentService.getShipmentDetail(id, user.storeId);
   }
 
-  @Post(':id/receive')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
+  @Patch(':id/receive-all')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF)
   @ApiOperation({
-    summary: 'Xác nhận nhận hàng [Franchise Staff]',
+    summary: 'Nhận hàng nhanh (Đủ hàng, không hỏng) [Franchise Staff]',
+    description:
+      'Xác nhận nhận toàn bộ hàng trong đơn, không có hàng thiếu hay hỏng.',
   })
+  @ResponseMessage('Nhận hàng thành công (Đủ hàng)')
+  async receiveAll(@Param('id') id: string, @CurrentUser() user: IJwtPayload) {
+    if (!user.storeId) {
+      throw new BadRequestException('User không có storeId');
+    }
+    // Call service with empty items list (implies Receive All)
+    const dto = new ReceiveShipmentDto();
+    dto.items = [];
+
+    return this.shipmentService.receiveShipment(
+      id,
+      dto,
+      user.sub,
+      user.storeId,
+    );
+  }
+
+  @Post(':id/receive')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF)
+  @ApiOperation({
+    summary: 'Nhận hàng chi tiết (Báo cáo thiếu/hỏng) [Franchise Staff]',
+    description:
+      'Xác nhận nhận hàng, có thể báo cáo số lượng thực nhận và hàng hỏng cho từng lô.',
+  })
+  @ResponseMessage('Xác nhận nhận hàng thành công')
   async receiveShipment(
     @Param('id') id: string,
     @Body() dto: ReceiveShipmentDto,

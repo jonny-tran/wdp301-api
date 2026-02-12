@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, lt } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -97,5 +97,23 @@ export class AuthRepository {
       .update(schema.users)
       .set({ passwordHash })
       .where(eq(schema.users.id, userId));
+  }
+
+  async clearExpiredTokens() {
+    const now = new Date();
+    const result = await this.db
+      .delete(schema.refreshTokens)
+      .where(lt(schema.refreshTokens.expiresAt, now))
+      .returning();
+    return result.length;
+  }
+
+  async clearExpiredOtp() {
+    const now = new Date();
+    const result = await this.db
+      .delete(schema.otpCodes)
+      .where(lt(schema.otpCodes.expiresAt, now))
+      .returning();
+    return result.length;
   }
 }
