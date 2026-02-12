@@ -2,6 +2,9 @@ import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
+import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
+import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
+import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryRepository } from './inventory.repository';
 
@@ -13,25 +16,30 @@ export class InventoryService {
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
-  async getStoreInventory(warehouseId: number) {
-    const inventory =
-      await this.inventoryRepository.getStoreInventory(warehouseId);
+  async getStoreInventory(warehouseId: number, query: GetStoreInventoryDto) {
+    const { items, meta } = await this.inventoryRepository.getStoreInventory(
+      warehouseId,
+      query,
+    );
 
-    return inventory.map<InventoryDto>((item) => ({
-      inventoryId: item.id,
-      batchId: item.batchId,
-      productId: item.batch.productId,
-      productName: item.batch.product.name,
-      sku: item.batch.product.sku,
-      batchCode: item.batch.batchCode,
-      quantity: parseFloat(item.quantity),
-      expiryDate: new Date(item.batch.expiryDate),
-      unit: item.batch.product.baseUnit.name,
-      imageUrl: item.batch.product.imageUrl || null,
-    }));
+    return {
+      items: items.map<InventoryDto>((item) => ({
+        inventoryId: item.id,
+        batchId: item.batchId,
+        productId: item.batch.productId,
+        productName: item.batch.product.name,
+        sku: item.batch.product.sku,
+        batchCode: item.batch.batchCode,
+        quantity: parseFloat(item.quantity),
+        expiryDate: new Date(item.batch.expiryDate),
+        unit: item.batch.product.baseUnit.name,
+        imageUrl: item.batch.product.imageUrl || null,
+      })),
+      meta,
+    };
   }
 
-  async getInventoryByStoreId(storeId: string) {
+  async getInventoryByStoreId(storeId: string, query?: GetStoreInventoryDto) {
     const warehouse =
       await this.inventoryRepository.findWarehouseByStoreId(storeId);
 
@@ -39,16 +47,12 @@ export class InventoryService {
       throw new NotFoundException('Không tìm thấy kho cho cửa hàng này');
     }
 
-    return this.getStoreInventory(warehouse.id);
+    return this.getStoreInventory(warehouse.id, query || {});
   }
 
   async getStoreTransactions(
     storeId: string,
-    query: {
-      type?: 'import' | 'export' | 'waste' | 'adjustment';
-      limit?: number;
-      offset?: number;
-    },
+    query: GetInventoryTransactionsDto,
   ) {
     const warehouse =
       await this.inventoryRepository.findWarehouseByStoreId(storeId);
@@ -57,19 +61,22 @@ export class InventoryService {
       throw new NotFoundException('Không tìm thấy kho cho cửa hàng này');
     }
 
-    const transactions = await this.inventoryRepository.getStoreTransactions(
+    const { items, meta } = await this.inventoryRepository.getStoreTransactions(
       warehouse.id,
       query,
     );
 
-    return transactions.map((tx) => ({
-      transactionType: tx.type,
-      quantityChange: parseFloat(tx.quantityChange),
-      productName: tx.batch.product.name,
-      batchCode: tx.batch.batchCode,
-      createdAt: tx.createdAt,
-      referenceId: tx.referenceId,
-    }));
+    return {
+      items: items.map((tx) => ({
+        transactionType: tx.type,
+        quantityChange: parseFloat(tx.quantityChange),
+        productName: tx.batch.product.name,
+        batchCode: tx.batch.batchCode,
+        createdAt: tx.createdAt,
+        referenceId: tx.referenceId,
+      })),
+      meta,
+    };
   }
 
   async updateInventory(
@@ -108,7 +115,6 @@ export class InventoryService {
   async getInventorySummary(
     filters: {
       warehouseId?: number;
-      categoryId?: number;
       searchTerm?: string;
     },
     options: { limit?: number; offset?: number },
@@ -173,33 +179,58 @@ export class InventoryService {
     return id;
   }
 
-  // API 6: Xem tổng tồn kho
-  async getKitchenSummary(search?: string) {
-    const warehouseId = await this.getKitchenWarehouseId();
-    const rawData = await this.inventoryRepository.getKitchenSummary(
-      warehouseId,
-      search,
+  //  Group theo Product để xem tổng quan
+  async getKitchenSummary(query: GetKitchenInventoryDto) {
+    const centralWarehouseId =
+      await this.inventoryRepository.findCentralWarehouseId();
+
+    if (!centralWarehouseId) {
+      // Nếu chưa có kho trung tâm -> trả về rỗng
+      return {
+        items: [],
+        meta: {
+          totalItems: 0,
+          itemCount: 0,
+          itemsPerPage: query.limit || 20,
+          totalPages: 0,
+          currentPage: query.page || 1,
+        },
+      };
+    }
+
+    const { items, meta } = await this.inventoryRepository.getKitchenSummary(
+      centralWarehouseId,
+      {
+        search: query.search,
+        limit: query.limit ? Number(query.limit) : 20,
+        offset: query.page
+          ? (Number(query.page) - 1) * (query.limit ? Number(query.limit) : 20)
+          : 0,
+      },
     );
 
     // Format dữ liệu trả về
-    return rawData.map((item) => {
-      const physical = item.totalPhysical || 0;
-      const reserved = item.totalReserved || 0;
-      const available = physical - reserved;
+    return {
+      items: items.map((item) => {
+        const physical = item.totalPhysical || 0;
+        const reserved = item.totalReserved || 0;
+        const available = physical - reserved;
 
-      return {
-        product_id: item.productId,
-        product_name: item.productName,
-        sku: item.sku,
-        unit: item.unitName,
-        min_stock: item.minStock,
-        total_physical: physical, // Tổng thực tế
-        total_reserved: reserved, // Đang xử lý
-        available_quantity: available, // Có thể dùng
-        // Cờ cảnh báo nếu dưới định mức
-        is_low_stock: available < (item.minStock || 0),
-      };
-    });
+        return {
+          product_id: item.productId,
+          product_name: item.productName,
+          sku: item.sku,
+          unit: item.unitName,
+          min_stock: item.minStock,
+          total_physical: physical, // Tổng thực tế
+          total_reserved: reserved, // Đang xử lý
+          available_quantity: available, // Có thể dùng
+          // Cờ cảnh báo nếu dưới định mức
+          is_low_stock: available < (item.minStock || 0),
+        };
+      }),
+      meta,
+    };
   }
 
   // API 7: Xem chi tiết lô (Drill-down)

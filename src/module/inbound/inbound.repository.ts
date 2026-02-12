@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq, InferSelectModel, sql } from 'drizzle-orm';
+import { and, eq, gte, InferSelectModel, lte, SQL, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
+import { GetReceiptsDto } from './dto/get-receipts.dto';
 
 type Transaction = Parameters<
   Parameters<NodePgDatabase<typeof schema>['transaction']>[0]
@@ -120,36 +121,18 @@ export class InboundRepository {
 
   // Transaction Thêm Batch & Receipt Item
   // Lưu ý: Hàm này vẫn giữ transaction nội bộ vì nó độc lập với quy trình Complete
-  async addBatchToReceipt(
-    receiptId: string,
-    data: {
-      productId: number;
-      batchCode: string;
-      expiryDate: string; // ISO Date String
-      quantity: string;
-    },
-  ) {
-    return this.db.transaction(async (tx) => {
-      // 1. Tạo Batch (Status: PENDING)
-      const [batch] = await tx
-        .insert(schema.batches)
-        .values({
-          productId: data.productId,
-          batchCode: data.batchCode,
-          expiryDate: data.expiryDate,
-          status: 'pending',
-        })
-        .returning();
-
-      // Link Batch vào Receipt
-      await tx.insert(schema.receiptItems).values({
+  // Transaction Thêm Receipt Item (Batch đã được tạo trước đó qua ProductService)
+  async addReceiptItem(receiptId: string, batchId: number, quantity: number) {
+    const [item] = await this.db
+      .insert(schema.receiptItems)
+      .values({
         receiptId: receiptId,
-        batchId: batch.id,
-        quantity: data.quantity,
-      });
+        batchId: batchId,
+        quantity: quantity.toString(),
+      })
+      .returning();
 
-      return batch;
-    });
+    return item;
   }
 
   // Helper: Lấy SKU sản phẩm để sinh mã Batch
@@ -211,11 +194,55 @@ export class InboundRepository {
   }
 
   // API 10: Get All Receipts (Read-only for Staff/Manager)
-  async findAllReceipts(page: number, limit: number) {
+  async findAllReceipts(query: GetReceiptsDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
     const offset = (page - 1) * limit;
 
-    // Filter: Status != cancelled (Active equivalent)
-    const whereCondition = sql`${schema.receipts.status} != 'cancelled'`;
+    const conditions: SQL[] = [];
+
+    // Filter by Status
+    if (query.status) {
+      conditions.push(eq(schema.receipts.status, query.status));
+    }
+
+    // Filter by Supplier
+    if (query.supplierId) {
+      conditions.push(eq(schema.receipts.supplierId, query.supplierId));
+    }
+
+    // Filter by Search (Receipt ID)
+    if (query.search) {
+      // Assuming search is by UUID since Receipt ID is UUID
+      // Use ilike if it was a text field, but eq or similar for UUID if robust
+      // Per requiremnt: "Search (Tìm theo Receipt ID - UUID)"
+      // Let's use ilike on a casted text or just strict eq if user inputs UUID.
+      // But typically search implies fuzzy. Since UUID is strict, let's try strict first or cast.
+      // However, for UUID columns, usually we search by exact match if it's a valid UUID, or ignore if not?
+      // Or cast to text and search? schema.receipts.id is UUID.
+      // Let's assume partial match on UUID string for better UX or exact match.
+      // Instructions say: "search: String (Tìm theo Receipt ID - UUID)"
+      // Let's use cast to text for ilike to be safe/flexible or eq.
+      // Given it's UUID, let's try `sql` cast for ilike to allow partial search if needed, or strictly eq if frontend sends full UUID.
+      // Safe bet: strict eq if it looks like UUID, or skip?
+      // Let's use strict eq for UUID to avoid DB errors on invalid UUID syntax in some dialects,
+      // but Postgres can handle text comparison on UUIDs?
+      // Actually, let's use ::text cast for ilike for flexibility.
+      conditions.push(
+        sql`${schema.receipts.id}::text ILIKE ${`%${query.search}%`}`,
+      );
+    }
+
+    // Filter by Date
+    if (query.fromDate) {
+      conditions.push(gte(schema.receipts.createdAt, new Date(query.fromDate)));
+    }
+    if (query.toDate) {
+      conditions.push(lte(schema.receipts.createdAt, new Date(query.toDate)));
+    }
+
+    const whereCondition =
+      conditions.length > 0 ? and(...conditions) : undefined;
 
     const data = await this.db.query.receipts.findMany({
       where: whereCondition,
@@ -223,8 +250,8 @@ export class InboundRepository {
       offset: offset,
       orderBy: (receipts, { desc }) => [desc(receipts.createdAt)],
       with: {
-        supplier: true, // Join to get Name
-        user: true, // Join to get Creator Name
+        supplier: true,
+        user: true,
       },
     });
 
@@ -233,9 +260,17 @@ export class InboundRepository {
       .from(schema.receipts)
       .where(whereCondition);
 
+    const totalItems = Number(totalRaw[0]?.count || 0);
+
     return {
-      data,
-      total: Number(totalRaw[0]?.count || 0),
+      items: data,
+      meta: {
+        totalItems,
+        itemCount: data.length,
+        itemsPerPage: limit,
+        totalPages: Math.ceil(totalItems / limit),
+        currentPage: page,
+      },
     };
   }
 

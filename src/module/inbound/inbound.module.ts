@@ -5,8 +5,10 @@ import { InboundController } from './inbound.controller';
 import { InboundRepository } from './inbound.repository';
 import { InboundService } from './inbound.service';
 
+import { ProductModule } from '../product/product.module';
+
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, ProductModule],
   controllers: [InboundController],
   providers: [InboundService, InboundRepository, WarehouseRepository],
   exports: [InboundService, InboundRepository, WarehouseRepository],

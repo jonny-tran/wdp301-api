@@ -16,6 +16,8 @@ import { ClaimStatus } from './constants/claim-status.enum';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
 import { ResolveClaimDto } from './dto/resolve-claim.dto';
 
+import { GetClaimsDto } from './dto/get-claims.dto';
+
 @Injectable()
 export class ClaimService {
   private readonly orderStatusEnum = OrderStatus;
@@ -27,6 +29,10 @@ export class ClaimService {
     private readonly shipmentRepository: ShipmentRepository,
     private readonly uow: UnitOfWork,
   ) {}
+
+  async findAll(query: GetClaimsDto) {
+    return this.claimRepository.findAll(query);
+  }
 
   async createManualClaim(
     dto: CreateManualClaimDto,
@@ -131,26 +137,6 @@ export class ClaimService {
     }
 
     return await this.claimRepository.updateClaimStatus(id, dto.status);
-  }
-
-  async getClaimsByStore(storeId: string) {
-    const claims = await this.claimRepository.getClaimsByStoreId(storeId);
-
-    return claims.map((claim) => ({
-      id: claim.id,
-      shipmentId: claim.shipmentId,
-      status: claim.status,
-      createdAt: claim.createdAt,
-      resolvedAt: claim.resolvedAt,
-      items: claim.items.map((item) => ({
-        productName: item.product.name,
-        sku: item.product.sku,
-        quantityMissing: parseFloat(item.quantityMissing || '0'),
-        quantityDamaged: parseFloat(item.quantityDamaged || '0'),
-        reason: item.reason,
-        imageUrl: item.imageUrl,
-      })),
-    }));
   }
 
   async getClaimDetail(id: string, storeId: string) {

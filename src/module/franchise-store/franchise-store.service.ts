@@ -43,7 +43,10 @@ export class FranchiseStoreService {
     });
   }
 
-  async findAll(filter?: GetStoresFilterDto) {
+  async findAll(filter: GetStoresFilterDto) {
+    if (filter.isActive === undefined) {
+      filter.isActive = true;
+    }
     return this.franchiseStoreRepository.findAll(filter);
   }
 

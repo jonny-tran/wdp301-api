@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
+import { GetSuppliersDto } from './dto/get-suppliers.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { SupplierRepository } from './supplier.repository';
 
@@ -11,21 +12,8 @@ export class SupplierService {
     return this.supplierRepository.create(createSupplierDto);
   }
 
-  async findAll(page: number, limit: number, search?: string) {
-    const { data, total } = await this.supplierRepository.findAll(
-      page,
-      limit,
-      search,
-    );
-    return {
-      data,
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+  async findAll(query: GetSuppliersDto) {
+    return this.supplierRepository.findAll(query);
   }
 
   async findOne(id: number) {

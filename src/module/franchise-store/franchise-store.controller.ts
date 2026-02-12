@@ -56,7 +56,7 @@ export class FranchiseStoreController {
 
   @Delete(':id')
   @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Xóa Store[Manager]' })
+  @ApiOperation({ summary: 'Xóa Store [Manager]' })
   async remove(@Param('id') id: string) {
     return this.franchiseStoreService.remove(id);
   }

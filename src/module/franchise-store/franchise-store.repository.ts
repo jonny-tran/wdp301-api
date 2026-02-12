@@ -1,8 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, ilike, or, SQL } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from 'src/database/database.constants';
 import * as schema from 'src/database/schema';
+import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
+import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { GetStoresFilterDto } from './dto/get-stores-filter.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
@@ -14,34 +16,18 @@ export class FranchiseStoreRepository {
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
-  async findAll(filter?: GetStoresFilterDto) {
-    const conditions: SQL[] = [];
+  private readonly storeFilterMap: FilterMap<typeof schema.stores> = {
+    search: { column: schema.stores.name, operator: 'ilike' },
+    isActive: { column: schema.stores.isActive, operator: 'eq' },
+  };
 
-    if (filter?.search) {
-      const searchLower = `%${filter.search}%`;
-      const searchCondition = or(
-        ilike(schema.stores.name, searchLower),
-        ilike(schema.stores.address, searchLower),
-      );
-      if (searchCondition) {
-        conditions.push(searchCondition);
-      }
-    }
-
-    if (filter?.isActive !== undefined) {
-      conditions.push(eq(schema.stores.isActive, filter.isActive));
-    } else {
-      // Default: Chỉ hiện thị store đang hoạt động
-      conditions.push(eq(schema.stores.isActive, true));
-    }
-
-    return this.db.query.stores.findMany({
-      where: conditions.length > 0 ? and(...conditions) : undefined,
-      orderBy: (stores, { desc }) => [desc(stores.createdAt)],
-      with: {
-        warehouses: true,
-      },
-    });
+  async findAll(filter: GetStoresFilterDto) {
+    return paginate(
+      this.db,
+      schema.stores,
+      filter as PaginationParamsDto & Record<string, unknown>,
+      this.storeFilterMap,
+    );
   }
 
   async findById(id: string) {

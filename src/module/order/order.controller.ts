@@ -7,8 +7,6 @@ import {
   Post,
   Query,
   UseGuards,
-  UsePipes,
-  ValidationPipe,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -17,9 +15,10 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import type { IJwtPayload } from '../auth/types/auth.types';
-import { OrderStatus } from './constants/order-status.enum';
 import { ApproveOrderDto } from './dto/approve-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { GetCatalogDto } from './dto/get-catalog.dto';
+import { GetOrdersDto } from './dto/get-orders.dto';
 import { RejectOrderDto } from './dto/reject-order.dto';
 import { OrderService } from './order.service';
 
@@ -30,17 +29,19 @@ import { OrderService } from './order.service';
 export class OrderController {
   constructor(private readonly orderService: OrderService) {}
 
-  @Get('catalog')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Franchise Staff]' })
-  async getCatalog() {
-    return this.orderService.getCatalog();
+  @Get()
+  @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Lấy danh sách đơn hàng (Phân trang & Lọc) [Manager, Supply Coordinator]',
+  })
+  async findAll(@Query() query: GetOrdersDto) {
+    return this.orderService.findAll(query);
   }
 
   @Post()
   @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({ summary: 'Tạo đơn hàng [Franchise Staff]' })
-  @UsePipes(new ValidationPipe({ transform: true }))
   async createOrder(
     @CurrentUser() user: IJwtPayload,
     @Body() createOrderDto: CreateOrderDto,
@@ -48,22 +49,32 @@ export class OrderController {
     return this.orderService.createOrder(user, createOrderDto);
   }
 
+  @Get('catalog')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Franchise Staff]' })
+  async getCatalog(@Query() query: GetCatalogDto) {
+    query.isActive = true;
+    return this.orderService.getCatalog(query);
+  }
+
   @Get('my-store')
   @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({
     summary: 'Lấy danh sách đơn hàng của kho hàng của mình [Franchise Staff]',
   })
-  async getMyStoreOrders(@CurrentUser() user: IJwtPayload) {
-    return this.orderService.getMyStoreOrders(user);
+  async getMyStoreOrders(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: GetOrdersDto,
+  ) {
+    query.storeId = user.storeId?.toString().trim();
+    return this.orderService.findAll(query);
   }
 
-  @Get('coordinator')
-  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
-  @ApiOperation({
-    summary: 'Lấy danh sách đơn hàng chờ duyệt [Supply Coordinator]',
-  })
-  async getCoordinatorOrders(@Query('status') status?: OrderStatus) {
-    return this.orderService.getCoordinatorOrders(status);
+  @Patch('franchise/:id/cancel')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Hủy đơn hàng [Franchise Staff]' })
+  async cancelOrder(@Param('id') id: string, @CurrentUser() user: IJwtPayload) {
+    return this.orderService.cancelOrder(id, user);
   }
 
   @Get('coordinator/:id/review')
@@ -75,7 +86,7 @@ export class OrderController {
     return this.orderService.reviewOrder(id);
   }
 
-  @Patch(':id/approve')
+  @Patch('coordinator/:id/approve')
   @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({ summary: 'Duyệt đơn hàng [Supply Coordinator]' })
   async approveOrder(
@@ -85,7 +96,7 @@ export class OrderController {
     return this.orderService.approveOrder(id, approveDto.force_approve);
   }
 
-  @Patch(':id/reject')
+  @Patch('coordinator/:id/reject')
   @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({ summary: 'Từ chối đơn hàng [Supply Coordinator]' })
   async rejectOrder(
@@ -95,21 +106,16 @@ export class OrderController {
     return this.orderService.rejectOrder(id, rejectOrderDto.reason);
   }
 
-  @Patch(':id/cancel')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Hủy đơn hàng [Franchise Staff]' })
-  async cancelOrder(@Param('id') id: string, @CurrentUser() user: IJwtPayload) {
-    return this.orderService.cancelOrder(id, user);
-  }
-
   @Get(':id')
   @Roles(
     UserRole.SUPPLY_COORDINATOR,
     UserRole.FRANCHISE_STORE_STAFF,
+    UserRole.MANAGER,
     UserRole.ADMIN,
   )
   @ApiOperation({
-    summary: 'Lấy thông tin đơn hàng [Supply Coordinator, Franchise Staff]',
+    summary:
+      'Lấy thông tin đơn hàng [Supply Coordinator, Franchise Staff, Manager]',
   })
   async getOrderDetails(
     @Param('id') id: string,

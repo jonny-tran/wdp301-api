@@ -1,9 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
+import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { ClaimStatus } from './constants/claim-status.enum';
+import { GetClaimsDto } from './dto/get-claims.dto';
 
 @Injectable()
 export class ClaimRepository {
@@ -13,6 +16,23 @@ export class ClaimRepository {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  private readonly filterMap: FilterMap<typeof schema.claims> = {
+    status: { column: schema.claims.status, operator: 'eq' },
+    // storeId: { column: schema.claims.storeId, operator: 'eq' }, // Tạm thời disable vì bảng claims chưa có storeId
+    search: { column: schema.claims.id, operator: 'ilike' },
+    fromDate: { column: schema.claims.createdAt, operator: 'gte' },
+    toDate: { column: schema.claims.createdAt, operator: 'lte' },
+  };
+
+  async findAll(query: GetClaimsDto) {
+    return paginate(
+      this.db,
+      schema.claims,
+      query as PaginationParamsDto & Record<string, unknown>,
+      this.filterMap,
+    );
+  }
 
   async createClaim(
     shipmentId: string,
@@ -59,31 +79,6 @@ export class ClaimRepository {
       )
       .returning();
     return claimItems;
-  }
-
-  async getClaimsByStoreId(storeId: string) {
-    // We need to join through shipment -> toWarehouse -> store
-    const claims = await this.db.query.claims.findMany({
-      with: {
-        shipment: {
-          with: {
-            order: {
-              with: {
-                store: true,
-              },
-            },
-          },
-        },
-        items: {
-          with: {
-            product: true,
-          },
-        },
-      },
-    });
-
-    // Filter claims where the shipment's destination store matches
-    return claims.filter((claim) => claim.shipment.order.store.id === storeId);
   }
 
   async getClaimById(id: string) {

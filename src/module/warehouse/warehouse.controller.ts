@@ -8,25 +8,20 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ResponseMessage } from 'src/common/decorators/response-message.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import {
-  FinalizeShipmentDto,
-  PickItemDto,
-  ReportIssueDto,
-} from './dto/warehouse-ops.dto';
+import { FinalizeShipmentDto } from './dto/finalize-shipment.dto';
+import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
+import { PickItemDto } from './dto/pick-item.dto';
+import { ReportIssueDto } from './dto/report-issue.dto';
+import { ScanCheckDto } from './dto/scan-check.dto';
 import { WarehouseService } from './warehouse.service';
 
-@ApiTags('Warehouse Operations')
+@ApiTags('Vận hành kho Trung tâm')
 @ApiBearerAuth()
 @UseGuards(AtGuard, RolesGuard)
 @Controller('warehouse')
@@ -36,15 +31,13 @@ export class WarehouseController {
   @Get('picking-tasks')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Lấy danh sách các đơn hàng đã duyệt để bắt đầu soạn hàng [Kitchen]',
+    summary: 'Lấy danh sách tác vụ soạn hàng (Phân trang) [Kitchen]',
     description: 'Trả về danh sách các đơn hàng đang ở trạng thái APPROVED',
   })
-  @ApiQuery({ name: 'date', required: false })
-  @ResponseMessage('Lấy danh sách đơn cần soạn thành công')
-  async getPickingTasks(@Query('date') date?: string) {
+  @ResponseMessage('Lấy danh sách tác vụ soạn hàng thành công')
+  async getPickingTasks(@Query() query: GetPickingTasksDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
-    return this.warehouseService.getTasks(warehouseId, date);
+    return this.warehouseService.getTasks(warehouseId, query);
   }
 
   @Get('picking-tasks/:id')
@@ -63,11 +56,11 @@ export class WarehouseController {
   @Post('pick-item')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Xác nhận đã lấy đúng lô hàng bằng cách quét mã QR [Kitchen]',
+    summary: 'Xác nhận soạn mặt hàng (Quét mã vạch/Lô) [Kitchen]',
     description:
       'Kiểm tra chéo mã lô quét được với danh sách gợi ý và cập nhật hàng vào khu vực chờ giao.',
   })
-  @ResponseMessage('Xác nhận quét mã Lô thành công')
+  @ResponseMessage('Xác nhận soạn mặt hàng thành công')
   async pickItem(@Body() dto: PickItemDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.validatePickItem(warehouseId, dto);
@@ -88,12 +81,11 @@ export class WarehouseController {
   @Post('shipments')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Chốt danh sách đã soạn và chính thức tạo phiếu xuất kho [Kitchen]',
+    summary: 'Hoàn tất soạn hàng & Xuất kho [Kitchen]',
     description:
       'Chuyển trạng thái đơn hàng sang DELIVERING và trừ tồn kho vật lý.',
   })
-  @ResponseMessage('Tạo phiếu giao hàng thành công')
+  @ResponseMessage('Hoàn tất soạn hàng và xuất kho thành công')
   async createShipment(@Body() dto: FinalizeShipmentDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.finalizeShipment(warehouseId, dto);
@@ -106,7 +98,7 @@ export class WarehouseController {
     description:
       'Trả về thông tin để Frontend hiển thị form in ấn dán lên thùng hàng trước khi xe lăn bánh.',
   })
-  @ResponseMessage('In phiếu giao hàng thành công')
+  @ResponseMessage('Lấy dữ liệu in phiếu giao hàng thành công')
   async getShipmentLabel(@Param('id') id: string) {
     return this.warehouseService.getShipmentLabel(id);
   }
@@ -114,26 +106,24 @@ export class WarehouseController {
   @Get('scan-check')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Kiểm tra nhanh thông tin bất kỳ lô hàng nào qua mã QR [Kitchen]',
+    summary: 'Kiểm tra nhanh thông tin lô hàng [Kitchen]',
     description:
       'Quét mã lô để xem tên sản phẩm, hạn sử dụng và số lượng còn lại trong kho.',
   })
-  @ApiQuery({ name: 'batchCode', required: true })
-  @ResponseMessage('Quick check Batch Info by QR Code thành công')
-  async scanCheck(@Query('batchCode') batchCode: string) {
+  @ResponseMessage('Kiểm tra thông tin lô hàng thành công')
+  async scanCheck(@Query() query: ScanCheckDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
-    return this.warehouseService.scanBatchCheck(warehouseId, batchCode);
+    return this.warehouseService.scanBatchCheck(warehouseId, query.batchCode);
   }
 
   @Post('batch/report-issue')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Báo cáo hàng hỏng trong khi soạn và yêu cầu lô thay thế [Kitchen]',
+    summary: 'Báo cáo sự cố mặt hàng (Thiếu/Hỏng) [Kitchen]',
     description:
       'Khi phát hiện lô hàng bị hỏng, hệ thống sẽ tự động tìm lô khác cùng loại để bù vào đơn.',
   })
-  @ResponseMessage('Báo cáo lô hàng bị hỏng thành công')
+  @ResponseMessage('Báo cáo sự cố thành công')
   async reportIssue(@Body() dto: ReportIssueDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.reportIssue(warehouseId, dto);
