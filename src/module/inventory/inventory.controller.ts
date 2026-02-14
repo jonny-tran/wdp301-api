@@ -18,6 +18,12 @@ import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
 import { InventoryAdjustmentDto } from './dto/inventory-adjustment.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
+import {
+  AgingReportQueryDto,
+  //InventorySummaryQueryDto,
+  WasteReportQueryDto,
+  FinancialLossQueryDto,
+} from './dto/analytics-query.dto';
 
 @ApiTags('Inventory')
 @ApiBearerAuth()
@@ -123,5 +129,41 @@ export class InventoryController {
   async getKitchenDetails(@Query('product_id') productId: number) {
     // productId từ @Query mặc định là string, cần ép kiểu
     return this.inventoryService.getKitchenDetails(Number(productId));
+  }
+
+  // --- ANALYTICS DASHBOARD APIS ---
+
+  @Get('analytics/summary')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Tổng quan sức khỏe kho Bếp (Manager)' })
+  async getAnalyticsSummary() {
+    return this.inventoryService.getAnalyticsSummary();
+  }
+
+  // API 2
+  @Get('analytics/aging')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({ summary: 'Báo cáo tuổi hàng - Aging Report (Manager)' })
+  async getAgingReport(@Query() query: AgingReportQueryDto) {
+    return this.inventoryService.getAgingReport(query);
+  }
+
+  @Get('analytics/waste')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Thống kê hao hụt & hủy hàng - Waste Report (Manager)',
+    description:
+      'Thống kê số lượng hàng đã bị hủy (WASTE). Tính toán KPI tổng khối lượng bị hủy trong kỳ.',
+  })
+  async getWasteReport(@Query() query: WasteReportQueryDto) {
+    return this.inventoryService.getWasteReport(query);
+  }
+  @Get('analytics/financial/loss-impact')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'API 9: Ước tính giá trị thiệt hại tài chính (Manager)',
+  })
+  async getFinancialLoss(@Query() query: FinancialLossQueryDto) {
+    return this.inventoryService.getFinancialLoss(query);
   }
 }

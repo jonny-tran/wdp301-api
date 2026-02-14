@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { eq, and, sql, SQL } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from 'src/database/database.constants';
 import * as schema from 'src/database/schema';
@@ -90,4 +90,51 @@ export class FranchiseStoreRepository {
     // I will DOUBLE CHECK schema.ts content.
   }
   */
+  // API Get Data For Analytics
+  // --- API 7: Store Reliability ---
+  async getStoreReliability() {
+    return this.db
+      .select({
+        storeId: schema.stores.id,
+        storeName: schema.stores.name,
+        totalShipments: sql<number>`CAST(count(DISTINCT ${schema.shipments.id}) AS FLOAT)`,
+        totalClaims: sql<number>`CAST(count(DISTINCT ${schema.claims.id}) AS FLOAT)`,
+        totalDamaged: sql<number>`CAST(SUM(COALESCE(${schema.claimItems.quantityDamaged}, 0)) AS FLOAT)`,
+        totalMissing: sql<number>`CAST(SUM(COALESCE(${schema.claimItems.quantityMissing}, 0)) AS FLOAT)`,
+      })
+      .from(schema.stores)
+      .leftJoin(schema.orders, eq(schema.stores.id, schema.orders.storeId))
+      .leftJoin(
+        schema.shipments,
+        eq(schema.orders.id, schema.shipments.orderId),
+      )
+      .leftJoin(
+        schema.claims,
+        eq(schema.shipments.id, schema.claims.shipmentId),
+      )
+      .leftJoin(
+        schema.claimItems,
+        eq(schema.claims.id, schema.claimItems.claimId),
+      )
+      .groupBy(schema.stores.id, schema.stores.name);
+  }
+
+  // --- API 8: Demand Pattern ---
+  async getDemandPattern(productId?: number) {
+    const conditions: SQL[] = [];
+    if (productId) conditions.push(eq(schema.orderItems.productId, productId));
+
+    return this.db
+      .select({
+        dayOfWeek: sql<number>`CAST(EXTRACT(DOW FROM ${schema.orders.createdAt}) AS INTEGER)`,
+        totalRequested: sql<number>`CAST(SUM(${schema.orderItems.quantityRequested}) AS FLOAT)`,
+      })
+      .from(schema.orders)
+      .innerJoin(
+        schema.orderItems,
+        eq(schema.orders.id, schema.orderItems.orderId),
+      )
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .groupBy(sql`EXTRACT(DOW FROM ${schema.orders.createdAt})`);
+  }
 }

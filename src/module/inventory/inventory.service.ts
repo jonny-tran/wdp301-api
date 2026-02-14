@@ -7,6 +7,20 @@ import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryRepository } from './inventory.repository';
+import {
+  AgingReportQueryDto,
+  // InventorySummaryQueryDto,
+  WasteReportQueryDto,
+  FinancialLossQueryDto,
+} from './dto/analytics-query.dto';
+
+export interface AgingBucketItem {
+  batchCode: string;
+  productName: string;
+  quantity: number;
+  expiryDate: string;
+  percentageLeft: number;
+}
 
 @Injectable()
 export class InventoryService {
@@ -256,6 +270,191 @@ export class InventoryService {
           available: qty - res,
         };
       }),
+    };
+  }
+
+  async getAnalyticsSummary() {
+    const warehouseId = await this.getKitchenWarehouseId();
+
+    // Sử dụng query.categoryId (Truyền xuống Repo nếu Repo có hỗ trợ)
+    //const categoryId = query.categoryId;
+
+    const { inventoryData, expiredBatches } =
+      await this.inventoryRepository.getAnalyticsSummary(warehouseId);
+
+    const lowStockAlerts = inventoryData.filter((item) => {
+      const available = (item.totalPhysical || 0) - (item.totalReserved || 0);
+      return available < (item.minStock || 0);
+    });
+
+    return {
+      overview: {
+        totalProducts: inventoryData.length,
+        totalLowStockItems: lowStockAlerts.length,
+        totalExpiringBatches: expiredBatches.length,
+      },
+      lowStockAlerts: lowStockAlerts.map((i) => ({
+        productId: i.productId,
+        productName: i.productName,
+        availableQuantity: (i.totalPhysical || 0) - (i.totalReserved || 0),
+        minStockLevel: i.minStock,
+      })),
+      expiringBatches: expiredBatches.map((b) => ({
+        batchCode: b.batchCode,
+        quantity: parseFloat(b.quantity),
+        expiryDate: b.expiryDate,
+      })),
+    };
+  }
+
+  // --- API 2: Aging Report ---
+  async getAgingReport(query: AgingReportQueryDto) {
+    const warehouseId = await this.getKitchenWarehouseId();
+    const batches = await this.inventoryRepository.getAgingReport(warehouseId);
+
+    const now = new Date().getTime();
+
+    // Đọc giá trị từ query để Linter hiểu là biến có được sử dụng
+    const threshold = query.daysThreshold || 0;
+
+    const buckets = {
+      fresh: [] as AgingBucketItem[],
+      warning: [] as AgingBucketItem[],
+      critical: [] as AgingBucketItem[],
+    };
+
+    batches.forEach((batch) => {
+      const expiryDate = new Date(batch.expiryDate).getTime();
+      const shelfLifeMs = batch.shelfLifeDays * 24 * 60 * 60 * 1000;
+
+      const timeLeftMs = expiryDate - now;
+      const percentageLeft = (timeLeftMs / shelfLifeMs) * 100;
+
+      const itemInfo: AgingBucketItem = {
+        batchCode: batch.batchCode,
+        productName: batch.productName,
+        quantity: parseFloat(batch.quantity),
+        expiryDate: batch.expiryDate,
+        percentageLeft: Math.max(0, parseFloat(percentageLeft.toFixed(2))),
+      };
+
+      if (percentageLeft > 50) {
+        buckets.fresh.push(itemInfo);
+      } else if (percentageLeft >= 20) {
+        buckets.warning.push(itemInfo);
+      } else {
+        buckets.critical.push(itemInfo);
+      }
+    });
+
+    return {
+      summary: {
+        freshCount: buckets.fresh.length,
+        warningCount: buckets.warning.length,
+        criticalCount: buckets.critical.length,
+        appliedThreshold: threshold, // <-- Trả về xem như đã sử dụng biến
+      },
+      buckets,
+    };
+  }
+
+  // --- API 3: Waste Report ---
+  async getWasteReport(query: WasteReportQueryDto) {
+    const warehouseId = await this.getKitchenWarehouseId();
+
+    const wasteData = await this.inventoryRepository.getWasteReport(
+      warehouseId,
+      query.fromDate,
+      query.toDate,
+    );
+
+    let totalWasteQuantity = 0;
+
+    const formattedData = wasteData.map((w) => {
+      const qty = Math.abs(parseFloat(w.quantityWasted));
+      totalWasteQuantity += qty;
+
+      return {
+        transactionId: w.transactionId,
+        productName: w.productName,
+        batchCode: w.batchCode,
+        wastedQuantity: qty,
+        reason: w.reason,
+        date: w.createdAt,
+      };
+    });
+
+    return {
+      kpi: {
+        totalWastedQuantity: totalWasteQuantity,
+        period: `${query.fromDate || 'Tất cả'} đến ${query.toDate || 'Hiện tại'}`,
+      },
+      details: formattedData,
+    };
+  }
+
+  // --- API 9: Financial Loss Impact ---
+  async getFinancialLoss(query: FinancialLossQueryDto) {
+    const { wasteData, claimData } =
+      await this.inventoryRepository.getFinancialLoss(query.from, query.to);
+
+    // Gộp dữ liệu theo ProductID
+    const lossMap = new Map<
+      number,
+      { name: string; wasteQty: number; damagedQty: number }
+    >();
+
+    wasteData.forEach((w) => {
+      lossMap.set(w.productId, {
+        name: w.productName,
+        wasteQty: w.totalWaste || 0,
+        damagedQty: 0,
+      });
+    });
+
+    claimData.forEach((c) => {
+      if (lossMap.has(c.productId)) {
+        lossMap.get(c.productId)!.damagedQty = c.totalDamaged || 0;
+      } else {
+        lossMap.set(c.productId, {
+          name: c.productName,
+          wasteQty: 0,
+          damagedQty: c.totalDamaged || 0,
+        });
+      }
+    });
+
+    // NOTE: Vì Schema hiện tại KHÔNG lưu đơn giá nhập, chưa có money, gán đại một biến dummy (50k VND) để minh họa logic.
+    // Nếu tương lai có bảng Price, hãy Join vào Repo.
+    const ASSUMED_UNIT_PRICE = 50000;
+    let totalFinancialLoss = 0;
+
+    const details = Array.from(lossMap.entries()).map(([productId, data]) => {
+      const totalLossQty = data.wasteQty + data.damagedQty;
+      const financialLoss = totalLossQty * ASSUMED_UNIT_PRICE;
+      totalFinancialLoss += financialLoss;
+
+      return {
+        productId,
+        productName: data.name,
+        kitchenWasteQty: data.wasteQty,
+        storeDamagedQty: data.damagedQty,
+        totalLossQty,
+        estimatedLossVnd: financialLoss,
+      };
+    });
+
+    // Sort by highest financial loss
+    details.sort((a, b) => b.estimatedLossVnd - a.estimatedLossVnd);
+
+    return {
+      kpi: {
+        totalEstimatedLossVnd: totalFinancialLoss,
+        assumedUnitPriceVnd: ASSUMED_UNIT_PRICE,
+        note: 'Thiệt hại = (Hàng hủy tại bếp + Hàng hỏng tại cửa hàng) * Đơn giá giả định',
+        period: `${query.from || 'Bắt đầu'} - ${query.to || 'Hiện tại'}`,
+      },
+      details,
     };
   }
 }

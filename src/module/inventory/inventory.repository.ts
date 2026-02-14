@@ -11,6 +11,7 @@ import {
   or,
   SQL,
   sql,
+  lt,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { FilterMap } from '../../common/utils/paginate.util';
@@ -627,5 +628,203 @@ export class InventoryRepository {
         ),
       )
       .orderBy(asc(schema.batches.expiryDate)); // FEFO: Ưu tiên lô hết hạn trước
+  }
+
+  async getAnalyticsSummary(warehouseId: number) {
+    // Lưu ý: Hiện tại schema.ts chưa có category_id trong bảng products,
+    // nên ta sẽ bỏ qua filter categoryId hoặc bạn phải bổ sung vào schema sau.
+
+    // 1. Lấy tổng tồn kho theo Product
+    const inventoryQuery = this.db
+      .select({
+        productId: schema.products.id,
+        productName: schema.products.name,
+        minStock: schema.products.minStockLevel,
+        totalPhysical: sql<number>`CAST(SUM(${schema.inventory.quantity}) AS FLOAT)`,
+        totalReserved: sql<number>`CAST(SUM(${schema.inventory.reservedQuantity}) AS FLOAT)`,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(eq(schema.inventory.warehouseId, warehouseId))
+      .groupBy(
+        schema.products.id,
+        schema.products.name,
+        schema.products.minStockLevel,
+      );
+
+    // 2. Lấy danh sách Batch sắp hết hạn (< 48h)
+    // Tính toán thời gian 48h tới
+    const next48Hours = new Date();
+    next48Hours.setHours(next48Hours.getHours() + 48);
+
+    const expiredAlertQuery = this.db
+      .select({
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+        quantity: schema.inventory.quantity,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          lt(
+            schema.batches.expiryDate,
+            next48Hours.toISOString().split('T')[0],
+          ), // Cảnh báo expiry < 48h
+          gt(schema.inventory.quantity, '0'), // Chỉ đếm lô còn hàng
+        ),
+      );
+
+    const [inventoryData, expiredBatches] = await Promise.all([
+      inventoryQuery,
+      expiredAlertQuery,
+    ]);
+
+    return { inventoryData, expiredBatches };
+  }
+
+  // --- API 2: Aging Report ---
+  async getAgingReport(warehouseId: number) {
+    return this.db
+      .select({
+        batchCode: schema.batches.batchCode,
+        productName: schema.products.name,
+        quantity: schema.inventory.quantity,
+        expiryDate: schema.batches.expiryDate,
+        shelfLifeDays: schema.products.shelfLifeDays,
+        // Calculate created date approximation if not stored accurately,
+        // but here we just need to know how much time is left vs total shelf life.
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          gt(schema.inventory.quantity, '0'),
+        ),
+      )
+      .orderBy(asc(schema.batches.expiryDate));
+  }
+
+  // --- API 3: Waste Report ---
+  async getWasteReport(
+    warehouseId: number,
+    fromDate?: string,
+    toDate?: string,
+  ) {
+    const conditions = [
+      eq(schema.inventoryTransactions.warehouseId, warehouseId),
+      eq(schema.inventoryTransactions.type, 'waste'),
+    ];
+
+    if (fromDate)
+      conditions.push(
+        gte(schema.inventoryTransactions.createdAt, new Date(fromDate)),
+      );
+    if (toDate) {
+      // Set to cuối ngày
+      const to = new Date(toDate);
+      to.setHours(23, 59, 59, 999);
+      conditions.push(lte(schema.inventoryTransactions.createdAt, to));
+    }
+
+    return this.db
+      .select({
+        transactionId: schema.inventoryTransactions.id,
+        quantityWasted: schema.inventoryTransactions.quantityChange,
+        reason: schema.inventoryTransactions.reason,
+        createdAt: schema.inventoryTransactions.createdAt,
+        productName: schema.products.name,
+        batchCode: schema.batches.batchCode,
+      })
+      .from(schema.inventoryTransactions)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventoryTransactions.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(and(...conditions))
+      .orderBy(asc(schema.inventoryTransactions.createdAt));
+  }
+
+  // --- Financial Loss Impact ---
+  async getFinancialLoss(from?: string, to?: string) {
+    const invConditions: SQL[] = [
+      eq(schema.inventoryTransactions.type, 'waste'),
+    ];
+    const claimConditions: SQL[] = [];
+
+    if (from) {
+      invConditions.push(
+        gte(schema.inventoryTransactions.createdAt, new Date(from)),
+      );
+      claimConditions.push(gte(schema.claims.createdAt, new Date(from)));
+    }
+    if (to) {
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      invConditions.push(lte(schema.inventoryTransactions.createdAt, toDate));
+      claimConditions.push(lte(schema.claims.createdAt, toDate));
+    }
+
+    // 1. Hàng hủy tại bếp (Từ bảng Bất biến: InventoryTransactions)
+    const wasteQuery = this.db
+      .select({
+        productId: schema.batches.productId,
+        productName: schema.products.name,
+        totalWaste: sql<number>`CAST(SUM(ABS(${schema.inventoryTransactions.quantityChange})) AS FLOAT)`,
+      })
+      .from(schema.inventoryTransactions)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventoryTransactions.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(and(...invConditions))
+      .groupBy(schema.batches.productId, schema.products.name);
+
+    // 2. Hàng hỏng tại kho cửa hàng (Từ Claims)
+    const claimQuery = this.db
+      .select({
+        productId: schema.claimItems.productId,
+        productName: schema.products.name,
+        totalDamaged: sql<number>`CAST(SUM(${schema.claimItems.quantityDamaged}) AS FLOAT)`,
+      })
+      .from(schema.claimItems)
+      .innerJoin(schema.claims, eq(schema.claimItems.claimId, schema.claims.id))
+      .innerJoin(
+        schema.products,
+        eq(schema.claimItems.productId, schema.products.id),
+      )
+      .where(claimConditions.length > 0 ? and(...claimConditions) : undefined)
+      .groupBy(schema.claimItems.productId, schema.products.name);
+
+    const [wasteData, claimData] = await Promise.all([wasteQuery, claimQuery]);
+    return { wasteData, claimData };
   }
 }
