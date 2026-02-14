@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './module/auth/auth.module';
 import { ClaimModule } from './module/claim/claim.module';
+import { CloudinaryModule } from './module/cloudinary/cloudinary.module';
 import { FranchiseStoreModule } from './module/franchise-store/franchise-store.module';
 import { InboundModule } from './module/inbound/inbound.module';
 import { InventoryModule } from './module/inventory/inventory.module';
@@ -43,6 +44,7 @@ import { WarehouseModule } from './module/warehouse/warehouse.module';
     FranchiseStoreModule,
     InboundModule,
     SupplierModule,
+    CloudinaryModule,
   ],
   controllers: [AppController],
   providers: [AppService],
