@@ -16,6 +16,7 @@ import { ClaimStatus } from './constants/claim-status.enum';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
 import { GetClaimsDto } from './dto/get-claims.dto';
 import { ResolveClaimDto } from './dto/resolve-claim.dto';
+import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 
 @Injectable()
 export class ClaimService {
@@ -243,5 +244,82 @@ export class ClaimService {
     await this.claimRepository.createClaimItems(claimItems, tx);
 
     return claim;
+  }
+
+  // --- API: Analytics Discrepancy ---
+  async getClaimSummary(query: ClaimSummaryQueryDto) {
+    const data = await this.claimRepository.getDiscrepancyAnalytics(
+      query.productId,
+    );
+
+    // 1. Dùng shippedStats làm base data (Vì hàng giao luôn có trước hàng lỗi)
+    let totalDamagedOverall = 0;
+    let totalShippedOverall = 0;
+
+    // Chuyển claimsStats thành Map để tra cứu cho nhanh
+    const claimsMap = new Map<
+      number,
+      { damaged: number; missing: number; name: string }
+    >();
+    data.claimsStats.forEach((c) => {
+      claimsMap.set(c.productId, {
+        damaged: c.totalDamaged || 0,
+        missing: c.totalMissing || 0,
+        name: c.productName,
+      });
+    });
+
+    // 2. Map dữ liệu dựa trên danh sách đã giao (shippedStats)
+    const productAnalytics = data.shippedStats.map((s) => {
+      const claimData = claimsMap.get(s.productId) || {
+        damaged: 0,
+        missing: 0,
+        name: `Product ${s.productId}`,
+      };
+
+      const shipped = s.totalShipped || 0;
+      const damaged = claimData.damaged;
+      const missing = claimData.missing;
+
+      totalShippedOverall += shipped;
+      totalDamagedOverall += damaged;
+
+      return {
+        productId: s.productId,
+        // SỬA DÒNG NÀY: Ưu tiên lấy s.productName (từ DB thật), nếu null mới dùng claimData
+        productName: s.productName || claimData.name,
+        totalShipped: shipped,
+        totalDamaged: damaged,
+        totalMissing: missing,
+        damageRate: shipped > 0 ? (damaged / shipped) * 100 : 0,
+      };
+    });
+
+    // 3. Sort by damage rate (DESC) to find Bottleneck
+    productAnalytics.sort((a, b) => b.damageRate - a.damageRate);
+
+    // 4. Tính KPI tổng
+    const overallDamageRate =
+      totalShippedOverall > 0
+        ? (totalDamagedOverall / totalShippedOverall) * 100
+        : 0;
+
+    const missingRate =
+      data.totalShipments > 0
+        ? (data.shipmentsWithMissing / data.totalShipments) * 100
+        : 0;
+
+    return {
+      kpi: {
+        damageRatePercentage: parseFloat(overallDamageRate.toFixed(2)),
+        missingRatePercentage: parseFloat(missingRate.toFixed(2)),
+        totalShipments: data.totalShipments,
+        shipmentsWithMissing: data.shipmentsWithMissing,
+      },
+      bottleneckProducts: productAnalytics.slice(0, 10).map((p) => ({
+        ...p,
+        damageRate: parseFloat(p.damageRate.toFixed(2)) + '%',
+      })),
+    };
   }
 }

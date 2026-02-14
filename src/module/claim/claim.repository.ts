@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
 import { FilterMap, paginate } from '../../common/utils/paginate.util';
@@ -138,5 +138,70 @@ export class ClaimRepository {
       .where(eq(schema.claims.id, id))
       .returning();
     return updated;
+  }
+
+  // --- API : Analytics Discrepancy & Bottleneck ---
+  async getDiscrepancyAnalytics(productId?: number) {
+    // 1. Thống kê tổng hàng hóa đã được giao (Từ ShipmentItems)
+    const shippedStatsQuery = this.db
+      .select({
+        productId: schema.batches.productId,
+        productName: schema.products.name,
+        totalShipped: sql<number>`CAST(SUM(${schema.shipmentItems.quantity}) AS FLOAT)`,
+      })
+      .from(schema.shipmentItems)
+      .innerJoin(
+        schema.batches,
+        eq(schema.shipmentItems.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(productId ? eq(schema.batches.productId, productId) : undefined)
+      .groupBy(schema.batches.productId, schema.products.name);
+
+    // 2. Thống kê hàng lỗi hỏng / thất lạc (Từ ClaimItems)
+    const claimsStatsQuery = this.db
+      .select({
+        productId: schema.claimItems.productId,
+        productName: schema.products.name,
+        totalDamaged: sql<number>`CAST(SUM(${schema.claimItems.quantityDamaged}) AS FLOAT)`,
+        totalMissing: sql<number>`CAST(SUM(${schema.claimItems.quantityMissing}) AS FLOAT)`,
+      })
+      .from(schema.claimItems)
+      .innerJoin(
+        schema.products,
+        eq(schema.claimItems.productId, schema.products.id),
+      )
+      .where(productId ? eq(schema.claimItems.productId, productId) : undefined)
+      .groupBy(schema.claimItems.productId, schema.products.name);
+
+    // 3. Đếm số lượng Shipment (Để tính Missing Rate % Shipment)
+    const totalShipmentsRes = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.shipments);
+    const shipmentsWithMissingRes = await this.db
+      .select({
+        count: sql<number>`count(DISTINCT ${schema.claims.shipmentId})`,
+      })
+      .from(schema.claims)
+      .innerJoin(
+        schema.claimItems,
+        eq(schema.claims.id, schema.claimItems.claimId),
+      )
+      .where(sql`${schema.claimItems.quantityMissing} > 0`);
+
+    const [shippedStats, claimsStats] = await Promise.all([
+      shippedStatsQuery,
+      claimsStatsQuery,
+    ]);
+
+    return {
+      shippedStats,
+      claimsStats,
+      totalShipments: Number(totalShipmentsRes[0].count),
+      shipmentsWithMissing: Number(shipmentsWithMissingRes[0].count),
+    };
   }
 }

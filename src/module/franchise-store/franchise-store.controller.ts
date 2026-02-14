@@ -18,6 +18,7 @@ import { CreateStoreDto } from './dto/create-store.dto';
 import { GetStoresFilterDto } from './dto/get-stores-filter.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
 import { FranchiseStoreService } from './franchise-store.service';
+import { DemandPatternQueryDto } from './dto/analytics-query.dto';
 
 @ApiTags('Franchise Stores')
 @ApiBearerAuth()
@@ -59,5 +60,23 @@ export class FranchiseStoreController {
   @ApiOperation({ summary: 'Xóa Store [Manager]' })
   async remove(@Param('id') id: string) {
     return this.franchiseStoreService.remove(id);
+  }
+
+  @Get('analytics/reliability')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'API 7: Đánh giá độ tin cậy của Cửa hàng & Phát hiện gian lận',
+  })
+  async getStoreReliability() {
+    return this.franchiseStoreService.getStoreReliability();
+  }
+
+  @Get('analytics/demand-pattern')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'API 8: Phân tích xu hướng đặt hàng theo Thứ trong tuần',
+  })
+  async getDemandPattern(@Query() query: DemandPatternQueryDto) {
+    return this.franchiseStoreService.getDemandPattern(query);
   }
 }

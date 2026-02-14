@@ -42,3 +42,14 @@ export class WasteReportQueryDto {
   @IsDateString()
   toDate?: string;
 }
+export class FinancialLossQueryDto {
+  @ApiPropertyOptional({ description: 'Từ ngày (YYYY-MM-DD)' })
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Đến ngày (YYYY-MM-DD)' })
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+}

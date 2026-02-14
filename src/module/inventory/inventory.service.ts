@@ -11,6 +11,7 @@ import {
   AgingReportQueryDto,
   // InventorySummaryQueryDto,
   WasteReportQueryDto,
+  FinancialLossQueryDto,
 } from './dto/analytics-query.dto';
 
 export interface AgingBucketItem {
@@ -389,6 +390,71 @@ export class InventoryService {
         period: `${query.fromDate || 'Tất cả'} đến ${query.toDate || 'Hiện tại'}`,
       },
       details: formattedData,
+    };
+  }
+
+  // --- API 9: Financial Loss Impact ---
+  async getFinancialLoss(query: FinancialLossQueryDto) {
+    const { wasteData, claimData } =
+      await this.inventoryRepository.getFinancialLoss(query.from, query.to);
+
+    // Gộp dữ liệu theo ProductID
+    const lossMap = new Map<
+      number,
+      { name: string; wasteQty: number; damagedQty: number }
+    >();
+
+    wasteData.forEach((w) => {
+      lossMap.set(w.productId, {
+        name: w.productName,
+        wasteQty: w.totalWaste || 0,
+        damagedQty: 0,
+      });
+    });
+
+    claimData.forEach((c) => {
+      if (lossMap.has(c.productId)) {
+        lossMap.get(c.productId)!.damagedQty = c.totalDamaged || 0;
+      } else {
+        lossMap.set(c.productId, {
+          name: c.productName,
+          wasteQty: 0,
+          damagedQty: c.totalDamaged || 0,
+        });
+      }
+    });
+
+    // NOTE: Vì Schema hiện tại KHÔNG lưu đơn giá nhập, chưa có money, gán đại một biến dummy (50k VND) để minh họa logic.
+    // Nếu tương lai có bảng Price, hãy Join vào Repo.
+    const ASSUMED_UNIT_PRICE = 50000;
+    let totalFinancialLoss = 0;
+
+    const details = Array.from(lossMap.entries()).map(([productId, data]) => {
+      const totalLossQty = data.wasteQty + data.damagedQty;
+      const financialLoss = totalLossQty * ASSUMED_UNIT_PRICE;
+      totalFinancialLoss += financialLoss;
+
+      return {
+        productId,
+        productName: data.name,
+        kitchenWasteQty: data.wasteQty,
+        storeDamagedQty: data.damagedQty,
+        totalLossQty,
+        estimatedLossVnd: financialLoss,
+      };
+    });
+
+    // Sort by highest financial loss
+    details.sort((a, b) => b.estimatedLossVnd - a.estimatedLossVnd);
+
+    return {
+      kpi: {
+        totalEstimatedLossVnd: totalFinancialLoss,
+        assumedUnitPriceVnd: ASSUMED_UNIT_PRICE,
+        note: 'Thiệt hại = (Hàng hủy tại bếp + Hàng hỏng tại cửa hàng) * Đơn giá giả định',
+        period: `${query.from || 'Bắt đầu'} - ${query.to || 'Hiện tại'}`,
+      },
+      details,
     };
   }
 }

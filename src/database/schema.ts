@@ -3,6 +3,7 @@ import {
   boolean,
   date,
   decimal,
+  index, // <-- ĐÃ THÊM IMPORT NÀY
   integer,
   pgEnum,
   pgTable,
@@ -146,18 +147,26 @@ export const products = pgTable('products', {
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
-export const batches = pgTable('batches', {
-  id: serial('id').primaryKey(),
-  batchCode: text('batch_code').notNull().unique(),
-  productId: integer('product_id')
-    .references(() => products.id)
-    .notNull(),
-  expiryDate: date('expiry_date').notNull(),
-  status: batchStatusEnum('status').default('pending').notNull(),
-  imageUrl: text('image_url'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow(),
-});
+export const batches = pgTable(
+  'batches',
+  {
+    id: serial('id').primaryKey(),
+    batchCode: text('batch_code').notNull().unique(),
+    productId: integer('product_id')
+      .references(() => products.id)
+      .notNull(),
+    expiryDate: date('expiry_date').notNull(),
+    status: batchStatusEnum('status').default('pending').notNull(),
+    imageUrl: text('image_url'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (t) => [
+    {
+      expiryIdx: index('idx_batches_expiry').on(t.expiryDate),
+    },
+  ],
+);
 
 export const suppliers = pgTable('suppliers', {
   id: serial('id').primaryKey(),
@@ -221,39 +230,56 @@ export const inventory = pgTable(
   }),
 );
 
-export const inventoryTransactions = pgTable('inventory_transactions', {
-  id: serial('id').primaryKey(),
-  warehouseId: integer('warehouse_id')
-    .references(() => warehouses.id)
-    .notNull(),
-  batchId: integer('batch_id')
-    .references(() => batches.id)
-    .notNull(),
-  type: transactionTypeEnum('type').notNull(),
-  quantityChange: decimal('quantity_change', {
-    precision: 10,
-    scale: 2,
-  }).notNull(),
-  referenceId: text('reference_id'),
-  reason: text('reason'),
-  createdAt: timestamp('created_at').defaultNow(),
-});
+export const inventoryTransactions = pgTable(
+  'inventory_transactions',
+  {
+    id: serial('id').primaryKey(),
+    warehouseId: integer('warehouse_id')
+      .references(() => warehouses.id)
+      .notNull(),
+    batchId: integer('batch_id')
+      .references(() => batches.id)
+      .notNull(),
+    type: transactionTypeEnum('type').notNull(),
+    quantityChange: decimal('quantity_change', {
+      precision: 10,
+      scale: 2,
+    }).notNull(),
+    referenceId: text('reference_id'),
+    reason: text('reason'),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (t) => [
+    {
+      typeIdx: index('idx_inventory_tx_type').on(t.type), // <-- THÊM INDEX
+    },
+  ],
+);
 
-export const orders = pgTable('orders', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  storeId: uuid('store_id')
-    .references(() => stores.id)
-    .notNull(),
-  status: orderStatusEnum('status').default('pending').notNull(),
-  totalAmount: decimal('total_amount', { precision: 12, scale: 2 }).default(
-    '0',
-  ),
-  deliveryDate: timestamp('delivery_date').notNull(),
-  priority: text('priority').default('standard'),
-  note: text('note'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow(),
-});
+export const orders = pgTable(
+  'orders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    storeId: uuid('store_id')
+      .references(() => stores.id)
+      .notNull(),
+    status: orderStatusEnum('status').default('pending').notNull(),
+    totalAmount: decimal('total_amount', { precision: 12, scale: 2 }).default(
+      '0',
+    ),
+    deliveryDate: timestamp('delivery_date').notNull(),
+    priority: text('priority').default('standard'),
+    note: text('note'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (t) => [
+    {
+      statusIdx: index('idx_orders_status').on(t.status), // <-- THÊM INDEX
+      createdAtIdx: index('idx_orders_created_at').on(t.createdAt), // <-- THÊM INDEX
+    },
+  ],
+);
 
 export const orderItems = pgTable('order_items', {
   id: serial('id').primaryKey(),
@@ -270,22 +296,30 @@ export const orderItems = pgTable('order_items', {
   quantityApproved: decimal('quantity_approved', { precision: 10, scale: 2 }),
 });
 
-export const shipments = pgTable('shipments', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  orderId: uuid('order_id')
-    .references(() => orders.id)
-    .notNull(),
-  fromWarehouseId: integer('from_warehouse_id')
-    .references(() => warehouses.id)
-    .notNull(),
-  toWarehouseId: integer('to_warehouse_id')
-    .references(() => warehouses.id)
-    .notNull(),
-  status: shipmentStatusEnum('status').default('preparing').notNull(),
-  shipDate: timestamp('ship_date'),
-  createdAt: timestamp('created_at').defaultNow(),
-  updatedAt: timestamp('updated_at').defaultNow(),
-});
+export const shipments = pgTable(
+  'shipments',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    orderId: uuid('order_id')
+      .references(() => orders.id)
+      .notNull(),
+    fromWarehouseId: integer('from_warehouse_id')
+      .references(() => warehouses.id)
+      .notNull(),
+    toWarehouseId: integer('to_warehouse_id')
+      .references(() => warehouses.id)
+      .notNull(),
+    status: shipmentStatusEnum('status').default('preparing').notNull(),
+    shipDate: timestamp('ship_date'),
+    createdAt: timestamp('created_at').defaultNow(),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (t) => [
+    {
+      statusIdx: index('idx_shipments_status').on(t.status), // <-- THÊM INDEX
+    },
+  ],
+);
 
 export const shipmentItems = pgTable('shipment_items', {
   id: serial('id').primaryKey(),

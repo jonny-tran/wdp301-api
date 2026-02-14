@@ -13,6 +13,16 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
 import { OrderRepository } from './order.repository';
+import {
+  FulfillmentRateQueryDto,
+  SlaQueryDto,
+} from './dto/analytics-query.dto';
+
+//interface
+export interface ShortfallReason {
+  reason: string;
+  shortfallQuantity: number;
+}
 
 @Injectable()
 export class OrderService {
@@ -361,6 +371,104 @@ export class OrderService {
       storeName: order.store.name,
       status: order.status,
       items: itemsWithReviewData,
+    };
+  }
+
+  // API: Analytics Fulfillment Rate
+  async getFulfillmentRate(query: FulfillmentRateQueryDto) {
+    const data = await this.orderRepository.getFulfillmentAnalytics(
+      query.storeId,
+      query.from,
+      query.to,
+    );
+
+    let totalReq = 0;
+    let totalApp = 0;
+
+    //Định kiểu cho mảng
+    const shortfallReasons: ShortfallReason[] = [];
+
+    data.forEach((row) => {
+      totalReq += row.totalRequested || 0;
+      totalApp += row.totalApproved || 0;
+
+      if (row.shortfallQty && row.shortfallQty > 0) {
+        shortfallReasons.push({
+          reason:
+            row.reason || 'Không rõ lý do (Hết hàng/Không đạt chất lượng)',
+          shortfallQuantity: row.shortfallQty,
+        });
+      }
+    });
+
+    // 1. Core Formula: (Total Approved / Total Requested) * 100
+    const fillRate = totalReq > 0 ? (totalApp / totalReq) * 100 : 0;
+
+    return {
+      kpi: {
+        fillRatePercentage: parseFloat(fillRate.toFixed(2)),
+        totalRequestedQty: totalReq,
+        totalApprovedQty: totalApp,
+      },
+      // 2. No Backorder Logic: Thống kê lý do hụt hàng
+      shortfallAnalysis: shortfallReasons,
+    };
+  }
+
+  // --- API : Analytics SLA ---
+  async getFulfillmentSla(query: SlaQueryDto) {
+    const data = await this.orderRepository.getSlaAnalytics(
+      query.from,
+      query.to,
+    );
+
+    let totalReview = 0,
+      countReview = 0;
+    let totalPicking = 0,
+      countPicking = 0;
+    let totalDelivery = 0,
+      countDelivery = 0;
+
+    data.forEach((row) => {
+      // 1. Review Time: Order creation -> Shipment creation (Khi duyệt đơn)
+      if (row.orderCreatedAt && row.shipmentCreatedAt) {
+        totalReview +=
+          row.shipmentCreatedAt.getTime() - row.orderCreatedAt.getTime();
+        countReview++;
+      }
+
+      // 2. Picking Time: Shipment creation -> shipDate (Khi bắt đầu vận chuyển)
+      if (row.shipmentCreatedAt && row.shipDate) {
+        totalPicking +=
+          row.shipDate.getTime() - row.shipmentCreatedAt.getTime();
+        countPicking++;
+      }
+
+      // 3. Delivery Time: shipDate -> shipmentUpdatedAt (Khi status='completed')
+      if (
+        row.shipDate &&
+        row.shipmentUpdatedAt &&
+        row.shipmentStatus === 'completed'
+      ) {
+        totalDelivery +=
+          row.shipmentUpdatedAt.getTime() - row.shipDate.getTime();
+        countDelivery++;
+      }
+    });
+
+    const msToHours = (ms: number) =>
+      parseFloat((ms / (1000 * 60 * 60)).toFixed(2));
+
+    return {
+      kpi: {
+        avgReviewTimeHours:
+          countReview > 0 ? msToHours(totalReview / countReview) : 0,
+        avgPickingTimeHours:
+          countPicking > 0 ? msToHours(totalPicking / countPicking) : 0,
+        avgDeliveryTimeHours:
+          countDelivery > 0 ? msToHours(totalDelivery / countDelivery) : 0,
+      },
+      totalOrdersAnalyzed: data.length,
     };
   }
 }

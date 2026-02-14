@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, lte, gte, SQL } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
 import { FilterMap, paginate } from '../../common/utils/paginate.util';
@@ -242,5 +242,61 @@ export class OrderRepository {
     work: (tx: NodePgDatabase<typeof schema>) => Promise<T>,
   ): Promise<T> {
     return this.db.transaction(work);
+  }
+
+  // API: Analytics Fulfillment Rate
+  async getFulfillmentAnalytics(storeId?: string, from?: string, to?: string) {
+    const conditions: SQL[] = [];
+
+    // Filter conditions
+    if (storeId) conditions.push(eq(schema.orders.storeId, storeId));
+    if (from) conditions.push(gte(schema.orders.createdAt, new Date(from)));
+    if (to) {
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      conditions.push(lte(schema.orders.createdAt, toDate));
+    }
+
+    return this.db
+      .select({
+        //  Requested + Approved
+        totalRequested: sql<number>`CAST(SUM(${schema.orderItems.quantityRequested}) AS FLOAT)`,
+        totalApproved: sql<number>`CAST(SUM(COALESCE(${schema.orderItems.quantityApproved}, 0)) AS FLOAT)`,
+        //  chênh lệch (Shortfall)
+        shortfallQty: sql<number>`CAST(SUM(${schema.orderItems.quantityRequested} - COALESCE(${schema.orderItems.quantityApproved}, 0)) AS FLOAT)`,
+        // Gom nhóm theo lý do (lưu trong note của Order)
+        reason: schema.orders.note,
+      })
+      .from(schema.orderItems)
+      .innerJoin(schema.orders, eq(schema.orderItems.orderId, schema.orders.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .groupBy(schema.orders.note);
+  }
+
+  // --- API 5: Analytics SLA / Lead Time ---
+  async getSlaAnalytics(from?: string, to?: string) {
+    const conditions: SQL[] = [];
+    if (from) conditions.push(gte(schema.orders.createdAt, new Date(from)));
+    if (to) {
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      conditions.push(lte(schema.orders.createdAt, toDate));
+    }
+
+    return this.db
+      .select({
+        orderId: schema.orders.id,
+        orderCreatedAt: schema.orders.createdAt,
+        shipmentCreatedAt: schema.shipments.createdAt,
+        shipDate: schema.shipments.shipDate,
+        shipmentUpdatedAt: schema.shipments.updatedAt,
+        shipmentStatus: schema.shipments.status,
+      })
+      .from(schema.orders)
+      .innerJoin(
+        schema.shipments,
+        eq(schema.orders.id, schema.shipments.orderId),
+      )
+      .where(conditions.length > 0 ? and(...conditions) : undefined);
   }
 }

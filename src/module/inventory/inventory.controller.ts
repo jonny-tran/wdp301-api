@@ -22,6 +22,7 @@ import {
   AgingReportQueryDto,
   //InventorySummaryQueryDto,
   WasteReportQueryDto,
+  FinancialLossQueryDto,
 } from './dto/analytics-query.dto';
 
 @ApiTags('Inventory')
@@ -156,5 +157,13 @@ export class InventoryController {
   })
   async getWasteReport(@Query() query: WasteReportQueryDto) {
     return this.inventoryService.getWasteReport(query);
+  }
+  @Get('analytics/financial/loss-impact')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'API 9: Ước tính giá trị thiệt hại tài chính (Manager)',
+  })
+  async getFinancialLoss(@Query() query: FinancialLossQueryDto) {
+    return this.inventoryService.getFinancialLoss(query);
   }
 }

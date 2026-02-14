@@ -768,4 +768,63 @@ export class InventoryRepository {
       .where(and(...conditions))
       .orderBy(asc(schema.inventoryTransactions.createdAt));
   }
+
+  // --- Financial Loss Impact ---
+  async getFinancialLoss(from?: string, to?: string) {
+    const invConditions: SQL[] = [
+      eq(schema.inventoryTransactions.type, 'waste'),
+    ];
+    const claimConditions: SQL[] = [];
+
+    if (from) {
+      invConditions.push(
+        gte(schema.inventoryTransactions.createdAt, new Date(from)),
+      );
+      claimConditions.push(gte(schema.claims.createdAt, new Date(from)));
+    }
+    if (to) {
+      const toDate = new Date(to);
+      toDate.setHours(23, 59, 59, 999);
+      invConditions.push(lte(schema.inventoryTransactions.createdAt, toDate));
+      claimConditions.push(lte(schema.claims.createdAt, toDate));
+    }
+
+    // 1. Hàng hủy tại bếp (Từ bảng Bất biến: InventoryTransactions)
+    const wasteQuery = this.db
+      .select({
+        productId: schema.batches.productId,
+        productName: schema.products.name,
+        totalWaste: sql<number>`CAST(SUM(ABS(${schema.inventoryTransactions.quantityChange})) AS FLOAT)`,
+      })
+      .from(schema.inventoryTransactions)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventoryTransactions.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(and(...invConditions))
+      .groupBy(schema.batches.productId, schema.products.name);
+
+    // 2. Hàng hỏng tại kho cửa hàng (Từ Claims)
+    const claimQuery = this.db
+      .select({
+        productId: schema.claimItems.productId,
+        productName: schema.products.name,
+        totalDamaged: sql<number>`CAST(SUM(${schema.claimItems.quantityDamaged}) AS FLOAT)`,
+      })
+      .from(schema.claimItems)
+      .innerJoin(schema.claims, eq(schema.claimItems.claimId, schema.claims.id))
+      .innerJoin(
+        schema.products,
+        eq(schema.claimItems.productId, schema.products.id),
+      )
+      .where(claimConditions.length > 0 ? and(...claimConditions) : undefined)
+      .groupBy(schema.claimItems.productId, schema.products.name);
+
+    const [wasteData, claimData] = await Promise.all([wasteQuery, claimQuery]);
+    return { wasteData, claimData };
+  }
 }

@@ -21,6 +21,7 @@ import { ClaimService } from './claim.service';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
 import { GetClaimsDto } from './dto/get-claims.dto';
 import { ResolveClaimDto } from './dto/resolve-claim.dto';
+import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 
 @ApiTags('Claims')
 @ApiBearerAuth()
@@ -86,5 +87,16 @@ export class ClaimController {
   @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.MANAGER, UserRole.ADMIN)
   async resolveClaim(@Param('id') id: string, @Body() dto: ResolveClaimDto) {
     return this.claimService.resolveClaim(id, dto);
+  }
+
+  @Get('analytics/summary')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Tỷ lệ sai lệch & hư hỏng giao hàng (Manager)',
+    description:
+      '1. Damage Rate. 2. Missing Rate. 3. Bottleneck: Tìm sản phẩm dễ hỏng/thiếu nhất khi vận chuyển.',
+  })
+  async getClaimSummary(@Query() query: ClaimSummaryQueryDto) {
+    return this.claimService.getClaimSummary(query);
   }
 }

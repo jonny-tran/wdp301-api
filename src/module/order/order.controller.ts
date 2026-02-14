@@ -21,6 +21,10 @@ import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
 import { RejectOrderDto } from './dto/reject-order.dto';
 import { OrderService } from './order.service';
+import {
+  FulfillmentRateQueryDto,
+  SlaQueryDto,
+} from './dto/analytics-query.dto';
 
 @ApiTags('Order')
 @ApiBearerAuth()
@@ -122,5 +126,25 @@ export class OrderController {
     @CurrentUser() user: IJwtPayload,
   ) {
     return this.orderService.getOrderDetails(id, user);
+  }
+
+  @Get('analytics/fulfillment-rate')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Tỷ lệ đáp ứng đơn hàng - Fill Rate (Manager)',
+    description:
+      'Tính tỷ lệ % hàng được duyệt so với yêu cầu. Thống kê số lượng hụt và lý do hụt (No backorder logic).',
+  })
+  async getFulfillmentRate(@Query() query: FulfillmentRateQueryDto) {
+    return this.orderService.getFulfillmentRate(query);
+  }
+  @Get('analytics/performance/lead-time')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Theo dõi thời gian vận hành - SLA (Manager)',
+    description: 'Tính trung bình Review Time, Picking Time và Delivery Time',
+  })
+  async getFulfillmentSla(@Query() query: SlaQueryDto) {
+    return this.orderService.getFulfillmentSla(query);
   }
 }
