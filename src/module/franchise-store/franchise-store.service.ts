@@ -140,13 +140,13 @@ export class FranchiseStoreService {
 
     // EXTRACT(DOW) trả về 0-6 (0 là Chủ nhật)
     const daysMap = [
-      'Sunday',
-      'Monday',
-      'Tuesday',
-      'Wednesday',
-      'Thursday',
-      'Friday',
-      'Saturday',
+      'Chủ Nhật',
+      'Thứ Hai',
+      'Thứ Ba',
+      'Thứ Tư',
+      'Thứ Năm',
+      'Thứ Sáu',
+      'Thứ Bảy',
     ];
 
     const pattern: number[] = Array.from({ length: 7 }, () => 0);
@@ -161,7 +161,7 @@ export class FranchiseStoreService {
       productIdFilter: query.productId || 'All',
       demandByDay: daysMap.map((day, index) => ({
         dayOfWeek: day,
-        totalRequestedQuantity: pattern[index], // Lỗi unsafe assignment sẽ biến mất
+        totalRequestedQuantity: pattern[index],
       })),
     };
   }

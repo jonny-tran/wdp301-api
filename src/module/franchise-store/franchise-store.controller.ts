@@ -65,7 +65,8 @@ export class FranchiseStoreController {
   @Get('analytics/reliability')
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'API 7: Đánh giá độ tin cậy của Cửa hàng & Phát hiện gian lận',
+    summary:
+      'Đánh giá độ tin cậy của Cửa hàng & Phát hiện gian lận (Manager, Admin)',
   })
   async getStoreReliability() {
     return this.franchiseStoreService.getStoreReliability();
@@ -74,7 +75,7 @@ export class FranchiseStoreController {
   @Get('analytics/demand-pattern')
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'API 8: Phân tích xu hướng đặt hàng theo Thứ trong tuần',
+    summary: 'Phân tích xu hướng đặt hàng theo Thứ trong tuần (Manager, Admin)',
   })
   async getDemandPattern(@Query() query: DemandPatternQueryDto) {
     return this.franchiseStoreService.getDemandPattern(query);
