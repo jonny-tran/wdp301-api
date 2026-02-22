@@ -27,6 +27,12 @@ export class AuthRepository {
     });
   }
 
+  async findStoreById(id: string) {
+    return this.db.query.stores.findFirst({
+      where: eq(schema.stores.id, id),
+    });
+  }
+
   async createUser(data: CreateUserDto & { passwordHash: string }) {
     const result = await this.db
       .insert(schema.users)

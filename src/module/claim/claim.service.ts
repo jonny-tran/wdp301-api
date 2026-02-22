@@ -13,10 +13,10 @@ import { ShipmentStatus } from '../shipment/constants/shipment-status.enum';
 import { ShipmentRepository } from '../shipment/shipment.repository';
 import { ClaimRepository } from './claim.repository';
 import { ClaimStatus } from './constants/claim-status.enum';
+import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
 import { GetClaimsDto } from './dto/get-claims.dto';
 import { ResolveClaimDto } from './dto/resolve-claim.dto';
-import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 
 @Injectable()
 export class ClaimService {
@@ -33,6 +33,46 @@ export class ClaimService {
 
   async findAll(query: GetClaimsDto) {
     return this.claimRepository.findAll(query);
+  }
+
+  async getClaims(
+    query: GetClaimsDto,
+    user: { role: string; storeId?: string },
+  ) {
+    if (user.role === 'FRANCHISE_STORE_STAFF') {
+      if (!user.storeId) {
+        throw new ForbiddenException('Store staff must have a storeId');
+      }
+      query.storeId = user.storeId;
+    }
+    return this.claimRepository.findAll(query);
+  }
+
+  async createClaimFromShipment(
+    shipmentId: string,
+    items: { batchId: number; quantityReceived: number }[],
+  ) {
+    return this.uow.runInTransaction(async (tx) => {
+      const shipment =
+        await this.claimRepository.getShipmentForValidation(shipmentId);
+      if (!shipment) throw new NotFoundException('Không tìm thấy chuyến hàng');
+
+      if (shipment.status !== 'delivered') {
+        throw new BadRequestException(
+          'Chỉ có thể khiếu nại đơn hàng đã giao thành công',
+        );
+      }
+
+      for (const item of items) {
+        await this.inventoryRepository.adjustBatchQuantity(
+          shipment.toWarehouseId,
+          item.batchId,
+          item.quantityReceived,
+          tx,
+        );
+      }
+      return { status: 'success' };
+    });
   }
 
   async createManualClaim(
@@ -108,9 +148,9 @@ export class ClaimService {
         }
 
         // Evidence validation for damaged goods
-        if (item.quantityDamaged > 0 && !item.imageProofUrl) {
+        if (item.quantityDamaged > 0 && (!item.imageProofUrl || !item.reason)) {
           throw new BadRequestException(
-            `Hàng hỏng bắt buộc phải có ảnh bằng chứng (Batch ${item.batchId})`,
+            `Hàng hỏng bắt buộc phải có ảnh bằng chứng và lý do (Batch ${item.batchId})`,
           );
         }
       }

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
@@ -9,9 +10,9 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as argon2 from 'argon2';
-import { MailService } from 'src/common/service/mail.service';
-import { OtpUtil } from 'src/common/utils/otp.util';
-import { roleLabelUtils } from 'src/common/utils/roleLabel.utils';
+import { MailService } from '../../common/service/mail.service';
+import { OtpUtil } from '../../common/utils/otp.util';
+import { roleLabelUtils } from '../../common/utils/roleLabel.utils';
 import { AuthRepository } from './auth.repository';
 import { CreateUserDto, UserRole } from './dto/create-user.dto';
 import { ForgotPasswordDto, ResetPasswordDto } from './dto/forgot-password.dto';
@@ -169,10 +170,17 @@ export class AuthService {
 
     const existingUser = await this.authRepository.findUserByEmail(dto.email);
     if (existingUser) {
-      throw new BadRequestException('Email này đã được sử dụng');
+      throw new ConflictException('Email hoặc tên đăng nhập đã được sử dụng');
     }
     if (dto.role === UserRole.FRANCHISE_STORE_STAFF && !dto.storeId) {
       throw new BadRequestException('Nhân viên cửa hàng cần Store ID');
+    }
+
+    if (dto.storeId) {
+      const store = await this.authRepository.findStoreById(dto.storeId);
+      if (!store) {
+        throw new BadRequestException('Cửa hàng không tồn tại trong hệ thống');
+      }
     }
 
     let passwordHash: string;
@@ -269,5 +277,24 @@ export class AuthService {
   async clearExpiredOtp() {
     const count = await this.authRepository.clearExpiredOtp();
     console.log(`Cleared ${count} expired OTPs`);
+  }
+
+  // handle validate user
+  async validateUser(email: string, pass: string) {
+    const user = await this.authRepository.findUserByEmail(email);
+    if (!user) {
+      throw new UnauthorizedException('Thông tin đăng nhập không chính xác');
+    }
+
+    if (user.status === 'banned') {
+      throw new ForbiddenException('Tài khoản của bạn đã bị khóa');
+    }
+
+    const isPasswordValid = await argon2.verify(user.passwordHash, pass);
+    if (!isPasswordValid) {
+      return null;
+    }
+
+    return user;
   }
 }
