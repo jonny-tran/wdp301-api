@@ -7,9 +7,11 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { Roles } from 'src/module/auth/decorators/roles.decorator';
 import { UserRole } from 'src/module/auth/dto/create-user.dto';
 import { AtGuard } from 'src/module/auth/guards/auth.guard';
@@ -37,8 +39,8 @@ export class BaseUnitController {
   @ApiOperation({
     summary: 'Lấy danh sách đơn vị tính [Manager]',
   })
-  findAll() {
-    return this.baseUnitService.findAll();
+  findAll(@Query() query: PaginationParamsDto) {
+    return this.baseUnitService.findAll(query);
   }
 
   @Get(':id')
