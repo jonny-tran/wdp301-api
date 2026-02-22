@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -43,7 +44,7 @@ export class ShipmentController {
   @ApiOperation({
     summary: 'Lấy danh sách lô hàng của cửa hàng [Franchise Staff]',
   })
-  @ResponseMessage('Lấy danh sách lô hàng thành công')
+  @ResponseMessage('Lấy danh sách lô hàng của cửa hàng thành công')
   async getMyStoreShipments(
     @CurrentUser() user: IJwtPayload,
     @Query() query: GetShipmentsDto,
@@ -65,19 +66,18 @@ export class ShipmentController {
   @ApiOperation({
     summary: 'Lấy danh sách nhặt hàng (Picking List) [Coordinator, Kitchen]',
   })
-  @ResponseMessage('Lấy danh sách nhặt hàng thành công')
-  async getPickingList(@Param('id') id: string) {
+  @ResponseMessage('Success')
+  async getPickingList(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.shipmentService.getPickingList(id);
   }
 
   @Get(':id')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'Chi tiết lô hàng [Franchise Staff]',
+    summary: 'Chi tiết lô hàng',
   })
-  @ResponseMessage('Lấy chi tiết lô hàng thành công')
+  @ResponseMessage('Chi tiết lô hàng thành công')
   async getShipmentDetail(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: IJwtPayload,
   ) {
     if (!user.storeId && user.role !== (UserRole.ADMIN as any)) {
@@ -97,8 +97,11 @@ export class ShipmentController {
     description:
       'Xác nhận nhận toàn bộ hàng trong đơn, không có hàng thiếu hay hỏng.',
   })
-  @ResponseMessage('Nhận hàng thành công (Đủ hàng)')
-  async receiveAll(@Param('id') id: string, @CurrentUser() user: IJwtPayload) {
+  @ResponseMessage('Nhận hàng nhanh thành công')
+  async receiveAll(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: IJwtPayload,
+  ) {
     if (!user.storeId) {
       throw new BadRequestException('User không có storeId');
     }
@@ -121,9 +124,9 @@ export class ShipmentController {
     description:
       'Xác nhận nhận hàng, có thể báo cáo số lượng thực nhận và hàng hỏng cho từng lô.',
   })
-  @ResponseMessage('Xác nhận nhận hàng thành công')
+  @ResponseMessage('Success')
   async receiveShipment(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ReceiveShipmentDto,
     @CurrentUser() user: IJwtPayload,
   ) {

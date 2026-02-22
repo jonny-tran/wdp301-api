@@ -48,9 +48,11 @@ export class InboundService {
     return this.db.transaction(async (tx) => {
       // 1. Lock & Validate Receipt
       const receipt = await this.inboundRepo.findReceiptWithLock(tx, receiptId);
-      if (!receipt) throw new NotFoundException('Receipt not found');
+      if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
       if (receipt.status !== 'draft') {
-        throw new BadRequestException('Only DRAFT receipts can be completed');
+        throw new BadRequestException(
+          'Chỉ có thể hoàn thành phiếu nhập ở trạng thái nháp',
+        );
       }
 
       // 2. Lấy danh sách hàng hóa (Read-only, no lock needed on items if receipt is locked)
@@ -60,7 +62,9 @@ export class InboundService {
       const items =
         await this.inboundRepo.getReceiptItemsWithBatches(receiptId);
       if (items.length === 0) {
-        throw new BadRequestException('Cannot complete an empty receipt');
+        throw new BadRequestException(
+          'Không thể hoàn thành phiếu nhập rỗng (chưa có hàng hóa)',
+        );
       }
 
       // 3. Update Receipt Status
@@ -159,12 +163,12 @@ export class InboundService {
   async deleteBatchItem(batchId: number) {
     const item = await this.inboundRepo.findReceiptItemByBatchId(batchId);
 
-    if (!item) throw new NotFoundException('Batch item not found');
+    if (!item) throw new NotFoundException('Không tìm thấy chi tiết lô hàng');
 
     // Validate: Chỉ được xóa khi phiếu còn Draft
     if (item.receipt.status !== 'draft') {
       throw new BadRequestException(
-        'Only items in DRAFT receipts can be deleted',
+        'Chỉ có thể xóa hàng hóa trong phiếu nhập nháp',
       );
     }
 
@@ -175,7 +179,7 @@ export class InboundService {
   // API 8: Yêu cầu in lại tem (Ghi log)
   async reprintBatchLabel(dto: ReprintBatchDto, user: RequestWithUser['user']) {
     const batch = await this.inboundRepo.getBatchDetails(dto.batchId);
-    if (!batch) throw new NotFoundException('Batch not found');
+    if (!batch) throw new NotFoundException('Không tìm thấy lô hàng');
 
     // LOGIC LOG: Ghi lại ai đã yêu cầu in lại
     console.warn(

@@ -35,7 +35,7 @@ export class ProductController {
   @Post()
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Tạo sản phẩm mới [Manager]' })
-  @ResponseMessage('Tạo sản phẩm thành công')
+  @ResponseMessage('Success')
   async create(@Body() createProductDto: CreateProductDto) {
     return await this.productService.createProduct(createProductDto);
   }
@@ -43,7 +43,7 @@ export class ProductController {
   @Get()
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Manager]' })
-  @ResponseMessage('Lấy danh sách sản phẩm thành công')
+  @ResponseMessage('Success')
   async findAll(@Query() filter: GetProductsDto) {
     return await this.productService.getProducts(filter);
   }
@@ -53,7 +53,7 @@ export class ProductController {
   @ApiOperation({
     summary: 'Lấy danh sách lô hàng [Manager, Central Kitchen Staff]',
   })
-  @ResponseMessage('Lấy danh sách lô hàng thành công')
+  @ResponseMessage('Success')
   async findAllBatches(@Query() filter: GetBatchesDto) {
     return await this.productService.getBatches(filter);
   }
@@ -61,7 +61,7 @@ export class ProductController {
   @Get(':id')
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Chi tiết sản phẩm [Manager]' })
-  @ResponseMessage('Lấy thông tin sản phẩm thành công')
+  @ResponseMessage('Success')
   async findOne(@Param('id', ParseIntPipe) id: number) {
     return await this.productService.getProduct(id);
   }
@@ -69,7 +69,7 @@ export class ProductController {
   @Patch(':id')
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Cập nhật sản phẩm [Manager]' })
-  @ResponseMessage('Cập nhật sản phẩm thành công')
+  @ResponseMessage('Success')
   async update(
     @Param('id', ParseIntPipe) id: number,
     @Body() updateProductDto: UpdateProductDto,
@@ -80,7 +80,7 @@ export class ProductController {
   @Delete(':id')
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Xóa sản phẩm (Soft delete) [Manager]' })
-  @ResponseMessage('Xóa sản phẩm thành công')
+  @ResponseMessage('Success')
   async remove(@Param('id', ParseIntPipe) id: number) {
     return await this.productService.removeProduct(id);
   }
@@ -88,7 +88,7 @@ export class ProductController {
   @Patch(':id/restore')
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Khôi phục sản phẩm [Manager]' })
-  @ResponseMessage('Khôi phục sản phẩm thành công')
+  @ResponseMessage('Success')
   async restore(@Param('id', ParseIntPipe) id: number) {
     return await this.productService.restoreProduct(id);
   }
@@ -100,7 +100,7 @@ export class ProductController {
   @ApiOperation({
     summary: 'Chi tiết lô hàng [Manager, Central Kitchen Staff]',
   })
-  @ResponseMessage('Lấy chi tiết lô hàng thành công')
+  @ResponseMessage('Success')
   async findOneBatch(@Param('id', ParseIntPipe) id: number) {
     return await this.productService.getBatch(id);
   }
@@ -110,7 +110,7 @@ export class ProductController {
   @ApiOperation({
     summary: 'Cập nhật lô hàng [Manager, Central Kitchen Staff]',
   })
-  @ResponseMessage('Cập nhật lô hàng thành công')
+  @ResponseMessage('Success')
   async updateBatch(
     @Param('id', ParseIntPipe) id: number,
     @Body() updateBatchDto: UpdateBatchDto,

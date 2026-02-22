@@ -9,11 +9,11 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from 'src/database/database.constants';
 import * as schema from 'src/database/schema';
 import { WarehouseService } from '../warehouse/warehouse.service';
+import { DemandPatternQueryDto } from './dto/analytics-query.dto';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { GetStoresFilterDto } from './dto/get-stores-filter.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
 import { FranchiseStoreRepository } from './franchise-store.repository';
-import { DemandPatternQueryDto } from './dto/analytics-query.dto';
 
 @Injectable()
 export class FranchiseStoreService {
@@ -57,7 +57,7 @@ export class FranchiseStoreService {
       throw new NotFoundException('Không tìm thấy cửa hàng');
     }
     if (!store.isActive) {
-      throw new BadRequestException('Store đã không còn hoạt động');
+      throw new BadRequestException('Cửa hàng đã không còn hoạt động');
     }
     return store;
   }
@@ -68,7 +68,7 @@ export class FranchiseStoreService {
       throw new NotFoundException('Không tìm thấy cửa hàng');
     }
     if (!store.isActive) {
-      throw new BadRequestException('Store đã không còn hoạt động');
+      throw new BadRequestException('Cửa hàng đã không còn hoạt động');
     }
     return this.franchiseStoreRepository.update(id, dto);
   }
