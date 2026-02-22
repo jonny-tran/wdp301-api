@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { PaginationParamsDto } from '../../../common/dto/pagination-params.dto';
+import { FilterMap, paginate } from '../../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../../database/database.constants';
 import * as schema from '../../../database/schema';
 import { CreateBaseUnitDto } from './dto/create-base-unit.dto';
@@ -8,6 +10,11 @@ import { UpdateBaseUnitDto } from './dto/update-base-unit.dto';
 
 @Injectable()
 export class BaseUnitRepository {
+  private readonly baseUnitFilterMap: FilterMap<typeof schema.baseUnits> = {
+    search: { column: schema.baseUnits.name, operator: 'ilike' },
+    isActive: { column: schema.baseUnits.isActive, operator: 'eq' },
+  };
+
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
@@ -21,11 +28,18 @@ export class BaseUnitRepository {
     return result[0];
   }
 
-  async findAll() {
-    return await this.db.query.baseUnits.findMany({
-      where: eq(schema.baseUnits.isActive, true),
-      orderBy: [desc(schema.baseUnits.createdAt)],
-    });
+  async findAll(query: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    isActive?: boolean;
+  }) {
+    return paginate(
+      this.db,
+      schema.baseUnits,
+      query as PaginationParamsDto & Record<string, any>,
+      this.baseUnitFilterMap,
+    );
   }
 
   async findById(id: number) {

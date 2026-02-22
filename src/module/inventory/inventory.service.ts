@@ -1,18 +1,23 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
+import {
+  AgingReportQueryDto,
+  FinancialLossQueryDto,
+  // InventorySummaryQueryDto,
+  WasteReportQueryDto,
+} from './dto/analytics-query.dto';
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
 import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryRepository } from './inventory.repository';
-import {
-  AgingReportQueryDto,
-  // InventorySummaryQueryDto,
-  WasteReportQueryDto,
-  FinancialLossQueryDto,
-} from './dto/analytics-query.dto';
 
 export interface AgingBucketItem {
   batchCode: string;
@@ -163,7 +168,7 @@ export class InventoryService {
         );
 
       if (parseFloat(updatedInventory.quantity) < 0) {
-        throw new Error('Số lượng tồn kho không thể nhỏ hơn 0');
+        throw new BadRequestException('Số lượng tồn kho không thể nhỏ hơn 0');
       }
 
       await this.inventoryRepository.createInventoryTransaction(
@@ -189,7 +194,8 @@ export class InventoryService {
   // Helper Lấy ID kho bếp
   private async getKitchenWarehouseId(): Promise<number> {
     const id = await this.inventoryRepository.findCentralWarehouseId();
-    if (!id) throw new NotFoundException('Central Kitchen Warehouse not found');
+    if (!id)
+      throw new NotFoundException('Không tìm thấy thông tin kho bếp trung tâm');
     return id;
   }
 
@@ -456,5 +462,78 @@ export class InventoryService {
       },
       details,
     };
+  }
+
+  // --- Strict Business Logic Flow Methods (KFC Model SP26SWP07) ---
+
+  async suggestBatchesForPicking(
+    warehouseId: number,
+    productId: number,
+    requiredQuantity: number,
+  ) {
+    const batches = await this.inventoryRepository.getKitchenBatchDetails(
+      warehouseId,
+      productId,
+    );
+
+    let remaining = requiredQuantity;
+    const pickedBatches: {
+      batchId: number;
+      batchCode: string;
+      pickedQuantity: number;
+    }[] = [];
+
+    // Lô đã được sort FEFO ở Repository (expiryDate ASC)
+    for (const batch of batches) {
+      if (remaining <= 0) break;
+      const qty = parseFloat((batch.quantity || 0).toString());
+      const res = parseFloat((batch.reserved || 0).toString());
+      const available = qty - res;
+
+      if (available <= 0) continue;
+
+      const pickQty = Math.min(available, remaining);
+      pickedBatches.push({
+        batchId: batch.batchId,
+        batchCode: batch.batchCode,
+        pickedQuantity: pickQty,
+      });
+      remaining -= pickQty;
+    }
+
+    return {
+      fulfilledQuantity: requiredQuantity - remaining,
+      pickedBatches,
+    };
+  }
+
+  async receiveDiscrepancy(
+    storeWarehouseId: number,
+    batchId: number,
+    shippedQty: number,
+    receivedQty: number,
+    reason: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    // Kho Store chỉ tăng theo số thực nhận (receivedQty)
+    await this.inventoryRepository.upsertInventory(
+      storeWarehouseId,
+      batchId,
+      receivedQty,
+      tx,
+    );
+
+    // Ghi nhận log với loại giao dịch là 'import' (hoặc alias store_receipt qua reason) theo đúng số thực nhận
+    await this.inventoryRepository.createInventoryTransaction(
+      storeWarehouseId,
+      batchId,
+      'import',
+      receivedQty,
+      undefined,
+      reason,
+      tx,
+    );
+
+    return { message: 'Success', receivedQty };
   }
 }

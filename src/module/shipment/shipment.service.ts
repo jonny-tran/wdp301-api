@@ -114,7 +114,7 @@ export class ShipmentService {
     const shipment = await this.shipmentRepository.getShipmentById(shipmentId);
 
     if (!shipment) {
-      throw new NotFoundException('Không tìm thấy chuyến hàng này');
+      throw new NotFoundException('Không tìm thấy phiếu giao hàng');
     }
 
     // Verify ownership: shipment must be going to this store's warehouse
@@ -126,12 +126,24 @@ export class ShipmentService {
       throw new ForbiddenException('Bạn không có quyền xem chuyến hàng này');
     }
 
+    // Test FEFO Logic: Sort items by expiryDate ASC
+    const sortedItems = [...shipment.items].sort((a, b) => {
+      const dateA = new Date(a.batch.expiryDate).getTime();
+      const dateB = new Date(b.batch.expiryDate).getTime();
+      return dateA - dateB;
+    });
+
     return {
       id: shipment.id,
       orderId: shipment.orderId,
       status: shipment.status,
       createdAt: shipment.createdAt,
-      items: shipment.items.map((item) => ({
+      order: {
+        id: shipment.order.id,
+        storeId: shipment.order.storeId,
+        storeName: shipment.order.store.name,
+      },
+      items: sortedItems.map((item) => ({
         batchId: item.batchId,
         batchCode: item.batch.batchCode,
         productName: item.batch.product.name,

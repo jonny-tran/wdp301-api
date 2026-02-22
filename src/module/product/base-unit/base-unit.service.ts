@@ -19,8 +19,8 @@ export class BaseUnitService {
     return await this.baseUnitRepository.create(dto);
   }
 
-  async findAll() {
-    return await this.baseUnitRepository.findAll();
+  async findAll(query: { page?: number; limit?: number; search?: string }) {
+    return await this.baseUnitRepository.findAll(query);
   }
 
   async findOne(id: number) {

@@ -9,14 +9,14 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { IJwtPayload } from '../auth/types/auth.types';
 import { ShipmentService } from '../shipment/shipment.service';
 import { OrderStatus } from './constants/order-status.enum';
-import { CreateOrderDto } from './dto/create-order.dto';
-import { GetCatalogDto } from './dto/get-catalog.dto';
-import { GetOrdersDto } from './dto/get-orders.dto';
-import { OrderRepository } from './order.repository';
 import {
   FulfillmentRateQueryDto,
   SlaQueryDto,
 } from './dto/analytics-query.dto';
+import { CreateOrderDto } from './dto/create-order.dto';
+import { GetCatalogDto } from './dto/get-catalog.dto';
+import { GetOrdersDto } from './dto/get-orders.dto';
+import { OrderRepository } from './order.repository';
 
 //interface
 export interface ShortfallReason {
@@ -47,6 +47,18 @@ export class OrderService {
     }
 
     const { deliveryDate, items } = dto;
+
+    if (!items || items.length === 0) {
+      throw new BadRequestException('Đơn hàng phải có ít nhất một sản phẩm');
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const orderDeliveryDate = new Date(deliveryDate);
+    orderDeliveryDate.setHours(0, 0, 0, 0);
+    if (orderDeliveryDate < today) {
+      throw new BadRequestException('Ngày giao hàng không hợp lệ');
+    }
 
     // Validate products
     const productIds = items.map((item) => item.productId);
@@ -298,7 +310,7 @@ export class OrderService {
     }
 
     if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
-      throw new BadRequestException('Chỉ có thể hủy đơn hàng đang chờ xử lý');
+      throw new BadRequestException('Không thể hủy đơn hàng đã được xử lý');
     }
 
     await this.orderRepository.updateStatusWithReason(
