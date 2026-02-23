@@ -16,12 +16,12 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import type { IJwtPayload } from '../auth/types/auth.types';
+import type { IJwtPayload, RequestWithUser } from '../auth/types/auth.types';
 import { ClaimService } from './claim.service';
+import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
 import { GetClaimsDto } from './dto/get-claims.dto';
 import { ResolveClaimDto } from './dto/resolve-claim.dto';
-import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 
 @ApiTags('Claims')
 @ApiBearerAuth()
@@ -29,6 +29,20 @@ import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 @Controller('claims')
 export class ClaimController {
   constructor(private readonly claimService: ClaimService) {}
+
+  @Post()
+  @ApiOperation({ summary: 'Tạo khiếu nại thủ công' })
+  @ResponseMessage('Tạo khiếu nại thành công. Tồn kho đã được điều chỉnh.')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
+  async createClaim(
+    @Body() dto: CreateManualClaimDto,
+    @CurrentUser() user: RequestWithUser['user'],
+  ) {
+    if (!user.storeId) {
+      throw new BadRequestException('Tài khoản không có kho hàng');
+    }
+    return this.claimService.createManualClaim(dto, user.userId, user.storeId);
+  }
 
   @Get()
   @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
@@ -66,20 +80,6 @@ export class ClaimController {
     @CurrentUser() user: IJwtPayload,
   ) {
     return this.claimService.getClaimDetail(id, user.storeId!);
-  }
-
-  @Post()
-  @ApiOperation({ summary: 'Tạo khiếu nại thủ công' })
-  @ResponseMessage('Tạo khiếu nại thành công. Tồn kho đã được điều chỉnh.')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
-  async createClaim(
-    @Body() dto: CreateManualClaimDto,
-    @CurrentUser() user: IJwtPayload,
-  ) {
-    if (!user.storeId) {
-      throw new BadRequestException('Tài khoản không có kho hàng');
-    }
-    return this.claimService.createManualClaim(dto, user.sub, user.storeId);
   }
 
   @Patch(':id/resolve')

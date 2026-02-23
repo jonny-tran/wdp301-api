@@ -73,9 +73,9 @@ export class ShipmentController {
 
   @Get(':id')
   @ApiOperation({
-    summary: 'Chi tiết lô hàng',
+    summary: 'Chi tiết đơn hàng vận chuyển',
   })
-  @ResponseMessage('Chi tiết lô hàng thành công')
+  @ResponseMessage('Lấy chi tiết đơn hàng vận chuyển thành công')
   async getShipmentDetail(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: IJwtPayload,
