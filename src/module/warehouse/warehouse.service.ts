@@ -157,6 +157,7 @@ export class WarehouseService {
     const inv = batchInfo.inventory[0];
     return {
       productName: batchInfo.product.name,
+      batchId: batchInfo.id,
       batchCode: batchInfo.batchCode,
       expiryDate: batchInfo.expiryDate,
       quantityPhysical: inv ? parseFloat(inv.quantity) : 0,

@@ -146,6 +146,7 @@ export class ShipmentService {
       items: sortedItems.map((item) => ({
         batchId: item.batchId,
         batchCode: item.batch.batchCode,
+        productId: item.batch.product.id,
         productName: item.batch.product.name,
         sku: item.batch.product.sku,
         quantity: parseFloat(item.quantity),
