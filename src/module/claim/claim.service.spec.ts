@@ -103,16 +103,18 @@ describe('ClaimService', () => {
     it('should filter by storeId if user role is FRANCHISE_STORE_STAFF (Data Isolation)', async () => {
       // Arrange
       const query = { page: 1 };
-      const user = { role: 'FRANCHISE_STORE_STAFF', storeId: 'staff-store-id' };
+      const user = { role: 'franchise_store_staff', storeId: 'staff-store-id' };
       jest.spyOn(claimRepo, 'findAll').mockResolvedValue([] as never);
 
       // Act
       await service.getClaims(query as GetClaimsDto, user);
 
       // Assert
-      expect(query).toHaveProperty('storeId', 'staff-store-id');
       expect(claimRepo.findAll).toHaveBeenCalledWith(
-        expect.objectContaining({ storeId: 'staff-store-id' }),
+        expect.objectContaining({
+          page: 1,
+          storeId: 'staff-store-id',
+        }),
       );
     });
   });

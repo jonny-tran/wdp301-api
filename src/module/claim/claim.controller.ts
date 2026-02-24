@@ -49,8 +49,11 @@ export class ClaimController {
   @ApiOperation({
     summary: 'Danh sách khiếu nại [Manager, Coordinator, Admin]',
   })
-  async findAll(@Query() query: GetClaimsDto) {
-    return this.claimService.findAll(query);
+  async findAll(
+    @Query() query: GetClaimsDto,
+    @CurrentUser() user: IJwtPayload,
+  ) {
+    return this.claimService.getClaims(query, user);
   }
 
   @Get('my-store')
@@ -73,13 +76,14 @@ export class ClaimController {
   @Roles(
     UserRole.FRANCHISE_STORE_STAFF,
     UserRole.SUPPLY_COORDINATOR,
-    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.MANAGER,
+    UserRole.ADMIN,
   )
   async getClaimDetail(
     @Param('id') id: string,
     @CurrentUser() user: IJwtPayload,
   ) {
-    return this.claimService.getClaimDetail(id, user.storeId!);
+    return this.claimService.getClaimDetail(id, user);
   }
 
   @Patch(':id/resolve')
