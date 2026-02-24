@@ -28,14 +28,14 @@ export class BaseUnitController {
   constructor(private readonly baseUnitService: BaseUnitService) {}
 
   @Post()
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Tạo đơn vị tính mới [Manager]' })
   create(@Body() dto: CreateBaseUnitDto) {
     return this.baseUnitService.create(dto);
   }
 
   @Get()
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({
     summary: 'Lấy danh sách đơn vị tính [Manager]',
   })
@@ -44,14 +44,14 @@ export class BaseUnitController {
   }
 
   @Get(':id')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Lấy chi tiết đơn vị tính [Manager]' })
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.baseUnitService.findOne(id);
   }
 
   @Patch(':id')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Cập nhật đơn vị tính [Manager]' })
   update(
     @Param('id', ParseIntPipe) id: number,
@@ -61,7 +61,7 @@ export class BaseUnitController {
   }
 
   @Delete(':id')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Xóa đơn vị tính [Manager]' })
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.baseUnitService.remove(id);

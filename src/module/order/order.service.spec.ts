@@ -8,6 +8,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { IJwtPayload } from '../auth/types/auth.types';
 import { ShipmentService } from '../shipment/shipment.service';
+import { SystemConfigService } from '../system-config/system-config.service';
 import { OrderStatus } from './constants/order-status.enum';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderRepository } from './order.repository';
@@ -17,6 +18,7 @@ describe('OrderService', () => {
   let service: OrderService;
   let orderRepo: jest.Mocked<OrderRepository>;
   let shipmentService: jest.Mocked<ShipmentService>;
+  let systemConfigService: jest.Mocked<SystemConfigService>;
   let mockTx: jest.Mocked<OrderRepository>;
 
   beforeEach(async () => {
@@ -49,6 +51,13 @@ describe('OrderService', () => {
       createShipmentForOrder: jest.fn(),
     };
 
+    const mockSystemConfigServiceObj = {
+      getConfigValue: jest.fn().mockResolvedValue(null), // Default: no closing time check
+      findAll: jest.fn(),
+      refreshCache: jest.fn(),
+      updateConfig: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrderService,
@@ -60,12 +69,17 @@ describe('OrderService', () => {
           provide: ShipmentService,
           useValue: mockShipmentServiceObj,
         },
+        {
+          provide: SystemConfigService,
+          useValue: mockSystemConfigServiceObj,
+        },
       ],
     }).compile();
 
     service = module.get<OrderService>(OrderService);
     orderRepo = module.get(OrderRepository);
     shipmentService = module.get(ShipmentService);
+    systemConfigService = module.get(SystemConfigService);
   });
 
   afterEach(() => {
@@ -141,6 +155,45 @@ describe('OrderService', () => {
       await expect(service.createOrder(user, dto)).rejects.toThrow(
         new BadRequestException('Ngày giao hàng không hợp lệ'),
       );
+    });
+
+    it('should throw ForbiddenException if ORDER_CLOSING_TIME has passed', async () => {
+      // Simulate closing time already passed: set to 00:01 so it's always past
+      systemConfigService.getConfigValue.mockResolvedValue('00:01');
+
+      const dto: CreateOrderDto = {
+        deliveryDate: '2026-05-01',
+        items: [{ productId: 1, quantity: 10 }],
+      };
+
+      await expect(service.createOrder(user, dto)).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+
+    it('should allow order if ORDER_CLOSING_TIME is not configured', async () => {
+      // getConfigValue returns null (not configured)
+      systemConfigService.getConfigValue.mockResolvedValue(null);
+
+      const dto: CreateOrderDto = {
+        deliveryDate: '2026-05-01',
+        items: [{ productId: 1, quantity: 10 }],
+      };
+
+      orderRepo.findActiveProductsByIds.mockResolvedValue([
+        { id: 1 },
+      ] as never[]);
+      const createdOrder = {
+        id: 'o-1',
+        storeId: 's-1',
+        status: OrderStatus.PENDING,
+        deliveryDate: new Date('2026-05-01'),
+        createdAt: new Date(),
+      };
+      orderRepo.createOrderTransaction.mockResolvedValue(createdOrder as never);
+
+      const result = await service.createOrder(user, dto);
+      expect(result.id).toBe('o-1');
     });
   });
 

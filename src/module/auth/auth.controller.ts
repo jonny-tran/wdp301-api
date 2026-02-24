@@ -2,11 +2,14 @@ import {
   Body,
   Controller,
   Get,
+  Param,
+  Patch,
   Post,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ResponseMessage } from 'src/common/decorators/response-message.decorator';
 import { AuthService } from './auth.service';
@@ -23,9 +26,12 @@ import {
 import { Roles } from './decorators/roles.decorator';
 import { CreateUserDto, UserRole } from './dto/create-user.dto';
 import { ForgotPasswordDto, ResetPasswordDto } from './dto/forgot-password.dto';
+import { GetUsersDto } from './dto/get-users.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateUserByAdminDto } from './dto/update-user-by-admin.dto';
 import { AtGuard } from './guards/auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import type { RequestWithUser } from './types/auth.types';
@@ -101,5 +107,40 @@ export class AuthController {
   @ResponseMessage('Lấy danh sách vai trò thành công')
   getAllRoles() {
     return this.authService.getAllRoles();
+  }
+
+  @Get('users')
+  @UseGuards(AtGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Lấy danh sách người dùng [Admin]' })
+  @ResponseMessage('Lấy danh sách người dùng thành công')
+  async getUsers(@Query() query: GetUsersDto) {
+    return this.authService.getUsers(query);
+  }
+
+  @Patch('users/:id')
+  @UseGuards(AtGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Cập nhật thông tin người dùng [Admin]' })
+  @ResponseMessage('Cập nhật người dùng thành công')
+  async updateUserByAdmin(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserByAdminDto,
+  ) {
+    return this.authService.updateUserByAdmin(id, dto);
+  }
+
+  @Patch('profile')
+  @UseGuards(AtGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Cập nhật hồ sơ cá nhân' })
+  @ResponseMessage('Cập nhật hồ sơ thành công')
+  async updateProfile(
+    @Request() req: RequestWithUser,
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.authService.updateProfile(req.user.userId, dto);
   }
 }

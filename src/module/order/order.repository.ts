@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, sql, lte, gte, SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte, sql, SQL } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
 import { FilterMap, paginate } from '../../common/utils/paginate.util';
@@ -164,6 +164,8 @@ export class OrderRepository {
           eq(schema.inventory.warehouseId, warehouseId),
           eq(schema.batches.productId, productId),
           sql`${schema.inventory.quantity} > ${schema.inventory.reservedQuantity}`,
+          // CRITICAL: Filter out expired batches - never pick expired stock
+          sql`${schema.batches.expiryDate}::date > CURRENT_DATE`,
         ),
       )
       .orderBy(schema.batches.expiryDate);

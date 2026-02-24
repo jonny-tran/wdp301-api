@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
+import { SystemConfigService } from '../system-config/system-config.service';
 import { WarehouseRepository } from './warehouse.repository';
 import { WarehouseService } from './warehouse.service';
 
@@ -22,6 +23,13 @@ describe('WarehouseService', () => {
       decreaseStockFinal: jest.fn(),
     };
 
+    const mockSystemConfigService = {
+      getConfigValue: jest.fn().mockResolvedValue('TRUE'),
+      findAll: jest.fn(),
+      refreshCache: jest.fn(),
+      updateConfig: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WarehouseService,
@@ -34,6 +42,10 @@ describe('WarehouseService', () => {
             insert: jest.fn(),
             update: jest.fn(),
           },
+        },
+        {
+          provide: SystemConfigService,
+          useValue: mockSystemConfigService,
         },
       ],
     }).compile();
