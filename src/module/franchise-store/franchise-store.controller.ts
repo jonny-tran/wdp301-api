@@ -14,11 +14,11 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { DemandPatternQueryDto } from './dto/analytics-query.dto';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { GetStoresFilterDto } from './dto/get-stores-filter.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
 import { FranchiseStoreService } from './franchise-store.service';
-import { DemandPatternQueryDto } from './dto/analytics-query.dto';
 
 @ApiTags('Franchise Stores')
 @ApiBearerAuth()
@@ -28,7 +28,7 @@ export class FranchiseStoreController {
   constructor(private readonly franchiseStoreService: FranchiseStoreService) {}
 
   @Post()
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Tạo store mới [Manager]' })
   async create(@Body() dto: CreateStoreDto) {
     return this.franchiseStoreService.createStore(dto);
@@ -63,19 +63,18 @@ export class FranchiseStoreController {
   }
 
   @Get('analytics/reliability')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({
-    summary:
-      'Đánh giá độ tin cậy của Cửa hàng & Phát hiện gian lận (Manager, Admin)',
+    summary: 'Đánh giá độ tin cậy của Cửa hàng & Phát hiện gian lận (Manager)',
   })
   async getStoreReliability() {
     return this.franchiseStoreService.getStoreReliability();
   }
 
   @Get('analytics/demand-pattern')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(UserRole.MANAGER)
   @ApiOperation({
-    summary: 'Phân tích xu hướng đặt hàng theo Thứ trong tuần (Manager, Admin)',
+    summary: 'Phân tích xu hướng đặt hàng theo Thứ trong tuần (Manager)',
   })
   async getDemandPattern(@Query() query: DemandPatternQueryDto) {
     return this.franchiseStoreService.getDemandPattern(query);

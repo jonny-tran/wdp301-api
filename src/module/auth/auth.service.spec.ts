@@ -12,6 +12,8 @@ import { MailService } from '../../common/service/mail.service';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { CreateUserDto, UserRole } from './dto/create-user.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateUserByAdminDto } from './dto/update-user-by-admin.dto';
 import { TokenService } from './helper/token.service';
 
 jest.mock('argon2');
@@ -39,6 +41,8 @@ describe('AuthService', () => {
       markOtpAsUsed: jest.fn(),
       clearExpiredTokens: jest.fn(),
       clearExpiredOtp: jest.fn(),
+      getUsers: jest.fn(),
+      updateUser: jest.fn(),
     };
 
     tokenService = {
@@ -314,6 +318,69 @@ describe('AuthService', () => {
           password: 'password123',
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('getUsers', () => {
+    it('should call authRepository.getUsers with correct dto', async () => {
+      const dto = { page: 1, limit: 10, role: UserRole.MANAGER };
+      (authRepository.getUsers as jest.Mock).mockResolvedValue({
+        items: [],
+        meta: {},
+      });
+
+      await authService.getUsers(dto);
+
+      expect(authRepository.getUsers).toHaveBeenCalledWith(dto);
+    });
+  });
+
+  describe('updateUserByAdmin', () => {
+    it('should change user status to INACTIVE', async () => {
+      const mockUser = { id: '1', email: 'test@example.com' };
+      (authRepository.findUserById as jest.Mock).mockResolvedValue(mockUser);
+      (authRepository.updateUser as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        status: 'INACTIVE',
+      });
+
+      const dto = { status: 'INACTIVE' } as unknown as UpdateUserByAdminDto;
+      const result = await authService.updateUserByAdmin('1', dto);
+
+      expect(authRepository.findUserById).toHaveBeenCalledWith('1');
+      expect(authRepository.updateUser).toHaveBeenCalledWith('1', dto);
+      expect(result.status).toBe('INACTIVE');
+    });
+  });
+
+  describe('updateProfile', () => {
+    it('should not include role update and only update profile fields', async () => {
+      const mockUser = {
+        id: '1',
+        email: 'user@example.com',
+        username: 'Old Name',
+      };
+      (authRepository.findUserById as jest.Mock).mockResolvedValue(mockUser);
+      (authRepository.updateUser as jest.Mock).mockResolvedValue({
+        ...mockUser,
+        username: 'New Name',
+        phone: '123',
+      });
+
+      // Simulate a malicious payload that includes 'role'
+      const dto = {
+        fullName: 'New Name',
+        phone: '123',
+        role: UserRole.ADMIN,
+      } as unknown as UpdateProfileDto;
+      const result = await authService.updateProfile('1', dto);
+
+      // Only fullName (mapped to username) and phone should be updated
+      expect(authRepository.updateUser).toHaveBeenCalledWith('1', {
+        username: 'New Name',
+        phone: '123',
+      });
+      expect(result.username).toBe('New Name');
     });
   });
 });

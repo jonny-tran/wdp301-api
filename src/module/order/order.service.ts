@@ -3,11 +3,13 @@ import {
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { IJwtPayload } from '../auth/types/auth.types';
 import { ShipmentService } from '../shipment/shipment.service';
+import { SystemConfigService } from '../system-config/system-config.service';
 import { OrderStatus } from './constants/order-status.enum';
 import {
   FulfillmentRateQueryDto,
@@ -26,9 +28,12 @@ export interface ShortfallReason {
 
 @Injectable()
 export class OrderService {
+  private readonly logger = new Logger(OrderService.name);
+
   constructor(
     private readonly orderRepository: OrderRepository,
     private readonly shipmentService: ShipmentService,
+    private readonly systemConfigService: SystemConfigService,
   ) {}
 
   async getCatalog(query: GetCatalogDto) {
@@ -45,6 +50,12 @@ export class OrderService {
         'Người dùng không thuộc về bất kỳ cửa hàng nào',
       );
     }
+
+    // ========================================
+    // BUSINESS RULE: ORDER_CLOSING_TIME
+    // After this time (Vietnam TZ), no new orders allowed.
+    // ========================================
+    await this.enforceOrderClosingTime();
 
     const { deliveryDate, items } = dto;
 
@@ -482,5 +493,63 @@ export class OrderService {
       },
       totalOrdersAnalyzed: data.length,
     };
+  }
+
+  // =============================================
+  // PRIVATE: Business Rule Enforcement Methods
+  // =============================================
+
+  /**
+   * Kiểm tra ORDER_CLOSING_TIME từ SystemConfig.
+   * Nếu giờ hiện tại (múi giờ Việt Nam +7) > giờ cấu hình, chặn tạo đơn mới.
+   * Config format: "HH:mm" (ví dụ: "16:00")
+   */
+  private async enforceOrderClosingTime(): Promise<void> {
+    const closingTimeStr =
+      await this.systemConfigService.getConfigValue('ORDER_CLOSING_TIME');
+
+    if (!closingTimeStr) {
+      this.logger.warn(
+        'ORDER_CLOSING_TIME chưa được cấu hình trong hệ thống. Bỏ qua kiểm tra.',
+      );
+      return; // Graceful degradation: if not configured, allow
+    }
+
+    const parts = closingTimeStr.split(':');
+    if (parts.length !== 2) {
+      this.logger.warn(
+        `ORDER_CLOSING_TIME có format không hợp lệ: "${closingTimeStr}". Kỳ vọng "HH:mm".`,
+      );
+      return;
+    }
+
+    const closingHour = parseInt(parts[0], 10);
+    const closingMinute = parseInt(parts[1], 10);
+
+    if (isNaN(closingHour) || isNaN(closingMinute)) {
+      this.logger.warn(
+        `ORDER_CLOSING_TIME chứa giá trị không phải số: "${closingTimeStr}".`,
+      );
+      return;
+    }
+
+    // Lấy giờ hiện tại theo múi giờ Việt Nam (UTC+7)
+    const nowVN = new Date(
+      new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }),
+    );
+    const currentHour = nowVN.getHours();
+    const currentMinute = nowVN.getMinutes();
+
+    const currentTotalMinutes = currentHour * 60 + currentMinute;
+    const closingTotalMinutes = closingHour * 60 + closingMinute;
+
+    if (currentTotalMinutes >= closingTotalMinutes) {
+      this.logger.warn(
+        `Đặt hàng bị chặn: Giờ hiện tại ${currentHour}:${String(currentMinute).padStart(2, '0')} >= ORDER_CLOSING_TIME ${closingTimeStr}`,
+      );
+      throw new ForbiddenException(
+        `Đã quá giờ đặt hàng (${closingTimeStr}). Vui lòng đặt đơn vào ngày làm việc tiếp theo.`,
+      );
+    }
   }
 }

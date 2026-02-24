@@ -16,9 +16,12 @@ import { roleLabelUtils } from '../../common/utils/roleLabel.utils';
 import { AuthRepository } from './auth.repository';
 import { CreateUserDto, UserRole } from './dto/create-user.dto';
 import { ForgotPasswordDto, ResetPasswordDto } from './dto/forgot-password.dto';
+import { GetUsersDto } from './dto/get-users.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateUserByAdminDto } from './dto/update-user-by-admin.dto';
 import { TokenService } from './helper/token.service';
 import { IJwtPayload, ILoginResponse } from './types/auth.types';
 
@@ -205,6 +208,52 @@ export class AuthService {
       status: newUser.status,
       createdAt: newUser.createdAt,
     };
+  }
+
+  async getUsers(dto: GetUsersDto) {
+    return this.authRepository.getUsers(dto);
+  }
+
+  async updateUserByAdmin(userId: string, dto: UpdateUserByAdminDto) {
+    const user = await this.authRepository.findUserById(userId);
+    if (!user) {
+      throw new BadRequestException('Tài khoản không tồn tại');
+    }
+
+    if (dto.email && dto.email !== user.email) {
+      const existingUser = await this.authRepository.findUserByEmail(dto.email);
+      if (existingUser) {
+        throw new ConflictException('Email đã được sử dụng');
+      }
+    }
+
+    return this.authRepository.updateUser(userId, dto);
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    const user = await this.authRepository.findUserById(userId);
+    if (!user) {
+      throw new BadRequestException('Tài khoản không tồn tại');
+    }
+
+    if (dto.email && dto.email !== user.email) {
+      const existingUser = await this.authRepository.findUserByEmail(dto.email);
+      if (existingUser) {
+        throw new ConflictException('Email đã được sử dụng');
+      }
+    }
+
+    const payloadToUpdate = {
+      ...(dto.fullName && { username: dto.fullName }),
+      ...(dto.phone && { phone: dto.phone }),
+      ...(dto.email && { email: dto.email }),
+    };
+
+    if (Object.keys(payloadToUpdate).length === 0) {
+      return user;
+    }
+
+    return this.authRepository.updateUser(userId, payloadToUpdate);
   }
 
   // handle get all roles

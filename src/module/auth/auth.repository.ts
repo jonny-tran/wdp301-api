@@ -1,9 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, gt, lt } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { CreateUserDto } from './dto/create-user.dto';
+import { GetUsersDto } from './dto/get-users.dto';
 
 @Injectable()
 export class AuthRepository {
@@ -42,8 +44,39 @@ export class AuthRepository {
         passwordHash: data.passwordHash,
         role: data.role,
         storeId: data.storeId || null,
-        status: 'active',
+        status: 'ACTIVE',
       })
+      .returning();
+
+    return result[0];
+  }
+
+  async getUsers(dto: GetUsersDto) {
+    const filterMap: FilterMap<typeof schema.users> = {
+      role: { column: schema.users.role, operator: 'eq' },
+      status: { column: schema.users.status, operator: 'eq' },
+      search: { column: schema.users.username, operator: 'ilike' },
+    };
+
+    return paginate(
+      this.db,
+      schema.users,
+      dto as unknown as typeof dto & Record<string, unknown>,
+      filterMap,
+    );
+  }
+
+  async updateUser(
+    id: string,
+    data: Partial<typeof schema.users.$inferInsert>,
+  ) {
+    const result = await this.db
+      .update(schema.users)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.users.id, id))
       .returning();
 
     return result[0];
