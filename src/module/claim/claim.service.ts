@@ -7,6 +7,7 @@ import {
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../../database/schema';
 import { UnitOfWork } from '../../database/unit-of-work';
+import { UserRole } from '../auth/dto/create-user.dto';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { ShipmentStatus } from '../shipment/constants/shipment-status.enum';
@@ -37,15 +38,16 @@ export class ClaimService {
 
   async getClaims(
     query: GetClaimsDto,
-    user: { role: string; storeId?: string },
+    user: { role: string; storeId?: string | null },
   ) {
-    if (user.role === 'FRANCHISE_STORE_STAFF') {
+    const filters = { ...query };
+    if (user.role === (UserRole.FRANCHISE_STORE_STAFF as string)) {
       if (!user.storeId) {
         throw new ForbiddenException('Store staff must have a storeId');
       }
-      query.storeId = user.storeId;
+      filters.storeId = user.storeId;
     }
-    return this.claimRepository.findAll(query);
+    return this.claimRepository.findAll(filters);
   }
 
   async createClaimFromShipment(
@@ -224,14 +226,20 @@ export class ClaimService {
     return await this.claimRepository.updateClaimStatus(id, dto.status);
   }
 
-  async getClaimDetail(id: string, storeId: string) {
+  async getClaimDetail(
+    id: string,
+    user: { role: string; storeId?: string | null },
+  ) {
     const claim = await this.claimRepository.getClaimById(id);
 
     if (!claim) {
       throw new NotFoundException('Không tìm thấy khiếu nại này');
     }
 
-    if (claim.shipment.order.store.id !== storeId) {
+    if (
+      user.role === (UserRole.FRANCHISE_STORE_STAFF as string) &&
+      claim.shipment.order.store.id !== user.storeId
+    ) {
       throw new ForbiddenException('Bạn không có quyền xem khiếu nại này');
     }
 
