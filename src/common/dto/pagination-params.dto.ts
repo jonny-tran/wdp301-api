@@ -17,7 +17,7 @@ export class PaginationParamsDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  page?: number = 1;
+  page?: number;
 
   @ApiPropertyOptional({
     description: 'Số lượng bản ghi mỗi trang',
@@ -28,7 +28,7 @@ export class PaginationParamsDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  limit?: number = 10;
+  limit?: number;
 
   @ApiPropertyOptional({
     description: 'Sắp xếp theo trường',
@@ -45,5 +45,5 @@ export class PaginationParamsDto {
   })
   @IsOptional()
   @IsEnum(SortOrder)
-  sortOrder?: SortOrder = SortOrder.DESC;
+  sortOrder?: SortOrder;
 }

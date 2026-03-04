@@ -47,8 +47,10 @@ export async function paginate<T extends PgTable>(
   dto: PaginationParamsDto & Record<string, unknown>,
   filterMap?: FilterMap<T>,
 ): Promise<PaginatedResponse<InferSelectModel<T>>> {
+  const isPaginationDisabled = !dto.limit;
+
   const page = Number(dto.page) || 1;
-  const limit = Number(dto.limit) || 10;
+  const limit = Number(dto.limit);
   const offset = (page - 1) * limit;
 
   // 1. Xử lý Filter
@@ -116,32 +118,35 @@ export async function paginate<T extends PgTable>(
       : desc(columns['id']);
   }
 
+  const baseQuery = db
+    .select()
+    .from(table as PgTable)
+    .where(and(...whereConditions))
+    .orderBy(orderBy);
+
+  const itemsQuery = isPaginationDisabled
+    ? baseQuery
+    : baseQuery.limit(limit).offset(offset);
+
   // 3. Thực thi Query
   const [totalResult, items] = await Promise.all([
     db
       .select({ count: count() })
       .from(table as PgTable)
       .where(and(...whereConditions)),
-    db
-      .select()
-      .from(table as PgTable)
-      .where(and(...whereConditions))
-      .limit(limit)
-      .offset(offset)
-      .orderBy(orderBy),
+    itemsQuery,
   ]);
 
   const totalItems = Number(totalResult[0]?.count || 0);
-  const totalPages = Math.ceil(totalItems / limit);
 
   return {
     items: items as InferSelectModel<T>[],
     meta: {
       totalItems,
       itemCount: items.length,
-      itemsPerPage: limit,
-      totalPages,
-      currentPage: page,
+      itemsPerPage: isPaginationDisabled ? totalItems : limit,
+      totalPages: isPaginationDisabled ? 1 : Math.ceil(totalItems / limit),
+      currentPage: isPaginationDisabled ? 1 : page,
     },
   };
 }
