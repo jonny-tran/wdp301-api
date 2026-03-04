@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { desc, eq, inArray, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   PaginationParamsDto,
@@ -211,6 +211,7 @@ export class ProductRepository {
       .select({
         id: schema.batches.id,
         batchCode: schema.batches.batchCode,
+        batchStatus: schema.batches.status,
         productId: schema.batches.productId,
         expiryDate: schema.batches.expiryDate,
         imageUrl: schema.batches.imageUrl,
@@ -227,16 +228,6 @@ export class ProductRepository {
       .limit(1);
 
     if (!result.length) return null;
-
-    // Logic: If multiple warehouses, we might get multiple rows.
-    // Ideally we filter by Central or Sum. For now, we take the first row's quantity or specific logic if provided.
-    // Given the context of "Product Management", usually we look at Central Stock.
-    // Let's refine the query to aggregate if needed, but user asked for "Left Join ... trả về trường quantity".
-    // We assume the join will return the quantity from the matched inventory record.
-    // If we want total across all warehouses, we need strict grouping.
-    // However, the prompt implies "currentQuantity" from "inventory".
-    // To safe guard, we can filter inventory.warehouseId if needed but for now we follow the exact "Left Join" instruction data structure.
-
     return result[0];
   }
 
@@ -250,46 +241,47 @@ export class ProductRepository {
         .update(schema.batches)
         .set({
           imageUrl: data.imageUrl,
+          status: data.status,
           updatedAt: new Date(),
         })
         .where(eq(schema.batches.id, id))
         .returning();
 
-      if (data.initialQuantity && centralWarehouseId) {
+      if (!updatedBatch) {
+        throw new Error('Batch not found');
+      }
+
+      if (data.initialQuantity !== undefined && centralWarehouseId) {
         // Validate quantity > 0 handled by DTO Min(1)
 
         // Update Inventory
         await tx
-          .update(schema.inventory)
-          .set({
+          .insert(schema.inventory)
+          .values({
+            batchId: id,
+            warehouseId: centralWarehouseId,
             quantity: data.initialQuantity.toString(),
             updatedAt: new Date(),
           })
-          .where(
-            and(
-              eq(schema.inventory.batchId, id),
-              eq(schema.inventory.warehouseId, centralWarehouseId),
-            ),
-          );
+          .onConflictDoUpdate({
+            target: [schema.inventory.batchId, schema.inventory.warehouseId],
+            set: {
+              quantity: data.initialQuantity.toString(),
+              updatedAt: new Date(),
+            },
+          });
 
         // Record Transaction
         await tx.insert(schema.inventoryTransactions).values({
           warehouseId: centralWarehouseId,
           batchId: id,
           type: 'adjustment',
-          quantityChange: data.initialQuantity.toString(), // Logic: This is "Change" or "Set"?
-          // Requirement says "Ghi thêm bản ghi ... type adjustment".
-          // Usually 'adjustment' implies the difference. But simpler implementation often logs the 'new' value or the 'delta'.
-          // Given we are "correcting initial quantity", logging the TARGET value as change might be misleading if we don't calculate delta.
-          // However, for "Initial Batch Correction", often we just log the action.
-          // Let's log the *new* Initial Quantity value as the change implies "Reset to this value".
-          // Better: Calculate delta?
-          // For simplicity and matching prompt strictly: "Ghi thêm ... type adjustment". I will log the new quantity.
+          quantityChange: data.initialQuantity.toString(),
           reason: 'Cập nhật số lượng ban đầu do nhập sai',
         });
       }
 
-      return updatedBatch;
+      return await this.findBatchById(updatedBatch.id);
     });
   }
 
