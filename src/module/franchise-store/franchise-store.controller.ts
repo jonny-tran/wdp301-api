@@ -35,8 +35,10 @@ export class FranchiseStoreController {
   }
 
   @Get()
-  @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR)
-  @ApiOperation({ summary: 'Lấy danh sách store [Manager, Coordinator]' })
+  @Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR)
+  @ApiOperation({
+    summary: 'Lấy danh sách store [Admin, Manager, Coordinator]',
+  })
   async findAll(@Query() filter: GetStoresFilterDto) {
     return this.franchiseStoreService.findAll(filter);
   }
