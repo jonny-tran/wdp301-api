@@ -15,6 +15,7 @@ import { OrderModule } from './module/order/order.module';
 import { ProductModule } from './module/product/product.module';
 import { ShipmentModule } from './module/shipment/shipment.module';
 import { SupplierModule } from './module/supplier/supplier.module';
+import { SystemConfigModule } from './module/system-config/system-config.module';
 import { WarehouseModule } from './module/warehouse/warehouse.module';
 
 @Module({
@@ -45,6 +46,7 @@ import { WarehouseModule } from './module/warehouse/warehouse.module';
     InboundModule,
     SupplierModule,
     CloudinaryModule,
+    SystemConfigModule,
   ],
   controllers: [AppController],
   providers: [AppService],

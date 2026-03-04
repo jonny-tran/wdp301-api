@@ -7,16 +7,17 @@ import {
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../../database/schema';
 import { UnitOfWork } from '../../database/unit-of-work';
+import { UserRole } from '../auth/dto/create-user.dto';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { ShipmentStatus } from '../shipment/constants/shipment-status.enum';
 import { ShipmentRepository } from '../shipment/shipment.repository';
 import { ClaimRepository } from './claim.repository';
 import { ClaimStatus } from './constants/claim-status.enum';
+import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 import { CreateManualClaimDto } from './dto/create-manual-claim.dto';
 import { GetClaimsDto } from './dto/get-claims.dto';
 import { ResolveClaimDto } from './dto/resolve-claim.dto';
-import { ClaimSummaryQueryDto } from './dto/analytics-query.dto';
 
 @Injectable()
 export class ClaimService {
@@ -33,6 +34,47 @@ export class ClaimService {
 
   async findAll(query: GetClaimsDto) {
     return this.claimRepository.findAll(query);
+  }
+
+  async getClaims(
+    query: GetClaimsDto,
+    user: { role: string; storeId?: string | null },
+  ) {
+    const filters = { ...query };
+    if (user.role === (UserRole.FRANCHISE_STORE_STAFF as string)) {
+      if (!user.storeId) {
+        throw new ForbiddenException('Store staff must have a storeId');
+      }
+      filters.storeId = user.storeId;
+    }
+    return this.claimRepository.findAll(filters);
+  }
+
+  async createClaimFromShipment(
+    shipmentId: string,
+    items: { batchId: number; quantityReceived: number }[],
+  ) {
+    return this.uow.runInTransaction(async (tx) => {
+      const shipment =
+        await this.claimRepository.getShipmentForValidation(shipmentId);
+      if (!shipment) throw new NotFoundException('Không tìm thấy chuyến hàng');
+
+      if (shipment.status !== 'delivered') {
+        throw new BadRequestException(
+          'Chỉ có thể khiếu nại đơn hàng đã giao thành công',
+        );
+      }
+
+      for (const item of items) {
+        await this.inventoryRepository.adjustBatchQuantity(
+          shipment.toWarehouseId,
+          item.batchId,
+          item.quantityReceived,
+          tx,
+        );
+      }
+      return { status: 'success' };
+    });
   }
 
   async createManualClaim(
@@ -108,9 +150,9 @@ export class ClaimService {
         }
 
         // Evidence validation for damaged goods
-        if (item.quantityDamaged > 0 && !item.imageProofUrl) {
+        if (item.quantityDamaged > 0 && (!item.imageProofUrl || !item.reason)) {
           throw new BadRequestException(
-            `Hàng hỏng bắt buộc phải có ảnh bằng chứng (Batch ${item.batchId})`,
+            `Hàng hỏng bắt buộc phải có ảnh bằng chứng và lý do (Batch ${item.batchId})`,
           );
         }
       }
@@ -184,14 +226,20 @@ export class ClaimService {
     return await this.claimRepository.updateClaimStatus(id, dto.status);
   }
 
-  async getClaimDetail(id: string, storeId: string) {
+  async getClaimDetail(
+    id: string,
+    user: { role: string; storeId?: string | null },
+  ) {
     const claim = await this.claimRepository.getClaimById(id);
 
     if (!claim) {
       throw new NotFoundException('Không tìm thấy khiếu nại này');
     }
 
-    if (claim.shipment.order.store.id !== storeId) {
+    if (
+      user.role === (UserRole.FRANCHISE_STORE_STAFF as string) &&
+      claim.shipment.order.store.id !== user.storeId
+    ) {
       throw new ForbiddenException('Bạn không có quyền xem khiếu nại này');
     }
 

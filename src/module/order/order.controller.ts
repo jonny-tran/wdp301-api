@@ -15,16 +15,16 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import type { IJwtPayload } from '../auth/types/auth.types';
+import {
+  FulfillmentRateQueryDto,
+  SlaQueryDto,
+} from './dto/analytics-query.dto';
 import { ApproveOrderDto } from './dto/approve-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
 import { RejectOrderDto } from './dto/reject-order.dto';
 import { OrderService } from './order.service';
-import {
-  FulfillmentRateQueryDto,
-  SlaQueryDto,
-} from './dto/analytics-query.dto';
 
 @ApiTags('Order')
 @ApiBearerAuth()

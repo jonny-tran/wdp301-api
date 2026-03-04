@@ -2,13 +2,15 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, asc, eq, lt, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { OrderStatus } from '../order/constants/order-status.enum';
+import { SystemConfigService } from '../system-config/system-config.service';
 import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
 
 import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
@@ -18,10 +20,13 @@ import { WarehouseRepository } from './warehouse.repository';
 
 @Injectable()
 export class WarehouseService {
+  private readonly logger = new Logger(WarehouseService.name);
+
   constructor(
     private readonly warehouseRepo: WarehouseRepository,
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
+    private readonly systemConfigService: SystemConfigService,
   ) {}
 
   async getCentralWarehouseId(): Promise<number> {
@@ -157,6 +162,7 @@ export class WarehouseService {
     const inv = batchInfo.inventory[0];
     return {
       productName: batchInfo.product.name,
+      batchId: batchInfo.id,
       batchCode: batchInfo.batchCode,
       expiryDate: batchInfo.expiryDate,
       quantityPhysical: inv ? parseFloat(inv.quantity) : 0,
@@ -277,6 +283,18 @@ export class WarehouseService {
             referenceId: orderDto.orderId,
             reason: 'Bulk Fulfillment',
           });
+
+          // ========================================
+          // BUSINESS RULE: FEFO_STRICT_MODE CHECK
+          // Verify no older batch (earlier expiry) has available stock
+          // ========================================
+          await this.enforceFEFOStrictMode(
+            warehouseId,
+            batch.productId,
+            batch.expiryDate,
+            batch.batchCode,
+            tx,
+          );
         }
 
         // 6. Update Shipment Status
@@ -303,5 +321,66 @@ export class WarehouseService {
 
       return { message: 'Consolidated fulfillment successful' };
     });
+  }
+
+  // =============================================
+  // PRIVATE: FEFO Strict Mode Enforcement
+  // =============================================
+
+  /**
+   * Kiểm tra FEFO_STRICT_MODE: nếu enabled, chặn xuất lô mới khi còn lô cũ hơn
+   * có hàng. Nếu disabled, chỉ log warning.
+   */
+  private async enforceFEFOStrictMode(
+    warehouseId: number,
+    productId: number,
+    currentBatchExpiry: string,
+    currentBatchCode: string,
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    // Query for older batches (earlier expiry) with available stock
+    const olderBatches = await tx
+      .select({
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+        availableQty: sql<number>`(${schema.inventory.quantity} - ${schema.inventory.reservedQuantity})`,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.batches.productId, productId),
+          // Expiry date earlier than the batch being picked
+          lt(schema.batches.expiryDate, currentBatchExpiry),
+          // Still has available stock
+          sql`(${schema.inventory.quantity} - ${schema.inventory.reservedQuantity}) > 0`,
+          // Not expired
+          sql`${schema.batches.expiryDate}::date > CURRENT_DATE`,
+        ),
+      )
+      .orderBy(asc(schema.batches.expiryDate))
+      .limit(1);
+
+    if (olderBatches.length === 0) return; // No FEFO violation
+
+    const olderBatch = olderBatches[0];
+    const fefoStrictMode =
+      await this.systemConfigService.getConfigValue('FEFO_STRICT_MODE');
+
+    const warningMsg =
+      `Vi phạm FEFO: Đang xuất lô ${currentBatchCode} (HSD: ${currentBatchExpiry}) ` +
+      `nhưng lô ${olderBatch.batchCode} (HSD: ${olderBatch.expiryDate}, ` +
+      `còn ${olderBatch.availableQty}) cần xuất trước.`;
+
+    if (fefoStrictMode === 'TRUE') {
+      throw new BadRequestException(warningMsg);
+    } else {
+      // FEFO_STRICT_MODE = FALSE → chỉ log warning, cho phép tiếp tục
+      this.logger.warn(`[FEFO_WARNING] ${warningMsg}`);
+    }
   }
 }

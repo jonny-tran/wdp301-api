@@ -12,6 +12,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  varchar,
 } from 'drizzle-orm/pg-core';
 
 export const roleEnum = pgEnum('role', [
@@ -76,7 +77,7 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   role: roleEnum('role').notNull(),
   storeId: uuid('store_id'),
-  status: userStatusEnum('status').default('active').notNull(),
+  status: varchar('status', { length: 20 }).default('ACTIVE').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -111,6 +112,14 @@ export const stores = pgTable('stores', {
   phone: text('phone'),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const systemConfigs = pgTable('system_configs', {
+  id: serial('id').primaryKey(),
+  key: varchar('key', { length: 255 }).notNull().unique(),
+  value: text('value').notNull(),
+  description: text('description'),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
 
