@@ -22,9 +22,11 @@ export class ProductRepository {
   ) {}
 
   private readonly productFilterMap: FilterMap<typeof schema.products> = {
-    search: { column: schema.products.name, operator: 'ilike' },
+    search: {
+      column: [schema.products.name, schema.products.sku],
+      operator: 'ilike',
+    },
     isActive: { column: schema.products.isActive, operator: 'eq' },
-    // categoryId: { column: schema.products.categoryId, operator: 'eq' },
   };
 
   private readonly batchFilterMap: FilterMap<typeof schema.batches> = {

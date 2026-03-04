@@ -14,6 +14,7 @@ import {
   ilike,
   inArray,
   lte,
+  or,
 } from 'drizzle-orm';
 import { PgDatabase, PgTable } from 'drizzle-orm/pg-core';
 import { PaginationParamsDto, SortOrder } from '../dto/pagination-params.dto';
@@ -32,7 +33,7 @@ export type FilterOperator =
 export type FilterMap<T extends PgTable> = Record<
   string,
   {
-    column: AnyColumn;
+    column: AnyColumn | AnyColumn[];
     operator: FilterOperator;
   }
 >;
@@ -60,32 +61,40 @@ export async function paginate<T extends PgTable>(
       if (value !== undefined && value !== null && value !== '') {
         const { column, operator } = filterMap[key];
 
-        switch (operator) {
-          case 'eq':
-            whereConditions.push(eq(column, value));
-            break;
-          case 'ilike':
-            whereConditions.push(ilike(column, `%${String(value)}%`));
-            break;
-          case 'gte':
-            whereConditions.push(gte(column, new Date(String(value))));
-            break;
-          case 'lte':
-            whereConditions.push(lte(column, new Date(String(value))));
-            break;
-          case 'gt':
-            whereConditions.push(gte(column, value));
-            break;
-          case 'lt':
-            whereConditions.push(lte(column, value));
-            break;
-          case 'in': {
-            const values =
-              typeof value === 'string'
-                ? value.split(',')
-                : (value as unknown[]);
-            whereConditions.push(inArray(column, values));
-            break;
+        const columns = Array.isArray(column) ? column : [column];
+
+        const subConditions = columns
+          .map((col) => {
+            switch (operator) {
+              case 'eq':
+                return eq(col, value);
+              case 'ilike':
+                return ilike(col, `%${String(value)}%`);
+              case 'gte':
+                return gte(col, value);
+              case 'lte':
+                return lte(col, value);
+              case 'gt':
+                return gte(col, value);
+              case 'lt':
+                return lte(col, value);
+              case 'in': {
+                const values =
+                  typeof value === 'string'
+                    ? value.split(',')
+                    : (value as unknown[]);
+                return inArray(col, values);
+              }
+              default:
+                return undefined;
+            }
+          })
+          .filter(Boolean) as SQL[];
+
+        if (subConditions.length > 0) {
+          const condition = or(...subConditions);
+          if (condition) {
+            whereConditions.push(condition);
           }
         }
       }
