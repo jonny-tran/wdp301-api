@@ -345,8 +345,10 @@ export class OrderService {
     const isCoordinator =
       (user.role as UserRole) === UserRole.SUPPLY_COORDINATOR;
 
+    const isManager = (user.role as UserRole) === UserRole.MANAGER;
+
     // Data Isolation for Store Staff: strictly no access to other store's orders
-    if (!isCoordinator && order.storeId !== user.storeId) {
+    if (!isCoordinator && !isManager && order.storeId !== user.storeId) {
       throw new ForbiddenException('Từ chối truy cập');
     }
     return order;
