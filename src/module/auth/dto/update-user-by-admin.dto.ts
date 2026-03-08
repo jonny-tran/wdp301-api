@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEmail, IsEnum, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { UserRole } from './create-user.dto';
 import { UserStatusFilter } from './get-users.dto';
 
@@ -16,11 +16,6 @@ export class UpdateUserByAdminDto {
   @IsEnum(UserRole)
   @IsOptional()
   role?: UserRole;
-
-  @ApiPropertyOptional({ description: 'Email mới' })
-  @IsEmail()
-  @IsOptional()
-  email?: string;
 
   @ApiPropertyOptional({ description: 'Số điện thoại' })
   @IsString()
