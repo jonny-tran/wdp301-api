@@ -237,16 +237,16 @@ export class InventoryService {
         const available = physical - reserved;
 
         return {
-          product_id: item.productId,
-          product_name: item.productName,
+          productId: item.productId,
+          productName: item.productName,
           sku: item.sku,
           unit: item.unitName,
-          min_stock: item.minStock,
-          total_physical: physical, // Tổng thực tế
-          total_reserved: reserved, // Đang xử lý
-          available_quantity: available, // Có thể dùng
+          minStock: item.minStock,
+          totalPhysical: physical, // Tổng thực tế
+          totalReserved: reserved, // Đang xử lý
+          availableQuantity: available, // Có thể dùng
           // Cờ cảnh báo nếu dưới định mức
-          is_low_stock: available < (item.minStock || 0),
+          isLowStock: available < (item.minStock || 0),
         };
       }),
       meta,
@@ -262,15 +262,15 @@ export class InventoryService {
     );
 
     return {
-      product_id: productId,
-      total_batches: batches.length,
+      productId: productId,
+      totalBatches: batches.length,
       details: batches.map((b) => {
         const qty = parseFloat(b.quantity.toString());
         const res = parseFloat(b.reserved.toString());
 
         return {
-          batch_code: b.batchCode,
-          expiry_date: b.expiryDate, // Frontend tự format dd/MM/yyyy
+          batchCode: b.batchCode,
+          expiryDate: b.expiryDate, // Frontend tự format dd/MM/yyyy
           physical: qty,
           reserved: res,
           available: qty - res,

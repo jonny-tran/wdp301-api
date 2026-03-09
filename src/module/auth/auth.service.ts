@@ -220,13 +220,6 @@ export class AuthService {
       throw new BadRequestException('Tài khoản không tồn tại');
     }
 
-    if (dto.email && dto.email !== user.email) {
-      const existingUser = await this.authRepository.findUserByEmail(dto.email);
-      if (existingUser) {
-        throw new ConflictException('Email đã được sử dụng');
-      }
-    }
-
     return this.authRepository.updateUser(userId, dto);
   }
 
@@ -236,17 +229,9 @@ export class AuthService {
       throw new BadRequestException('Tài khoản không tồn tại');
     }
 
-    if (dto.email && dto.email !== user.email) {
-      const existingUser = await this.authRepository.findUserByEmail(dto.email);
-      if (existingUser) {
-        throw new ConflictException('Email đã được sử dụng');
-      }
-    }
-
     const payloadToUpdate = {
       ...(dto.fullName && { username: dto.fullName }),
       ...(dto.phone && { phone: dto.phone }),
-      ...(dto.email && { email: dto.email }),
     };
 
     if (Object.keys(payloadToUpdate).length === 0) {
