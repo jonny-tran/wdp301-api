@@ -1,13 +1,8 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsDateString,
-  IsEnum,
-  IsOptional,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsDate, IsEnum, IsOptional, IsString, IsUUID } from 'class-validator';
 import { PaginationParamsDto } from '../../../common/dto/pagination-params.dto';
 import { ClaimStatus } from '../constants/claim-status.enum';
+import { Type } from 'class-transformer';
 
 export class GetClaimsDto extends PaginationParamsDto {
   @ApiPropertyOptional({
@@ -37,14 +32,16 @@ export class GetClaimsDto extends PaginationParamsDto {
     example: '2026-01-01',
   })
   @IsOptional()
-  @IsDateString()
-  fromDate?: string;
+  @Type(() => Date)
+  @IsDate()
+  fromDate?: Date;
 
   @ApiPropertyOptional({
     description: 'Đến ngày (YYYY-MM-DD)',
     example: '2026-02-12',
   })
   @IsOptional()
-  @IsDateString()
-  toDate?: string;
+  @Type(() => Date)
+  @IsDate()
+  toDate?: Date;
 }

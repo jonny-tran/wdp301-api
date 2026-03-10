@@ -26,10 +26,23 @@ export class ClaimRepository {
   };
 
   async findAll(query: GetClaimsDto) {
+    const filters: Record<string, unknown> = { ...query };
+
+    // Xử lý biến đổi chuỗi thành Date object cho Drizzle ORM
+    if (query.fromDate) {
+      filters.fromDate = new Date(query.fromDate);
+    }
+
+    if (query.toDate) {
+      const endOfDay = new Date(query.toDate);
+      endOfDay.setHours(23, 59, 59, 999); // Kéo dài đến cuối ngày
+      filters.toDate = endOfDay;
+    }
+
     return paginate(
       this.db,
       schema.claims,
-      query as PaginationParamsDto & Record<string, unknown>,
+      filters as PaginationParamsDto & Record<string, unknown>,
       this.filterMap,
     );
   }
