@@ -38,7 +38,7 @@ export class GetClaimsDto extends PaginationParamsDto {
 
   @ApiPropertyOptional({
     description: 'Đến ngày (YYYY-MM-DD)',
-    example: '2026-02-12',
+    example: '2026-06-12',
   })
   @IsOptional()
   @Type(() => Date)

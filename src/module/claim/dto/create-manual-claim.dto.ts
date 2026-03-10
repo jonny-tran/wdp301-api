@@ -15,11 +15,6 @@ export class CreateManualClaimItemDto {
   @ApiProperty()
   @IsNumber()
   @IsNotEmpty()
-  productId: number;
-
-  @ApiProperty()
-  @IsNumber()
-  @IsNotEmpty()
   batchId: number;
 
   @ApiProperty({ description: 'Quantity missing', minimum: 0 })

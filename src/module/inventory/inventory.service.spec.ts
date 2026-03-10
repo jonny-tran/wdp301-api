@@ -316,8 +316,8 @@ describe('InventoryService', () => {
           offset: 10,
         });
         expect(result.items.length).toBe(1);
-        expect(result.items[0].available_quantity).toBe(10);
-        expect(result.items[0].is_low_stock).toBe(true);
+        expect(result.items[0].availableQuantity).toBe(10);
+        expect(result.items[0].isLowStock).toBe(true);
         expect(result.meta).toEqual(repoFormat.meta);
       });
     });
