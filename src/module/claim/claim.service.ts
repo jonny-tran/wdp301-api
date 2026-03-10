@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { eq } from 'drizzle-orm';
 import * as schema from '../../database/schema';
 import { UnitOfWork } from '../../database/unit-of-work';
 import { UserRole } from '../auth/dto/create-user.dto';
@@ -120,13 +121,14 @@ export class ClaimService {
 
       // Step B: Quantity Check - Validate store has enough stock for each claimed item
       const storeWarehouseId = shipment.toWarehouseId;
+      const batchProductMap = new Map<number, number>();
 
       for (const item of dto.items) {
         const totalClaimedQty = item.quantityMissing + item.quantityDamaged;
 
         if (totalClaimedQty <= 0) {
           throw new BadRequestException(
-            `Số lượng khiếu nại phải lớn hơn 0 cho sản phẩm ${item.productId}`,
+            `Số lượng khiếu nại phải lớn hơn 0 cho lô hàng ${item.batchId}`,
           );
         }
 
@@ -141,6 +143,15 @@ export class ClaimService {
             `Không tìm thấy tồn kho cho batch ${item.batchId} tại kho cửa hàng`,
           );
         }
+
+        // Fetch batch to get productId
+        const batchRecord = await tx.query.batches.findFirst({
+          where: eq(schema.batches.id, item.batchId),
+        });
+        if (!batchRecord) {
+          throw new BadRequestException(`Không tìm thấy Batch ${item.batchId}`);
+        }
+        batchProductMap.set(item.batchId, batchRecord.productId);
 
         const currentQty = parseFloat(inventoryRecord.quantity);
         if (currentQty < totalClaimedQty) {
@@ -168,7 +179,7 @@ export class ClaimService {
       // C2: Create Claim Items
       const claimItemsPayload = dto.items.map((item) => ({
         claimId: claim.id,
-        productId: item.productId,
+        productId: batchProductMap.get(item.batchId)!,
         quantityMissing: item.quantityMissing,
         quantityDamaged: item.quantityDamaged,
         reason: item.reason,

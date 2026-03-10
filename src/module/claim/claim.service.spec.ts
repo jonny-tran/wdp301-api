@@ -51,12 +51,20 @@ describe('ClaimService', () => {
       createInventoryTransaction: jest.fn(),
     };
 
+    const mockTx = {
+      query: {
+        batches: {
+          findFirst: jest.fn().mockResolvedValue({ productId: 1 }),
+        },
+      },
+    };
+
     uow = {
       runInTransaction: jest
         .fn()
         .mockImplementation(
           <T>(cb: (tx: NodePgDatabase<typeof schema>) => Promise<T>) =>
-            cb({} as NodePgDatabase<typeof schema>),
+            cb(mockTx as unknown as NodePgDatabase<typeof schema>),
         ) as unknown as UnitOfWork['runInTransaction'],
     };
 
@@ -202,7 +210,6 @@ describe('ClaimService', () => {
         shipmentId: 'shipment-1',
         items: [
           {
-            productId: 1,
             batchId: 10,
             quantityDamaged: 5,
             quantityMissing: 5, // total 10
@@ -249,7 +256,6 @@ describe('ClaimService', () => {
         shipmentId: 'shipment-1',
         items: [
           {
-            productId: 1,
             batchId: 10,
             quantityDamaged: 2,
             quantityMissing: 0,
@@ -263,7 +269,6 @@ describe('ClaimService', () => {
         shipmentId: 'shipment-1',
         items: [
           {
-            productId: 1,
             batchId: 10,
             quantityDamaged: 2,
             quantityMissing: 0,
@@ -318,7 +323,6 @@ describe('ClaimService', () => {
         shipmentId: 'shipment-1',
         items: [
           {
-            productId: 1,
             batchId: 10,
             quantityDamaged: 2,
             quantityMissing: 1,
