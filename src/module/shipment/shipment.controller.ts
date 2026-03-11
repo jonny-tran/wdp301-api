@@ -80,14 +80,13 @@ export class ShipmentController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: IJwtPayload,
   ) {
-    if (!user.storeId && user.role !== (UserRole.ADMIN as any)) {
+    if (
+      user.role === (UserRole.FRANCHISE_STORE_STAFF as string) &&
+      !user.storeId
+    ) {
       throw new BadRequestException('User không có storeId');
     }
-    if (!user.storeId) {
-      // extra check redundant but keeping logic similar to existing
-      throw new BadRequestException('User không có storeId');
-    }
-    return this.shipmentService.getShipmentDetail(id, user.storeId);
+    return this.shipmentService.getShipmentDetail(id, user.storeId, user.role);
   }
 
   @Patch(':id/receive-all')

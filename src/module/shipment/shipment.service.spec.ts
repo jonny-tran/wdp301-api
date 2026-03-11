@@ -18,6 +18,7 @@ import { InventoryRepository } from '../inventory/inventory.repository';
 import { InventoryService } from '../inventory/inventory.service';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { ShipmentStatus } from './constants/shipment-status.enum';
+import { UserRole } from '../auth/dto/create-user.dto';
 import { ReceiveShipmentDto } from './dto/receive-shipment.dto';
 import { ShipmentRepository } from './shipment.repository';
 import { ShipmentService } from './shipment.service';
@@ -105,7 +106,11 @@ describe('ShipmentService', () => {
       shipmentRepository.getShipmentById.mockResolvedValueOnce(undefined);
 
       await expect(
-        service.getShipmentDetail('invalid-id', 'store-1'),
+        service.getShipmentDetail(
+          'invalid-id',
+          'store-1',
+          UserRole.FRANCHISE_STORE_STAFF,
+        ),
       ).rejects.toThrow(
         new NotFoundException('Không tìm thấy phiếu giao hàng'),
       );
@@ -115,6 +120,11 @@ describe('ShipmentService', () => {
       shipmentRepository.getShipmentById.mockResolvedValueOnce({
         id: 'ship-1',
         toWarehouseId: 10,
+        order: {
+          id: 'order-1',
+          storeId: 'store-2',
+          store: { name: 'Store 2' },
+        },
         items: [],
       } as any);
 
@@ -124,7 +134,11 @@ describe('ShipmentService', () => {
       } as any);
 
       await expect(
-        service.getShipmentDetail('ship-1', 'store-1'),
+        service.getShipmentDetail(
+          'ship-1',
+          'store-1',
+          UserRole.FRANCHISE_STORE_STAFF,
+        ),
       ).rejects.toThrow(
         new ForbiddenException('Bạn không có quyền xem chuyến hàng này'),
       );
@@ -169,10 +183,14 @@ describe('ShipmentService', () => {
         storeId: 'store-1',
       } as any);
 
-      const result = await service.getShipmentDetail('ship-1', 'store-1');
+      const result = await service.getShipmentDetail(
+        'ship-1',
+        'store-1',
+        UserRole.FRANCHISE_STORE_STAFF,
+      );
 
       expect(result.id).toEqual('ship-1');
-      expect(result.order.storeId).toEqual('store-1');
+      expect(result.order?.storeId).toEqual('store-1');
       expect(result.items).toHaveLength(2);
       // Verify FEFO: B001 (2026) comes before B002 (2027)
       expect(result.items[0].batchCode).toEqual('B001');

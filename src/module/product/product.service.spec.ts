@@ -303,10 +303,10 @@ describe('ProductService', () => {
       productRepository.findBatchById.mockResolvedValue({ id: 1 } as never);
       productRepository.updateBatch.mockResolvedValue({
         id: 1,
-        status: 'expired',
+        batchStatus: 'expired',
       } as never);
 
-      const dto = { status: 'expired' } as never;
+      const dto = { batchStatus: 'expired' } as never;
       const result = await service.updateBatch(1, dto);
 
       expect(productRepository.updateBatch).toHaveBeenCalledWith(
@@ -314,7 +314,7 @@ describe('ProductService', () => {
         dto,
         undefined,
       );
-      expect(result.status).toBe('expired');
+      expect(result!.batchStatus).toBe('expired');
     });
   });
 });

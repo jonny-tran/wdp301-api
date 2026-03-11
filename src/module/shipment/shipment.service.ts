@@ -13,6 +13,7 @@ import { ClaimService } from '../claim/claim.service';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { InventoryService } from '../inventory/inventory.service';
 import { OrderStatus } from '../order/constants/order-status.enum';
+import { UserRole } from '../auth/dto/create-user.dto';
 import { ShipmentStatus } from './constants/shipment-status.enum';
 import { GetShipmentsDto } from './dto/get-shipments.dto';
 import { ReceiveShipmentDto } from './dto/receive-shipment.dto';
@@ -110,26 +111,37 @@ export class ShipmentService {
     }));
   }
 
-  async getShipmentDetail(shipmentId: string, storeId: string) {
+  async getShipmentDetail(
+    shipmentId: string,
+    storeId?: string | null,
+    role?: string,
+  ) {
     const shipment = await this.shipmentRepository.getShipmentById(shipmentId);
 
     if (!shipment) {
       throw new NotFoundException('Không tìm thấy phiếu giao hàng');
     }
 
-    // Verify ownership: shipment must be going to this store's warehouse
-    const warehouse = await this.shipmentRepository.findWarehouseById(
-      shipment.toWarehouseId,
-    );
+    // Verify ownership: shipment must be going to this store's warehouse for staff
+    if (role === UserRole.FRANCHISE_STORE_STAFF) {
+      const warehouse = await this.shipmentRepository.findWarehouseById(
+        shipment.toWarehouseId,
+      );
 
-    if (!warehouse || warehouse.storeId !== storeId) {
-      throw new ForbiddenException('Bạn không có quyền xem chuyến hàng này');
+      if (!warehouse || warehouse.storeId !== storeId) {
+        throw new ForbiddenException('Bạn không có quyền xem chuyến hàng này');
+      }
     }
 
     // Test FEFO Logic: Sort items by expiryDate ASC
-    const sortedItems = [...shipment.items].sort((a, b) => {
-      const dateA = new Date(a.batch.expiryDate).getTime();
-      const dateB = new Date(b.batch.expiryDate).getTime();
+    const getExpiryTime = (date?: string | Date) => {
+      if (!date) return 0;
+      return new Date(date).getTime();
+    };
+
+    const sortedItems = [...(shipment.items || [])].sort((a, b) => {
+      const dateA = getExpiryTime(a.batch?.expiryDate);
+      const dateB = getExpiryTime(b.batch?.expiryDate);
       return dateA - dateB;
     });
 
@@ -138,20 +150,22 @@ export class ShipmentService {
       orderId: shipment.orderId,
       status: shipment.status,
       createdAt: shipment.createdAt,
-      order: {
-        id: shipment.order.id,
-        storeId: shipment.order.storeId,
-        storeName: shipment.order.store.name,
-      },
+      order: shipment.order
+        ? {
+            id: shipment.order.id,
+            storeId: shipment.order.storeId,
+            storeName: shipment.order.store?.name,
+          }
+        : null,
       items: sortedItems.map((item) => ({
         batchId: item.batchId,
-        batchCode: item.batch.batchCode,
-        productId: item.batch.product.id,
-        productName: item.batch.product.name,
-        sku: item.batch.product.sku,
-        quantity: parseFloat(item.quantity),
-        expiryDate: item.batch.expiryDate,
-        imageUrl: item.batch.product.imageUrl,
+        batchCode: item.batch?.batchCode,
+        productId: item.batch?.product?.id,
+        productName: item.batch?.product?.name,
+        sku: item.batch?.product?.sku,
+        quantity: parseFloat(item.quantity || '0'),
+        expiryDate: item.batch?.expiryDate,
+        imageUrl: item.batch?.product?.imageUrl,
       })),
     };
   }
