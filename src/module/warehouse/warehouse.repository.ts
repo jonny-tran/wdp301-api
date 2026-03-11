@@ -47,7 +47,7 @@ export class WarehouseRepository {
 
     if (search) {
       const searchCondition = or(
-        ilike(schema.orders.id, `%${search}%`),
+        sql`${schema.orders.id}::text ILIKE ${'%' + search + '%'}`,
         ilike(schema.stores.name, `%${search}%`),
       );
       if (searchCondition) {
