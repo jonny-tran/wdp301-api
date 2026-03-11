@@ -1,9 +1,15 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsDateString, IsInt, IsOptional } from 'class-validator';
+import { IsDateString, IsInt, IsOptional, IsString } from 'class-validator';
 import { PaginationParamsDto } from '../../../common/dto/pagination-params.dto';
 
 export class GetBatchesDto extends PaginationParamsDto {
+  @ApiPropertyOptional({
+    description: 'Từ khóa tìm kiếm (Mã lô hoặc Tên sản phẩm)',
+  })
+  @IsOptional()
+  @IsString()
+  search?: string;
   @ApiPropertyOptional({
     description: 'Tìm kiếm sản phẩm theo ID',
   })

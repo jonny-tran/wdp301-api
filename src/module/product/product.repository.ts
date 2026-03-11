@@ -1,5 +1,17 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { desc, eq, inArray, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  lte,
+  or,
+  sql,
+  SQL,
+} from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   PaginationParamsDto,
@@ -286,19 +298,95 @@ export class ProductRepository {
   }
 
   async findAllBatches(filter: GetBatchesDto) {
-    // Default Sort: Expiry Date ASC
-    const dto = {
-      ...filter,
-      sortBy: filter.sortBy || 'expiryDate',
-      sortOrder: filter.sortOrder || SortOrder.ASC,
-    };
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      productId,
+      fromDate,
+      toDate,
+      sortBy = 'expiryDate',
+      sortOrder = SortOrder.ASC,
+    } = filter;
 
-    const { items, meta } = await paginate(
-      this.db,
-      schema.batches,
-      dto,
-      this.batchFilterMap,
-    );
+    const offset = (Number(page) - 1) * Number(limit);
+    const isPaginationDisabled = !filter.limit;
+
+    const conditions: SQL[] = [];
+
+    if (productId) {
+      conditions.push(eq(schema.batches.productId, productId));
+    }
+
+    if (fromDate) {
+      conditions.push(gte(schema.batches.expiryDate, fromDate));
+    }
+
+    if (toDate) {
+      conditions.push(lte(schema.batches.expiryDate, toDate));
+    }
+
+    if (search) {
+      const searchCondition = or(
+        sql`${schema.batches.batchCode} ILIKE ${'%' + search + '%'}`,
+        sql`${schema.products.name} ILIKE ${'%' + search + '%'}`,
+      );
+      if (searchCondition) {
+        conditions.push(searchCondition);
+      }
+    }
+
+    const whereCondition =
+      conditions.length > 0 ? and(...conditions) : undefined;
+
+    let orderByCol: SQL | undefined;
+    if (sortBy === 'createdAt') {
+      orderByCol =
+        sortOrder === SortOrder.ASC
+          ? asc(schema.batches.createdAt)
+          : desc(schema.batches.createdAt);
+    } else {
+      orderByCol =
+        sortOrder === SortOrder.ASC
+          ? asc(schema.batches.expiryDate)
+          : desc(schema.batches.expiryDate);
+    }
+
+    const baseQuery = this.db
+      .select({
+        batches: schema.batches,
+        productName: schema.products.name,
+      })
+      .from(schema.batches)
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(whereCondition)
+      .orderBy(orderByCol);
+
+    const itemsQuery = isPaginationDisabled
+      ? baseQuery
+      : baseQuery.limit(Number(limit)).offset(offset);
+
+    const [totalResult, itemsData] = await Promise.all([
+      this.db
+        .select({ count: count() })
+        .from(schema.batches)
+        .innerJoin(
+          schema.products,
+          eq(schema.batches.productId, schema.products.id),
+        )
+        .where(whereCondition),
+      itemsQuery,
+    ]);
+
+    const totalItems = Number(totalResult[0]?.count || 0);
+
+    const items = itemsData.map((row) => ({
+      ...row.batches,
+      productName: row.productName,
+    }));
 
     // Enrich with currentQuantity
     const batchIds = items.map((b) => b.id);
@@ -322,7 +410,18 @@ export class ProductRepository {
       currentQuantity: quantityMap.get(item.id)?.toString() || '0',
     }));
 
-    return { items: enrichedItems, meta };
+    return {
+      items: enrichedItems,
+      meta: {
+        totalItems,
+        itemCount: items.length,
+        itemsPerPage: isPaginationDisabled ? totalItems : Number(limit),
+        totalPages: isPaginationDisabled
+          ? 1
+          : Math.ceil(totalItems / (Number(limit) || 1)),
+        currentPage: isPaginationDisabled ? 1 : Number(page),
+      },
+    };
   }
 
   async createBatch(data: {

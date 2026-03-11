@@ -1,11 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsDateString,
-  IsEnum,
-  IsOptional,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, IsString } from 'class-validator';
 import { PaginationParamsDto } from '../../../common/dto/pagination-params.dto';
 import { OrderStatus } from '../constants/order-status.enum';
 
@@ -19,17 +13,17 @@ export class GetOrdersDto extends PaginationParamsDto {
   status?: OrderStatus;
 
   @ApiPropertyOptional({
-    description: 'Tìm kiếm theo Mã đơn hàng (ID)',
+    description: 'Tìm kiếm theo Mã đơn hàng (ID) hoặc Tên cửa hàng',
   })
   @IsOptional()
   @IsString()
   search?: string;
 
   @ApiPropertyOptional({
-    description: 'Lọc theo ID cửa hàng',
+    description: 'Lọc theo ID cửa hàng hoặc Tên Cửa hàng',
   })
   @IsOptional()
-  @IsUUID()
+  @IsString()
   storeId?: string;
 
   @ApiPropertyOptional({

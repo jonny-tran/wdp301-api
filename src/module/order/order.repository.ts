@@ -1,5 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, gte, inArray, lte, sql, SQL } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  lte,
+  or,
+  sql,
+  SQL,
+} from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
 import { FilterMap, paginate } from '../../common/utils/paginate.util';
@@ -17,26 +28,105 @@ export class OrderRepository {
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
-  private readonly filterMap: FilterMap<typeof schema.orders> = {
-    status: { column: schema.orders.status, operator: 'eq' },
-    storeId: { column: schema.orders.storeId, operator: 'eq' },
-    search: { column: schema.orders.id, operator: 'ilike' },
-    fromDate: { column: schema.orders.createdAt, operator: 'gte' },
-    toDate: { column: schema.orders.createdAt, operator: 'lte' },
-  };
-
   private readonly catalogFilterMap: FilterMap<typeof schema.products> = {
     search: { column: schema.products.name, operator: 'ilike' },
     isActive: { column: schema.products.isActive, operator: 'eq' },
   };
 
   async findAll(query: GetOrdersDto) {
-    return paginate(
-      this.db,
-      schema.orders,
-      query as PaginationParamsDto & Record<string, unknown>,
-      this.filterMap,
-    );
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      storeId,
+      status,
+      fromDate,
+      toDate,
+    } = query;
+    const offset = (Number(page) - 1) * Number(limit);
+    const isPaginationDisabled = !query.limit;
+
+    const conditions: SQL[] = [];
+
+    if (storeId) {
+      conditions.push(eq(schema.orders.storeId, storeId));
+    }
+
+    if (status) {
+      conditions.push(eq(schema.orders.status, status));
+    }
+
+    if (fromDate) {
+      conditions.push(gte(schema.orders.createdAt, new Date(fromDate)));
+    }
+
+    if (toDate) {
+      conditions.push(lte(schema.orders.createdAt, new Date(toDate)));
+    }
+
+    if (search) {
+      const uuidRegex =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (uuidRegex.test(search)) {
+        // If valid UUID, exact match ID
+        conditions.push(eq(schema.orders.id, search));
+      } else {
+        // Fallback to text match with cast
+        const searchCondition = or(
+          sql`${schema.orders.id}::text ILIKE ${'%' + search + '%'}`,
+          sql`${schema.stores.name} ILIKE ${'%' + search + '%'}`,
+        );
+        if (searchCondition) {
+          conditions.push(searchCondition);
+        }
+      }
+    }
+
+    const whereCondition =
+      conditions.length > 0 ? and(...conditions) : undefined;
+
+    const baseQuery = this.db
+      .select({
+        orders: schema.orders,
+        store: schema.stores,
+      })
+      .from(schema.orders)
+      .leftJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
+      .where(whereCondition)
+      .orderBy(desc(schema.orders.createdAt));
+
+    const itemsQuery = isPaginationDisabled
+      ? baseQuery
+      : baseQuery.limit(Number(limit)).offset(offset);
+
+    const [totalResult, items] = await Promise.all([
+      this.db
+        .select({ count: count() })
+        .from(schema.orders)
+        .leftJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
+        .where(whereCondition),
+      itemsQuery,
+    ]);
+
+    const totalItems = Number(totalResult[0]?.count || 0);
+
+    const formattedItems = items.map((row) => ({
+      ...row.orders,
+      store: row.store,
+    }));
+
+    return {
+      items: formattedItems,
+      meta: {
+        totalItems,
+        itemCount: items.length,
+        itemsPerPage: isPaginationDisabled ? totalItems : Number(limit),
+        totalPages: isPaginationDisabled
+          ? 1
+          : Math.ceil(totalItems / (Number(limit) || 1)),
+        currentPage: isPaginationDisabled ? 1 : Number(page),
+      },
+    };
   }
 
   async getActiveProducts(query: GetCatalogDto) {
