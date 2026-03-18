@@ -62,12 +62,13 @@ export class ClaimController {
     summary: 'Danh sách khiếu nại của cửa hàng [Store Staff]',
   })
   async getMyStoreClaims(
-    @CurrentUser() user: IJwtPayload,
+    @CurrentUser() user: RequestWithUser['user'],
     @Query() query: GetClaimsDto,
   ) {
-    if (user.storeId) {
-      query.storeId = user.storeId;
+    if (!user.storeId) {
+      throw new BadRequestException('Tài khoản không có cửa hàng');
     }
+    query.storeId = user.storeId;
     return this.claimService.findAll(query);
   }
 

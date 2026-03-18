@@ -19,7 +19,7 @@ export class ClaimRepository {
 
   private readonly filterMap: FilterMap<typeof schema.claims> = {
     status: { column: schema.claims.status, operator: 'eq' },
-    // storeId: { column: schema.claims.storeId, operator: 'eq' }, // Tạm thời disable vì bảng claims chưa có storeId
+    shipmentIds: { column: schema.claims.shipmentId, operator: 'in' },
     search: { column: schema.claims.id, operator: 'ilike' },
     fromDate: { column: schema.claims.createdAt, operator: 'gte' },
     toDate: { column: schema.claims.createdAt, operator: 'lte' },
@@ -27,16 +27,45 @@ export class ClaimRepository {
 
   async findAll(query: GetClaimsDto) {
     const filters: Record<string, unknown> = { ...query };
+    const storeId = query.storeId;
+    delete filters.storeId;
 
-    // Xử lý biến đổi chuỗi thành Date object cho Drizzle ORM
     if (query.fromDate) {
       filters.fromDate = new Date(query.fromDate);
     }
 
     if (query.toDate) {
       const endOfDay = new Date(query.toDate);
-      endOfDay.setHours(23, 59, 59, 999); // Kéo dài đến cuối ngày
+      endOfDay.setHours(23, 59, 59, 999);
       filters.toDate = endOfDay;
+    }
+
+    if (storeId) {
+      const storeShipments = await this.db
+        .select({ id: schema.shipments.id })
+        .from(schema.shipments)
+        .innerJoin(
+          schema.orders,
+          eq(schema.shipments.orderId, schema.orders.id),
+        )
+        .where(eq(schema.orders.storeId, storeId));
+
+      const shipmentIds = storeShipments.map((s) => s.id);
+
+      if (shipmentIds.length === 0) {
+        return {
+          items: [],
+          meta: {
+            totalItems: 0,
+            itemCount: 0,
+            itemsPerPage: Number(query.limit) || 0,
+            totalPages: 0,
+            currentPage: 1,
+          },
+        };
+      }
+
+      filters.shipmentIds = shipmentIds;
     }
 
     return paginate(
