@@ -17,7 +17,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import type { IJwtPayload } from '../auth/types/auth.types';
+import type { RequestWithUser } from '../auth/types/auth.types';
 import { GetShipmentsDto } from './dto/get-shipments.dto';
 import { ReceiveShipmentDto } from './dto/receive-shipment.dto';
 import { ShipmentService } from './shipment.service';
@@ -46,7 +46,7 @@ export class ShipmentController {
   })
   @ResponseMessage('Lấy danh sách lô hàng của cửa hàng thành công')
   async getMyStoreShipments(
-    @CurrentUser() user: IJwtPayload,
+    @CurrentUser() user: RequestWithUser['user'],
     @Query() query: GetShipmentsDto,
   ) {
     if (!user.storeId) {
@@ -78,7 +78,7 @@ export class ShipmentController {
   @ResponseMessage('Lấy chi tiết đơn hàng vận chuyển thành công')
   async getShipmentDetail(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @CurrentUser() user: IJwtPayload,
+    @CurrentUser() user: RequestWithUser['user'],
   ) {
     if (
       user.role === (UserRole.FRANCHISE_STORE_STAFF as string) &&
@@ -99,19 +99,18 @@ export class ShipmentController {
   @ResponseMessage('Nhận hàng nhanh thành công')
   async receiveAll(
     @Param('id', new ParseUUIDPipe()) id: string,
-    @CurrentUser() user: IJwtPayload,
+    @CurrentUser() user: RequestWithUser['user'],
   ) {
     if (!user.storeId) {
       throw new BadRequestException('User không có storeId');
     }
-    // Call service with empty items list (implies Receive All)
     const dto = new ReceiveShipmentDto();
     dto.items = [];
 
     return this.shipmentService.receiveShipment(
       id,
       dto,
-      user.sub,
+      user.userId,
       user.storeId,
     );
   }
@@ -127,7 +126,7 @@ export class ShipmentController {
   async receiveShipment(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ReceiveShipmentDto,
-    @CurrentUser() user: IJwtPayload,
+    @CurrentUser() user: RequestWithUser['user'],
   ) {
     if (!user.storeId) {
       throw new BadRequestException('User không có storeId');
@@ -135,7 +134,7 @@ export class ShipmentController {
     return this.shipmentService.receiveShipment(
       id,
       dto,
-      user.sub,
+      user.userId,
       user.storeId,
     );
   }
