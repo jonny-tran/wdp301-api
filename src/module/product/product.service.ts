@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { generateBatchCode } from '../../common/utils/generate-batch-code.util';
-import { SkuUtil } from 'src/common/utils/generate-product-sku.util';
+import { SkuUtil } from '../../common/utils/generate-product-sku.util';
 import { BaseUnitRepository } from './base-unit/base-unit.repository';
 import { CreateProductDto } from './dto/create-product.dto';
 import { GetBatchesDto } from './dto/get-batches.dto';
