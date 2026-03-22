@@ -73,7 +73,12 @@ export class InventoryController {
   @ApiOperation({
     summary: 'Tổng hợp tồn kho (Manager)',
   })
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
   async getInventorySummary(@Query() query: GetInventorySummaryDto) {
     return this.inventoryService.getInventorySummary(
       {
@@ -108,9 +113,15 @@ export class InventoryController {
   }
 
   @Get('kitchen/summary')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.ADMIN,
+    UserRole.SUPPLY_COORDINATOR,
+  )
   @ApiOperation({
-    summary: 'API inbound: Xem tổng tồn kho Bếp (Group by Product)',
+    summary:
+      'API inbound: Xem tổng tồn kho Bếp (Group by Product), (Manager, Kitchen, Coordinator)',
     description:
       'API dành cho Bếp trưởng/Quản lý để xem tổng quan tồn kho các món',
   })
@@ -120,7 +131,12 @@ export class InventoryController {
 
   // API 7: Xem chi tiết lô hàng của một món (Drill-down)
   @Get('kitchen/details')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.ADMIN,
+    UserRole.SUPPLY_COORDINATOR,
+  )
   @ApiOperation({
     summary: 'API 7: Xem chi tiết lô hàng của một món (Drill-down)',
     description:
@@ -134,8 +150,15 @@ export class InventoryController {
   // --- ANALYTICS DASHBOARD APIS ---
 
   @Get('analytics/summary')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Tổng quan sức khỏe kho Bếp (Manager)' })
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary: 'Tổng quan sức khỏe kho Bếp (Manager, Kitchen, Coordinator)',
+  })
   async getAnalyticsSummary() {
     return this.inventoryService.getAnalyticsSummary();
   }
@@ -149,9 +172,15 @@ export class InventoryController {
   }
 
   @Get('analytics/waste')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
   @ApiOperation({
-    summary: 'Thống kê hao hụt & hủy hàng - Waste Report (Manager)',
+    summary:
+      'Thống kê hao hụt & hủy hàng - Waste Report (Manager, Kitchen, Coordinator)',
     description:
       'Thống kê số lượng hàng đã bị hủy (WASTE). Tính toán KPI tổng khối lượng bị hủy trong kỳ.',
   })
