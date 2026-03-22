@@ -41,17 +41,31 @@ export class ProductController {
   }
 
   @Get()
-  @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Manager]' })
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.FRANCHISE_STORE_STAFF,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary:
+      'Lấy danh sách sản phẩm [Manager, Store Staff, Kitchen Staff, Supply Coordinator]',
+  })
   @ResponseMessage('Success')
   async findAll(@Query() filter: GetProductsDto) {
     return await this.productService.getProducts(filter);
   }
 
   @Get('batches')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.FRANCHISE_STORE_STAFF,
+  )
   @ApiOperation({
-    summary: 'Lấy danh sách lô hàng [Manager, Central Kitchen Staff]',
+    summary:
+      'Lấy danh sách lô hàng [Manager, Central Kitchen Staff, Supply Coordinator, Franchise Staff]',
   })
   @ResponseMessage('Success')
   async findAllBatches(@Query() filter: GetBatchesDto) {
@@ -59,8 +73,16 @@ export class ProductController {
   }
 
   @Get(':id')
-  @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Chi tiết sản phẩm [Manager]' })
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.FRANCHISE_STORE_STAFF,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary:
+      'Chi tiết sản phẩm [Manager, Store Staff, Kitchen Staff, Supply Coordinator]',
+  })
   @ResponseMessage('Success')
   async findOne(@Param('id', ParseIntPipe) id: number) {
     return await this.productService.getProduct(id);
@@ -96,9 +118,15 @@ export class ProductController {
   // --- BATCHES ---
 
   @Get('batches/:id')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.FRANCHISE_STORE_STAFF,
+  )
   @ApiOperation({
-    summary: 'Chi tiết lô hàng [Manager, Central Kitchen Staff]',
+    summary:
+      'Chi tiết lô hàng [Manager, Central Kitchen Staff, Supply Coordinator, Franchise Staff]',
   })
   @ResponseMessage('Success')
   async findOneBatch(@Param('id', ParseIntPipe) id: number) {
@@ -106,7 +134,11 @@ export class ProductController {
   }
 
   @Patch('batches/:id')
-  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
   @ApiOperation({
     summary: 'Cập nhật lô hàng [Manager, Central Kitchen Staff]',
   })

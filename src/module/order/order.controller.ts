@@ -34,7 +34,12 @@ export class OrderController {
   constructor(private readonly orderService: OrderService) {}
 
   @Get()
-  @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.ADMIN,
+    UserRole.FRANCHISE_STORE_STAFF,
+  )
   @ApiOperation({
     summary:
       'Lấy danh sách đơn hàng (Phân trang & Lọc) [Manager, Supply Coordinator]',
@@ -54,8 +59,14 @@ export class OrderController {
   }
 
   @Get('catalog')
-  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Lấy danh sách sản phẩm [Franchise Staff]' })
+  @Roles(
+    UserRole.FRANCHISE_STORE_STAFF,
+    UserRole.ADMIN,
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+  )
+  @ApiOperation({ summary: 'Lấy danh sách sản phẩm [All]' })
   async getCatalog(@Query() query: GetCatalogDto) {
     query.isActive = true;
     return this.orderService.getCatalog(query);
