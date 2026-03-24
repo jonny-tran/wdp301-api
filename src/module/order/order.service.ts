@@ -1,16 +1,31 @@
+import { randomUUID } from 'crypto';
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { eq } from 'drizzle-orm';
+import {
+  isPastClosingTime,
+  nextTruckDeparture,
+  nowVn,
+  parseToStartOfDayVn,
+  VN_TZ,
+} from '../../common/time/vn-time';
+import * as schema from '../../database/schema';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { IJwtPayload } from '../auth/types/auth.types';
 import { ShipmentService } from '../shipment/shipment.service';
 import { SystemConfigService } from '../system-config/system-config.service';
+import {
+  HIGH_VALUE_INVENTORY_CHECK_MAX_AGE_MS,
+  PRICE_JUMP_THRESHOLD,
+} from './constants/ord-optimize.constants';
 import { OrderStatus } from './constants/order-status.enum';
+import { PriceConfirmNeededError } from './errors/price-confirm-needed.error';
+import { ProductionConfirmNeededError } from './errors/production-confirm-needed.error';
 import {
   FulfillmentRateQueryDto,
   SlaQueryDto,
@@ -28,8 +43,6 @@ export interface ShortfallReason {
 
 @Injectable()
 export class OrderService {
-  private readonly logger = new Logger(OrderService.name);
-
   constructor(
     private readonly orderRepository: OrderRepository,
     private readonly shipmentService: ShipmentService,
@@ -51,32 +64,35 @@ export class OrderService {
       );
     }
 
-    // ========================================
-    // BUSINESS RULE: ORDER_CLOSING_TIME
-    // After this time (Vietnam TZ), no new orders allowed.
-    // ========================================
-    await this.enforceOrderClosingTime();
+    const storeId = user.storeId;
 
-    const { deliveryDate, items } = dto;
+    const { deliveryDate, items, lastInventoryCheckTimestamp } = dto;
 
     if (!items || items.length === 0) {
       throw new BadRequestException('Đơn hàng phải có ít nhất một sản phẩm');
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const orderDeliveryDate = new Date(deliveryDate);
-    orderDeliveryDate.setHours(0, 0, 0, 0);
-    if (orderDeliveryDate < today) {
+    const requestedStart = parseToStartOfDayVn(deliveryDate);
+    const todayStartCheck = nowVn().startOf('day');
+    if (!requestedStart.isAfter(todayStartCheck)) {
       throw new BadRequestException('Ngày giao hàng không hợp lệ');
     }
 
-    // Validate products
+    const hasDebt =
+      await this.orderRepository.hasStaleUnconfirmedShipment(storeId);
+    if (hasDebt) {
+      throw new BadRequestException(
+        'Cửa hàng có chuyến hàng (in_transit) quá 48 giờ chưa xác nhận nhận hàng. Vui lòng xử lý trước khi đặt đơn mới.',
+      );
+    }
+
     const productIds = items.map((item) => item.productId);
     const uniqueProductIds = [...new Set(productIds)];
 
     const activeProducts =
       await this.orderRepository.findActiveProductsByIds(uniqueProductIds);
+    const snapshots =
+      await this.orderRepository.findProductsWithSnapshotByIds(uniqueProductIds);
 
     const validProductIds = new Set(activeProducts.map((p) => p.id));
     const invalidProductIds = uniqueProductIds.filter(
@@ -89,21 +105,153 @@ export class OrderService {
       );
     }
 
-    try {
-      const newOrder = await this.orderRepository.createOrderTransaction(
-        user.storeId,
-        deliveryDate,
-        items,
-      );
+    const snapById = new Map(snapshots.map((p) => [p.id, p]));
 
+    const highValueNeedsCheck = snapshots.some((p) => p.isHighValue);
+    if (highValueNeedsCheck) {
+      if (!lastInventoryCheckTimestamp) {
+        throw new BadRequestException(
+          'Mặt hàng giá trị cao yêu cầu lastInventoryCheckTimestamp (đã kiểm kê gần đây).',
+        );
+      }
+      const checkTs = new Date(lastInventoryCheckTimestamp).getTime();
+      if (
+        Number.isNaN(checkTs) ||
+        Date.now() - checkTs > HIGH_VALUE_INVENTORY_CHECK_MAX_AGE_MS
+      ) {
+        throw new BadRequestException(
+          'Thời điểm kiểm kê quá cũ (quá 24 giờ). Vui lòng kiểm kê lại trước khi đặt hàng.',
+        );
+      }
+    }
+
+    const store = await this.orderRepository.getStoreById(storeId);
+    if (!store) {
+      throw new BadRequestException('Không tìm thấy cửa hàng');
+    }
+
+    const vnNow = nowVn();
+    const closingStr =
+      await this.systemConfigService.getConfigValue('ORDER_CLOSING_TIME');
+    const pastClosing = isPastClosingTime(vnNow, closingStr);
+
+    let effectiveDeliveryVn = parseToStartOfDayVn(deliveryDate);
+    if (pastClosing) {
+      const minDelivery = vnNow.add(1, 'day').startOf('day');
+      if (effectiveDeliveryVn.isBefore(minDelivery)) {
+        effectiveDeliveryVn = minDelivery;
+      }
+    }
+
+    const maxPrep = Math.max(
+      ...snapshots.map((p) => p.prepTimeHours ?? 24),
+      0,
+    );
+    const transit = store.transitTimeHours ?? 24;
+    const earliestInstant = vnNow.add(maxPrep + transit, 'hour');
+    const earliestDay = earliestInstant.startOf('day');
+    if (effectiveDeliveryVn.startOf('day').isBefore(earliestDay)) {
+      throw new BadRequestException(
+        `Ngày giao hàng sớm nhất theo hàng sơ chế và vận chuyển là ${earliestDay.tz(VN_TZ).format('YYYY-MM-DD')}.`,
+      );
+    }
+
+    const linePayload = items.map((item) => {
+      const s = snapById.get(item.productId)!;
+      const price = parseFloat(String(s.unitPrice ?? '0'));
       return {
-        id: newOrder.id,
-        storeId: newOrder.storeId,
-        status: newOrder.status,
-        deliveryDate: newOrder.deliveryDate,
-        createdAt: newOrder.createdAt,
+        productId: item.productId,
+        quantity: item.quantity,
+        unitSnapshot: s.unitName,
+        priceSnapshot: price.toFixed(2),
+        packagingInfoSnapshot: s.packagingInfo ?? null,
       };
+    });
+
+    const totalAmount = linePayload
+      .reduce(
+        (sum, l) => sum + parseFloat(l.priceSnapshot) * l.quantity,
+        0,
+      )
+      .toFixed(2);
+
+    const deliveryDateForDb = effectiveDeliveryVn.startOf('day').toDate();
+
+    try {
+      return await this.orderRepository.runTransaction(async (tx) => {
+        await this.orderRepository.acquireStoreOrderingLock(storeId, tx);
+
+        const storeWarehouseId = await this.orderRepository.getStoreWarehouseId(
+          storeId,
+          tx,
+        );
+        if (!storeWarehouseId) {
+          throw new BadRequestException('Không tìm thấy kho cửa hàng');
+        }
+
+        await this.orderRepository.lockStoreInventoryRowsForProducts(
+          storeWarehouseId,
+          uniqueProductIds,
+          tx,
+        );
+
+        const inventoryByProduct =
+          await this.orderRepository.sumStoreInventoryByProduct(
+            storeWarehouseId,
+            tx,
+          );
+
+        const maxCap =
+          store.maxStorageCapacity != null
+            ? parseFloat(String(store.maxStorageCapacity))
+            : null;
+
+        if (maxCap != null && !Number.isNaN(maxCap)) {
+          for (const line of items) {
+            const stock = inventoryByProduct.get(line.productId) ?? 0;
+            const orderQty = line.quantity;
+            if (stock + orderQty > maxCap) {
+              throw new BadRequestException(
+                `Vượt sức chứa tối đa cho kho: sản phẩm #${line.productId} (tồn ${stock} + đặt ${orderQty} > ${maxCap}).`,
+              );
+            }
+          }
+        }
+
+        let consolidationGroupId: string;
+        if (pastClosing) {
+          consolidationGroupId = randomUUID();
+        } else {
+          consolidationGroupId =
+            (await this.orderRepository.findExistingConsolidationGroupId(
+              storeId,
+              deliveryDateForDb,
+              tx,
+            )) ?? randomUUID();
+        }
+
+        const newOrder = await this.orderRepository.insertOrderWithItems(tx, {
+          storeId,
+          deliveryDate: deliveryDateForDb,
+          items: linePayload,
+          consolidationGroupId,
+          totalAmount,
+        });
+
+        return {
+          id: newOrder.id,
+          storeId: newOrder.storeId,
+          status: newOrder.status,
+          deliveryDate: newOrder.deliveryDate,
+          createdAt: newOrder.createdAt,
+          consolidationGroupId,
+          totalAmount,
+        };
+      });
     } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         `Giao dịch thất bại: ${error instanceof Error ? error.message : 'Lỗi không xác định'}`,
       );
@@ -124,163 +272,264 @@ export class OrderService {
     return this.orderRepository.getOrdersForCoordinator(status);
   }
 
-  async approveOrder(orderId: string, confirm?: boolean) {
-    return this.orderRepository
-      .runTransaction(async (tx) => {
-        // 1. Fetch Order
-        const order = await this.orderRepository.getOrderById(orderId, tx);
-        if (!order) {
-          throw new NotFoundException('Không tìm thấy đơn hàng');
-        }
+  async approveOrder(
+    orderId: string,
+    confirm?: boolean,
+    opts?: {
+      price_acknowledged?: boolean;
+      production_confirm?: boolean;
+    },
+  ) {
+    try {
+      return await this.orderRepository
+        .runTransaction(async (tx) => {
+          const order = await this.orderRepository.getOrderById(orderId, tx);
+          if (!order) {
+            throw new NotFoundException('Không tìm thấy đơn hàng');
+          }
 
-        if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
-          throw new BadRequestException(
-            'Đơn hàng không ở trạng thái chờ xử lý',
-          );
-        }
+          if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
+            throw new BadRequestException(
+              'Đơn hàng không ở trạng thái chờ xử lý',
+            );
+          }
 
-        // 2. Get Central Warehouse
-        const centralWarehouseId =
-          await this.orderRepository.getCentralWarehouseId(tx);
-        if (!centralWarehouseId) {
-          throw new InternalServerErrorException(
-            'Không tìm thấy kho trung tâm',
-          );
-        }
+          const centralWarehouseId =
+            await this.orderRepository.getCentralWarehouseId(tx);
+          if (!centralWarehouseId) {
+            throw new InternalServerErrorException(
+              'Không tìm thấy kho trung tâm',
+            );
+          }
 
-        // 3. Process Items
-        const shipmentItems: { batchId: number; quantity: number }[] = [];
-        const results: {
-          productId: number;
-          requested: number;
-          approved: number;
-          missing: number;
-        }[] = [];
-
-        for (const item of order.items) {
-          const requestedQty = parseFloat(item.quantityRequested);
-          let remainingNeeded = requestedQty;
-          let approvedQty = 0;
-
-          const batches = await this.orderRepository.getBatchesForFEFO(
-            item.productId,
-            centralWarehouseId,
-            tx,
+          const productIds = order.items.map((i) => i.productId);
+          const catalogRows =
+            await this.orderRepository.findProductsWithSnapshotByIds(productIds);
+          const priceById = new Map(
+            catalogRows.map((r) => [r.id, parseFloat(String(r.unitPrice ?? '0'))]),
           );
 
-          for (const batch of batches) {
-            if (remainingNeeded <= 0) break;
+          for (const line of order.items) {
+            if (line.priceSnapshot == null) continue;
+            const snap = parseFloat(String(line.priceSnapshot));
+            const cur = priceById.get(line.productId) ?? 0;
+            if (
+              snap > 0 &&
+              Math.abs(cur - snap) / snap > PRICE_JUMP_THRESHOLD &&
+              !opts?.price_acknowledged
+            ) {
+              throw new PriceConfirmNeededError();
+            }
+          }
 
-            const availableQty =
-              parseFloat(batch.quantity) - parseFloat(batch.reservedQuantity);
+          const shipmentItems: { batchId: number; quantity: number }[] = [];
+          const results: {
+            productId: number;
+            requested: number;
+            approved: number;
+            missing: number;
+          }[] = [];
 
-            if (availableQty <= 0) continue;
+          for (const item of order.items) {
+            const requestedQty = parseFloat(String(item.quantityRequested));
+            let remainingNeeded = requestedQty;
+            let approvedQty = 0;
 
-            const takeQty = Math.min(remainingNeeded, availableQty);
-
-            await this.orderRepository.reserveInventory(
-              batch.inventoryId,
-              takeQty,
+            const batches = await this.orderRepository.getBatchesForFEFO(
+              item.productId,
+              centralWarehouseId,
               tx,
             );
 
-            shipmentItems.push({
-              batchId: batch.batchId,
-              quantity: takeQty,
-            });
+            for (const batch of batches) {
+              if (remainingNeeded <= 0) break;
 
-            approvedQty += takeQty;
-            remainingNeeded -= takeQty;
+              const availableQty =
+                parseFloat(batch.quantity) -
+                parseFloat(batch.reservedQuantity);
+
+              if (availableQty <= 0) continue;
+
+              const takeQty = Math.min(remainingNeeded, availableQty);
+
+              await this.orderRepository.reserveInventory(
+                batch.inventoryId,
+                takeQty,
+                tx,
+              );
+
+              shipmentItems.push({
+                batchId: batch.batchId,
+                quantity: takeQty,
+              });
+
+              approvedQty += takeQty;
+              remainingNeeded -= takeQty;
+            }
+
+            await this.orderRepository.updateOrderItemApprovedQuantity(
+              item.id,
+              approvedQty.toString(),
+              tx,
+            );
+
+            results.push({
+              productId: item.productId,
+              requested: requestedQty,
+              approved: approvedQty,
+              missing: requestedQty - approvedQty,
+            });
           }
 
-          await this.orderRepository.updateOrderItemApprovedQuantity(
-            item.id,
-            approvedQty.toString(),
-            tx,
+          const totalRequested = results.reduce(
+            (sum, item) => sum + item.requested,
+            0,
+          );
+          const totalApproved = results.reduce(
+            (sum, item) => sum + item.approved,
+            0,
           );
 
-          results.push({
-            productId: item.productId,
-            requested: requestedQty,
-            approved: approvedQty,
-            missing: requestedQty - approvedQty,
-          });
-        }
+          if (totalRequested > 0 && totalApproved === 0) {
+            await this.orderRepository.updateStatusWithReason(
+              order.id,
+              OrderStatus.REJECTED,
+              'Không thể duyệt đơn do tất cả mặt hàng đã hết tồn kho',
+              tx,
+            );
+            return {
+              success: false,
+              message: 'Không thể duyệt đơn do tất cả mặt hàng đã hết tồn kho',
+              orderId: order.id,
+              status: OrderStatus.REJECTED,
+              results,
+            };
+          }
 
-        // --- New Logic: Calculate Ideals ---
-        const totalRequested = results.reduce(
-          (sum, item) => sum + item.requested,
-          0,
-        );
-        const totalApproved = results.reduce(
-          (sum, item) => sum + item.approved,
-          0,
-        );
+          const hasShortage = results.some((r) => r.missing > 0);
+          if (
+            hasShortage &&
+            totalApproved > 0 &&
+            !opts?.production_confirm
+          ) {
+            const shortageResults = results.filter((r) => r.missing > 0);
+            const prepMissing = Math.max(
+              ...shortageResults.map((r) => {
+                const row = catalogRows.find((c) => c.id === r.productId);
+                return row?.prepTimeHours ?? 24;
+              }),
+              0,
+            );
+            const transitHours = order.store?.transitTimeHours ?? 24;
+            const truckStr =
+              (await this.systemConfigService.getConfigValue(
+                'TRUCK_DEPARTURE_TIME',
+              )) ??
+              (await this.systemConfigService.getConfigValue(
+                'ORDER_CLOSING_TIME',
+              )) ??
+              '06:00';
 
-        // --- Business Rule: Zero-Fulfillment ---
-        if (totalRequested > 0 && totalApproved === 0) {
-          await this.orderRepository.updateStatusWithReason(
+            const clockVn = nowVn();
+            const truckAt = nextTruckDeparture(clockVn, truckStr);
+            const eta = clockVn
+              .add(prepMissing, 'hour')
+              .add(transitHours, 'hour');
+
+            if (!eta.isAfter(truckAt)) {
+              throw new ProductionConfirmNeededError();
+            }
+          }
+
+          await this.orderRepository.setOrderProductionFlag(
             order.id,
-            OrderStatus.REJECTED,
-            'Không thể duyệt đơn do tất cả mặt hàng đã hết tồn kho',
+            false,
             tx,
           );
-          return {
-            success: false,
-            message: 'Không thể duyệt đơn do tất cả mặt hàng đã hết tồn kho',
-            orderId: order.id,
-            status: OrderStatus.REJECTED,
-            results,
-          };
-        }
 
-        // --- Business Rule: Low Fill-rate ---
-        const fillRate =
-          totalRequested > 0 ? totalApproved / totalRequested : 0;
-        if (fillRate < 0.2 && !confirm) {
-          throw new BadRequestException({
-            message:
-              'Tỷ lệ đáp ứng quá thấp (dưới 20%), bạn có chắc chắn muốn giao đơn này không?',
-            fiilRate: (fillRate * 100).toFixed(2) + '%',
-            canForce: true,
-          });
-        }
+          const fillRate =
+            totalRequested > 0 ? totalApproved / totalRequested : 0;
+          if (fillRate < 0.2 && !confirm) {
+            throw new BadRequestException({
+              message:
+                'Tỷ lệ đáp ứng quá thấp (dưới 20%), bạn có chắc chắn muốn giao đơn này không?',
+              fiilRate: (fillRate * 100).toFixed(2) + '%',
+              canForce: true,
+            });
+          }
 
-        // 4. Update Order Status (Approved)
-        await this.orderRepository.updateOrderApproved(order.id, tx);
+          await this.orderRepository.updateOrderApproved(order.id, tx);
 
-        // 5. Create Shipment
-        const storeWarehouseId = await this.orderRepository.getStoreWarehouseId(
-          order.storeId,
-          tx,
-        );
+          const storeWarehouseId =
+            await this.orderRepository.getStoreWarehouseId(order.storeId, tx);
 
-        if (!storeWarehouseId) {
-          throw new InternalServerErrorException(
-            'Không tìm thấy kho cửa hàng để tạo vận chuyển',
+          if (!storeWarehouseId) {
+            throw new InternalServerErrorException(
+              'Không tìm thấy kho cửa hàng để tạo vận chuyển',
+            );
+          }
+
+          const maxWStr =
+            await this.systemConfigService.getConfigValue(
+              'VEHICLE_MAX_WEIGHT_KG',
+            );
+          const maxVehicleWeightKg = maxWStr
+            ? parseFloat(maxWStr)
+            : null;
+
+          await this.shipmentService.createShipmentForOrder(
+            order.id,
+            centralWarehouseId,
+            storeWarehouseId,
+            shipmentItems,
+            tx,
+            {
+              consolidationGroupId: order.consolidationGroupId ?? null,
+              maxVehicleWeightKg:
+                maxVehicleWeightKg != null && !Number.isNaN(maxVehicleWeightKg)
+                  ? maxVehicleWeightKg
+                  : null,
+            },
           );
-        }
 
-        await this.shipmentService.createShipmentForOrder(
-          order.id,
-          centralWarehouseId,
-          storeWarehouseId,
-          shipmentItems,
-          tx,
-        );
+          await this.orderRepository.setOrderPendingPriceConfirm(
+            order.id,
+            false,
+            tx,
+          );
 
-        return {
-          orderId: order.id,
-          status: OrderStatus.APPROVED,
-          results,
-        };
-      })
-      .then((res) => {
-        if (res.status === OrderStatus.REJECTED) {
-          throw new BadRequestException(res.message);
-        }
-        return res;
-      });
+          return {
+            orderId: order.id,
+            status: OrderStatus.APPROVED,
+            results,
+            requiresProductionConfirm: false,
+          };
+        })
+        .then((res) => {
+          if (res.status === OrderStatus.REJECTED) {
+            throw new BadRequestException(res.message);
+          }
+          return res;
+        });
+    } catch (e) {
+      if (e instanceof ProductionConfirmNeededError) {
+        await this.orderRepository.setOrderProductionFlag(orderId, true);
+        throw new BadRequestException({
+          code: 'PRODUCTION_CONFIRMATION_REQUIRED',
+          message:
+            'Đơn thiếu hàng một phần. Cần xác nhận phối hợp với bếp (production_confirm) hoặc gọi lại để duyệt.',
+        });
+      }
+      if (e instanceof PriceConfirmNeededError) {
+        await this.orderRepository.setOrderPendingPriceConfirm(orderId, true);
+        throw new BadRequestException({
+          code: 'PRICE_CONFIRMATION_REQUIRED',
+          message:
+            'Giá catalog lệch hơn 20% so với snapshot trên đơn. Cần xác nhận (price_acknowledged) hoặc cửa hàng xác nhận giá.',
+        });
+      }
+      throw e;
+    }
   }
 
   async rejectOrder(orderId: string, reason: string) {
@@ -321,7 +570,9 @@ export class OrderService {
     }
 
     if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
-      throw new BadRequestException('Không thể hủy đơn hàng đã được xử lý');
+      throw new BadRequestException(
+        'Chỉ có thể hủy đơn ở trạng thái chờ duyệt (pending). Đơn đã duyệt cần điều phối xử lý hủy bắt buộc.',
+      );
     }
 
     await this.orderRepository.updateStatusWithReason(
@@ -336,6 +587,95 @@ export class OrderService {
     };
   }
 
+  async confirmStorePriceAcknowledgment(orderId: string, user: IJwtPayload) {
+    if (!user.storeId) {
+      throw new BadRequestException(
+        'Người dùng không thuộc về bất kỳ cửa hàng nào',
+      );
+    }
+    const order = await this.orderRepository.getOrderById(orderId);
+    if (!order) {
+      throw new NotFoundException('Không tìm thấy đơn hàng');
+    }
+    if (order.storeId !== user.storeId) {
+      throw new ForbiddenException('Bạn chỉ có thể xác nhận đơn của cửa hàng mình');
+    }
+    await this.orderRepository.setOrderPendingPriceConfirm(orderId, false);
+    return { orderId, pendingPriceConfirm: false };
+  }
+
+  async forceCancelOrder(orderId: string, user: IJwtPayload) {
+    const allowed = [
+      UserRole.SUPPLY_COORDINATOR,
+      UserRole.MANAGER,
+      UserRole.ADMIN,
+    ];
+    if (!allowed.includes(user.role as UserRole)) {
+      throw new ForbiddenException();
+    }
+
+    return this.orderRepository.runTransaction(async (tx) => {
+      const order = await this.orderRepository.getOrderById(orderId, tx);
+      if (!order) {
+        throw new NotFoundException('Không tìm thấy đơn hàng');
+      }
+      const st = order.status as OrderStatus;
+      if (
+        st === OrderStatus.PENDING ||
+        st === OrderStatus.CANCELLED ||
+        st === OrderStatus.REJECTED
+      ) {
+        throw new BadRequestException(
+          'Chỉ áp dụng hủy bắt buộc cho đơn đã duyệt / đang soạn. Đơn pending dùng hủy thường.',
+        );
+      }
+
+      const centralWarehouseId =
+        await this.orderRepository.getCentralWarehouseId(tx);
+      if (!centralWarehouseId) {
+        throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
+      }
+
+      const shipment = await this.orderRepository.findShipmentByOrderId(
+        orderId,
+        tx,
+      );
+      if (shipment) {
+        await this.orderRepository.releaseReservationsForShipment(
+          shipment.id,
+          centralWarehouseId,
+          tx,
+        );
+        await tx
+          .update(schema.shipments)
+          .set({
+            status: 'cancelled',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.shipments.id, shipment.id));
+      }
+
+      await this.orderRepository.updateStatusWithReason(
+        orderId,
+        OrderStatus.CANCELLED,
+        'Hủy bắt buộc bởi điều phối / quản lý',
+        tx,
+      );
+
+      await this.orderRepository.insertRestockTask(
+        orderId,
+        shipment?.id ?? null,
+        tx,
+      );
+
+      return {
+        orderId,
+        status: OrderStatus.CANCELLED,
+        restockTaskCreated: true,
+      };
+    });
+  }
+
   async getOrderDetails(orderId: string, user: IJwtPayload) {
     const order = await this.orderRepository.getOrderById(orderId);
     if (!order) {
@@ -347,8 +687,15 @@ export class OrderService {
 
     const isManager = (user.role as UserRole) === UserRole.MANAGER;
 
-    // Data Isolation for Store Staff: strictly no access to other store's orders
-    if (!isCoordinator && !isManager && order.storeId !== user.storeId) {
+    const isKitchen =
+      (user.role as UserRole) === UserRole.CENTRAL_KITCHEN_STAFF;
+
+    if (
+      !isCoordinator &&
+      !isManager &&
+      !isKitchen &&
+      order.storeId !== user.storeId
+    ) {
       throw new ForbiddenException('Từ chối truy cập');
     }
     return order;
@@ -497,61 +844,58 @@ export class OrderService {
     };
   }
 
-  // =============================================
-  // PRIVATE: Business Rule Enforcement Methods
-  // =============================================
-
-  /**
-   * Kiểm tra ORDER_CLOSING_TIME từ SystemConfig.
-   * Nếu giờ hiện tại (múi giờ Việt Nam +7) > giờ cấu hình, chặn tạo đơn mới.
-   * Config format: "HH:mm" (ví dụ: "16:00")
-   */
-  private async enforceOrderClosingTime(): Promise<void> {
-    const closingTimeStr =
-      await this.systemConfigService.getConfigValue('ORDER_CLOSING_TIME');
-
-    if (!closingTimeStr) {
-      this.logger.warn(
-        'ORDER_CLOSING_TIME chưa được cấu hình trong hệ thống. Bỏ qua kiểm tra.',
-      );
-      return; // Graceful degradation: if not configured, allow
+  async kitchenProductionConfirm(
+    orderId: string,
+    user: IJwtPayload,
+    dto: { isAccepted: boolean; expectedBatchCode?: string },
+  ) {
+    const allowed = [UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN];
+    if (!allowed.includes(user.role as UserRole)) {
+      throw new ForbiddenException();
     }
 
-    const parts = closingTimeStr.split(':');
-    if (parts.length !== 2) {
-      this.logger.warn(
-        `ORDER_CLOSING_TIME có format không hợp lệ: "${closingTimeStr}". Kỳ vọng "HH:mm".`,
-      );
-      return;
+    const order = await this.orderRepository.getOrderById(orderId);
+    if (!order) {
+      throw new NotFoundException('Không tìm thấy đơn hàng');
     }
 
-    const closingHour = parseInt(parts[0], 10);
-    const closingMinute = parseInt(parts[1], 10);
-
-    if (isNaN(closingHour) || isNaN(closingMinute)) {
-      this.logger.warn(
-        `ORDER_CLOSING_TIME chứa giá trị không phải số: "${closingTimeStr}".`,
-      );
-      return;
-    }
-
-    // Lấy giờ hiện tại theo múi giờ Việt Nam (UTC+7)
-    const nowVN = new Date(
-      new Date().toLocaleString('en-US', { timeZone: 'Asia/Ho_Chi_Minh' }),
-    );
-    const currentHour = nowVN.getHours();
-    const currentMinute = nowVN.getMinutes();
-
-    const currentTotalMinutes = currentHour * 60 + currentMinute;
-    const closingTotalMinutes = closingHour * 60 + closingMinute;
-
-    if (currentTotalMinutes >= closingTotalMinutes) {
-      this.logger.warn(
-        `Đặt hàng bị chặn: Giờ hiện tại ${currentHour}:${String(currentMinute).padStart(2, '0')} >= ORDER_CLOSING_TIME ${closingTimeStr}`,
-      );
-      throw new ForbiddenException(
-        `Đã quá giờ đặt hàng (${closingTimeStr}). Vui lòng đặt đơn vào ngày làm việc tiếp theo.`,
+    if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
+      throw new BadRequestException(
+        'Đơn không ở trạng thái chờ xử lý',
       );
     }
+
+    if (!order.requiresProductionConfirm) {
+      throw new BadRequestException('Đơn không yêu cầu xác nhận bếp.');
+    }
+
+    if (!dto.isAccepted) {
+      return this.approveOrder(orderId, true, { production_confirm: true });
+    }
+
+    return this.orderRepository.runTransaction(async (tx) => {
+      const note = dto.expectedBatchCode
+        ? [order.note, `Lô dự kiến: ${dto.expectedBatchCode}`]
+            .filter(Boolean)
+            .join(' | ')
+        : order.note;
+
+      await tx
+        .update(schema.orders)
+        .set({
+          status: OrderStatus.WAITING_FOR_PRODUCTION,
+          requiresProductionConfirm: false,
+          note,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.orders.id, orderId));
+
+      await this.orderRepository.insertRestockTask(orderId, null, tx);
+
+      return {
+        orderId,
+        status: OrderStatus.WAITING_FOR_PRODUCTION,
+      };
+    });
   }
 }

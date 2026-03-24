@@ -7,4 +7,5 @@ export enum OrderStatus {
   DELIVERING = 'delivering',
   COMPLETED = 'completed',
   CLAIMED = 'claimed',
+  WAITING_FOR_PRODUCTION = 'waiting_for_production',
 }

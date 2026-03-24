@@ -1,10 +1,11 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsArray,
   IsDateString,
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsPositive,
   registerDecorator,
   ValidateNested,
@@ -38,29 +39,14 @@ export function IsFutureDate(validationOptions?: ValidationOptions) {
           const todayOnly = new Date(now);
           todayOnly.setHours(0, 0, 0, 0);
 
-          // Check if date is in the past or today
           if (deliveryDateOnly <= todayOnly) {
             return false;
-          }
-
-          // Cut-off time logic: If now is after 22:00, cannot order for tomorrow
-          const tomorrow = new Date(todayOnly);
-          tomorrow.setDate(tomorrow.getDate() + 1);
-
-          if (deliveryDateOnly.getTime() === tomorrow.getTime()) {
-            if (now.getHours() >= 22) {
-              return false;
-            }
           }
 
           return true;
         },
         defaultMessage() {
-          const now = new Date();
-          if (now.getHours() >= 22) {
-            return 'Đơn hàng đặt sau 22:00 không thể giao vào ngày mai. Vui lòng chọn ngày giao hàng khác.';
-          }
-          return 'Ngày giao hàng phải là ít nhất 1 ngày trong tương lai.';
+          return 'Ngày giao hàng phải lớn hơn ngày hiện tại (theo ngày, bỏ qua giờ).';
         },
       },
     });
@@ -94,4 +80,13 @@ export class CreateOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   items: OrderItemDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Bắt buộc với mặt hàng giá trị cao: thời điểm kiểm kê gần nhất (ISO 8601)',
+    example: '2026-03-24T08:00:00.000Z',
+  })
+  @IsOptional()
+  @IsDateString({}, { message: 'lastInventoryCheckTimestamp không hợp lệ' })
+  lastInventoryCheckTimestamp?: string;
 }

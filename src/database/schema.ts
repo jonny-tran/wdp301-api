@@ -7,6 +7,7 @@ import {
   integer,
   pgEnum,
   pgTable,
+  primaryKey,
   serial,
   text,
   timestamp,
@@ -37,6 +38,7 @@ export const orderStatusEnum = pgEnum('order_status', [
   'delivering',
   'completed',
   'claimed',
+  'waiting_for_production',
 ]);
 export const shipmentStatusEnum = pgEnum('shipment_status', [
   'preparing',
@@ -111,6 +113,13 @@ export const stores = pgTable('stores', {
   managerName: text('manager_name'),
   phone: text('phone'),
   isActive: boolean('is_active').default(true).notNull(),
+  /** Tổng sức chứa tối đa (đơn vị cùng khối với quantity đặt/tồn). null = không giới hạn trong API */
+  maxStorageCapacity: decimal('max_storage_capacity', {
+    precision: 12,
+    scale: 2,
+  }),
+  /** Thời gian vận chuyển tới cửa hàng (giờ), dùng cho lead time */
+  transitTimeHours: integer('transit_time_hours').default(24).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -152,6 +161,15 @@ export const products = pgTable('products', {
   minStockLevel: integer('min_stock_level').default(0).notNull(),
   imageUrl: text('image_url'),
   isActive: boolean('is_active').default(true),
+  unitPrice: decimal('unit_price', { precision: 12, scale: 2 })
+    .default('0')
+    .notNull(),
+  /** Thời gian chuẩn bị / sơ chế (giờ), dùng cho lead time */
+  prepTimeHours: integer('prep_time_hours').default(24).notNull(),
+  packagingInfo: text('packaging_info'),
+  weightKg: decimal('weight_kg', { precision: 10, scale: 3 }).default('0').notNull(),
+  volumeM3: decimal('volume_m3', { precision: 10, scale: 4 }).default('0').notNull(),
+  isHighValue: boolean('is_high_value').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -279,6 +297,15 @@ export const orders = pgTable(
     deliveryDate: timestamp('delivery_date').notNull(),
     priority: text('priority').default('standard'),
     note: text('note'),
+    /** Cùng group → gộp shipment (cùng store, cùng ngày giao hàng trong cửa sổ chưa chốt) */
+    consolidationGroupId: uuid('consolidation_group_id'),
+    requiresProductionConfirm: boolean('requires_production_confirm')
+      .default(false)
+      .notNull(),
+    /** Giá lệch >20% so với catalog; cần cửa hàng xác nhận trước khi auto/duyệt */
+    pendingPriceConfirm: boolean('pending_price_confirm')
+      .default(false)
+      .notNull(),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },
@@ -303,6 +330,10 @@ export const orderItems = pgTable('order_items', {
     scale: 2,
   }).notNull(),
   quantityApproved: decimal('quantity_approved', { precision: 10, scale: 2 }),
+  /** Snapshot tại thời điểm đặt — không đổi khi master product thay đổi */
+  unitSnapshot: varchar('unit_snapshot', { length: 100 }),
+  priceSnapshot: decimal('price_snapshot', { precision: 12, scale: 2 }),
+  packagingInfoSnapshot: text('packaging_info_snapshot'),
 });
 
 export const shipments = pgTable(
@@ -320,6 +351,11 @@ export const shipments = pgTable(
       .notNull(),
     status: shipmentStatusEnum('status').default('preparing').notNull(),
     shipDate: timestamp('ship_date'),
+    consolidationGroupId: uuid('consolidation_group_id'),
+    totalWeightKg: decimal('total_weight_kg', { precision: 12, scale: 3 }),
+    totalVolumeM3: decimal('total_volume_m3', { precision: 12, scale: 4 }),
+    overloadWarning: boolean('overload_warning').default(false).notNull(),
+    deliveredAt: timestamp('delivered_at'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },
@@ -339,6 +375,34 @@ export const shipmentItems = pgTable('shipment_items', {
     .references(() => batches.id)
     .notNull(),
   quantity: decimal('quantity', { precision: 10, scale: 2 }).notNull(),
+});
+
+/** Một shipment có thể gộp nhiều đơn (consolidation) */
+export const shipmentOrders = pgTable(
+  'shipment_orders',
+  {
+    shipmentId: uuid('shipment_id')
+      .references(() => shipments.id, { onDelete: 'cascade' })
+      .notNull(),
+    orderId: uuid('order_id')
+      .references(() => orders.id, { onDelete: 'cascade' })
+      .notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.shipmentId, t.orderId] }),
+  }),
+);
+
+export const restockTasks = pgTable('restock_tasks', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  orderId: uuid('order_id')
+    .references(() => orders.id, { onDelete: 'cascade' })
+    .notNull(),
+  shipmentId: uuid('shipment_id').references(() => shipments.id, {
+    onDelete: 'set null',
+  }),
+  status: varchar('status', { length: 32 }).default('pending').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
 });
 
 export const claims = pgTable('claims', {
@@ -415,6 +479,7 @@ export const orderRelations = relations(orders, ({ one, many }) => ({
   store: one(stores, { fields: [orders.storeId], references: [stores.id] }),
   items: many(orderItems),
   shipment: one(shipments),
+  shipmentOrderLinks: many(shipmentOrders),
 }));
 
 export const orderItemRelations = relations(orderItems, ({ one }) => ({
@@ -429,7 +494,22 @@ export const shipmentRelations = relations(shipments, ({ one, many }) => ({
   order: one(orders, { fields: [shipments.orderId], references: [orders.id] }),
   items: many(shipmentItems),
   claims: many(claims),
+  orderLinks: many(shipmentOrders),
 }));
+
+export const shipmentOrderLinkRelations = relations(
+  shipmentOrders,
+  ({ one }) => ({
+    shipment: one(shipments, {
+      fields: [shipmentOrders.shipmentId],
+      references: [shipments.id],
+    }),
+    order: one(orders, {
+      fields: [shipmentOrders.orderId],
+      references: [orders.id],
+    }),
+  }),
+);
 
 export const shipmentItemRelations = relations(shipmentItems, ({ one }) => ({
   shipment: one(shipments, {

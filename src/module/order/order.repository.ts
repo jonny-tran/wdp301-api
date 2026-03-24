@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   and,
+  asc,
   count,
   desc,
   eq,
@@ -17,7 +18,6 @@ import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { OrderStatus } from './constants/order-status.enum';
-import { CreateOrderDto } from './dto/create-order.dto';
 import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
 
@@ -150,6 +150,225 @@ export class OrderRepository {
       );
   }
 
+  /** Catalog fields để snapshot + lead time */
+  async findProductsWithSnapshotByIds(productIds: number[]) {
+    if (productIds.length === 0) return [];
+    return this.db
+      .select({
+        id: schema.products.id,
+        unitPrice: schema.products.unitPrice,
+        prepTimeHours: schema.products.prepTimeHours,
+        packagingInfo: schema.products.packagingInfo,
+        isHighValue: schema.products.isHighValue,
+        weightKg: schema.products.weightKg,
+        volumeM3: schema.products.volumeM3,
+        unitName: schema.baseUnits.name,
+      })
+      .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(
+        and(
+          inArray(schema.products.id, productIds),
+          eq(schema.products.isActive, true),
+        ),
+      );
+  }
+
+  async getStoreById(storeId: string, tx?: NodePgDatabase<typeof schema>) {
+    const database = tx || this.db;
+    return database.query.stores.findFirst({
+      where: eq(schema.stores.id, storeId),
+    });
+  }
+
+  /** Tồn kho thực tế tại kho cửa hàng theo productId */
+  async sumStoreInventoryByProduct(
+    storeWarehouseId: number,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<Map<number, number>> {
+    const database = tx || this.db;
+    const rows = await database
+      .select({
+        productId: schema.batches.productId,
+        total: sql<string>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)`,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(eq(schema.inventory.warehouseId, storeWarehouseId))
+      .groupBy(schema.batches.productId);
+    return new Map(rows.map((r) => [r.productId, parseFloat(r.total)]));
+  }
+
+  /**
+   * Gộp đơn: tìm group đã có đơn PENDING cùng ngày giao (VN) trong ngày đặt hiện tại.
+   */
+  async findExistingConsolidationGroupId(
+    storeId: string,
+    deliveryDate: Date,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<string | null> {
+    const database = tx || this.db;
+    const base = database
+      .select({ consolidationGroupId: schema.orders.consolidationGroupId })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.storeId, storeId),
+          eq(schema.orders.status, OrderStatus.PENDING),
+          sql`DATE(${schema.orders.deliveryDate}) = DATE(${deliveryDate})`,
+          sql`DATE(${schema.orders.createdAt} AT TIME ZONE 'Asia/Ho_Chi_Minh') = DATE(NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')`,
+        ),
+      )
+      .orderBy(asc(schema.orders.createdAt))
+      .limit(1);
+    const [row] = await (tx ? base.for('update') : base);
+    return row?.consolidationGroupId ?? null;
+  }
+
+  /** Khóa phiên đặt hàng theo cửa hàng — tránh race khi spam API */
+  async acquireStoreOrderingLock(
+    storeId: string,
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`order_store:${storeId}`}::text)::bigint)`,
+    );
+  }
+
+  /** FOR UPDATE các dòng tồn kho liên quan sản phẩm trong đơn (cùng transaction) */
+  async lockStoreInventoryRowsForProducts(
+    storeWarehouseId: number,
+    productIds: number[],
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    if (productIds.length === 0) return;
+    await tx
+      .select({ id: schema.inventory.id })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, storeWarehouseId),
+          inArray(schema.batches.productId, productIds),
+        ),
+      )
+      .for('update');
+  }
+
+  /** Nợ chứng từ: chuyến in_transit quá 48h kể từ ship_date */
+  async hasStaleUnconfirmedShipment(
+    storeId: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<boolean> {
+    const database = tx || this.db;
+    const rows = await database
+      .select({ id: schema.shipments.id })
+      .from(schema.shipments)
+      .innerJoin(schema.orders, eq(schema.shipments.orderId, schema.orders.id))
+      .where(
+        and(
+          eq(schema.orders.storeId, storeId),
+          eq(schema.shipments.status, 'in_transit'),
+          sql`${schema.shipments.shipDate} IS NOT NULL`,
+          sql`${schema.shipments.shipDate} < NOW() - INTERVAL '48 hours'`,
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async setOrderProductionFlag(
+    orderId: string,
+    value: boolean,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    await database
+      .update(schema.orders)
+      .set({ requiresProductionConfirm: value, updatedAt: new Date() })
+      .where(eq(schema.orders.id, orderId));
+  }
+
+  async setOrderPendingPriceConfirm(
+    orderId: string,
+    value: boolean,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    await database
+      .update(schema.orders)
+      .set({ pendingPriceConfirm: value, updatedAt: new Date() })
+      .where(eq(schema.orders.id, orderId));
+  }
+
+  async findShipmentByOrderId(
+    orderId: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    const primary = await database.query.shipments.findFirst({
+      where: eq(schema.shipments.orderId, orderId),
+    });
+    if (primary) return primary;
+    const [linked] = await database
+      .select({ shipment: schema.shipments })
+      .from(schema.shipmentOrders)
+      .innerJoin(
+        schema.shipments,
+        eq(schema.shipmentOrders.shipmentId, schema.shipments.id),
+      )
+      .where(eq(schema.shipmentOrders.orderId, orderId))
+      .limit(1);
+    return linked?.shipment ?? null;
+  }
+
+  async releaseReservationsForShipment(
+    shipmentId: string,
+    centralWarehouseId: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    const items = await tx.query.shipmentItems.findMany({
+      where: eq(schema.shipmentItems.shipmentId, shipmentId),
+    });
+    for (const line of items) {
+      const qty = parseFloat(line.quantity);
+      if (qty <= 0) continue;
+      await tx
+        .update(schema.inventory)
+        .set({
+          reservedQuantity: sql`GREATEST((${schema.inventory.reservedQuantity})::numeric - ${String(qty)}, 0)`,
+        })
+        .where(
+          and(
+            eq(schema.inventory.warehouseId, centralWarehouseId),
+            eq(schema.inventory.batchId, line.batchId),
+          ),
+        );
+    }
+  }
+
+  async insertRestockTask(
+    orderId: string,
+    shipmentId: string | null,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    await database.insert(schema.restockTasks).values({
+      orderId,
+      shipmentId,
+      status: 'pending',
+    });
+  }
+
   async getOrdersByStore(storeId: string) {
     return this.db.query.orders.findMany({
       where: eq(schema.orders.storeId, storeId),
@@ -164,40 +383,54 @@ export class OrderRepository {
     });
   }
 
-  async createOrderTransaction(
-    storeId: string,
-    deliveryDate: string,
-    items: CreateOrderDto['items'],
+  async insertOrderWithItems(
+    tx: NodePgDatabase<typeof schema>,
+    params: {
+      storeId: string;
+      deliveryDate: Date;
+      items: Array<{
+        productId: number;
+        quantity: number;
+        unitSnapshot: string;
+        priceSnapshot: string;
+        packagingInfoSnapshot: string | null;
+      }>;
+      consolidationGroupId: string;
+      totalAmount: string;
+    },
   ) {
-    return await this.db.transaction(async (tx) => {
-      // 1. Create Order
-      const [newOrder] = await tx
-        .insert(schema.orders)
-        .values({
-          storeId: storeId,
-          status: OrderStatus.PENDING,
-          deliveryDate: new Date(deliveryDate),
-        })
-        .returning();
+    const { storeId, deliveryDate, items, consolidationGroupId, totalAmount } =
+      params;
+    const [newOrder] = await tx
+      .insert(schema.orders)
+      .values({
+        storeId: storeId,
+        status: OrderStatus.PENDING,
+        deliveryDate,
+        consolidationGroupId,
+        totalAmount,
+      })
+      .returning();
 
-      if (!newOrder) {
-        throw new Error('Không thể tạo đơn hàng');
-      }
+    if (!newOrder) {
+      throw new Error('Không thể tạo đơn hàng');
+    }
 
-      // 2. Create Order Items
-      if (items.length > 0) {
-        await tx.insert(schema.orderItems).values(
-          items.map((item) => ({
-            orderId: newOrder.id,
-            productId: item.productId,
-            quantityRequested: item.quantity.toString(),
-            quantityApproved: null,
-          })),
-        );
-      }
+    if (items.length > 0) {
+      await tx.insert(schema.orderItems).values(
+        items.map((item) => ({
+          orderId: newOrder.id,
+          productId: item.productId,
+          quantityRequested: item.quantity.toString(),
+          quantityApproved: null,
+          unitSnapshot: item.unitSnapshot,
+          priceSnapshot: item.priceSnapshot,
+          packagingInfoSnapshot: item.packagingInfoSnapshot,
+        })),
+      );
+    }
 
-      return newOrder;
-    });
+    return newOrder;
   }
 
   async getOrdersForCoordinator(status: OrderStatus = OrderStatus.PENDING) {
@@ -235,7 +468,7 @@ export class OrderRepository {
     tx?: NodePgDatabase<typeof schema>,
   ) {
     const database = tx || this.db;
-    return database
+    const base = database
       .select({
         inventoryId: schema.inventory.id,
         batchId: schema.batches.id,
@@ -254,11 +487,11 @@ export class OrderRepository {
           eq(schema.inventory.warehouseId, warehouseId),
           eq(schema.batches.productId, productId),
           sql`${schema.inventory.quantity} > ${schema.inventory.reservedQuantity}`,
-          // CRITICAL: Filter out expired batches - never pick expired stock
           sql`${schema.batches.expiryDate}::date > CURRENT_DATE`,
         ),
       )
       .orderBy(schema.batches.expiryDate);
+    return tx ? base.for('update') : base;
   }
 
   async getOrderById(orderId: string, tx?: NodePgDatabase<typeof schema>) {

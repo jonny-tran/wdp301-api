@@ -111,6 +111,7 @@ export class ShipmentRepository {
     fromWarehouseId: number,
     toWarehouseId: number,
     tx?: NodePgDatabase<typeof schema>,
+    consolidationGroupId?: string | null,
   ) {
     const database = tx || this.db;
     const [shipment] = await database
@@ -120,9 +121,76 @@ export class ShipmentRepository {
         fromWarehouseId,
         toWarehouseId,
         status: this.shipmentStatusEnum.PREPARING,
+        consolidationGroupId: consolidationGroupId ?? null,
       })
       .returning();
     return shipment;
+  }
+
+  async findPreparingShipmentByConsolidationGroup(
+    consolidationGroupId: string,
+    fromWarehouseId: number,
+    toWarehouseId: number,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    return database.query.shipments.findFirst({
+      where: and(
+        eq(schema.shipments.consolidationGroupId, consolidationGroupId),
+        eq(schema.shipments.status, this.shipmentStatusEnum.PREPARING),
+        eq(schema.shipments.fromWarehouseId, fromWarehouseId),
+        eq(schema.shipments.toWarehouseId, toWarehouseId),
+      ),
+    });
+  }
+
+  async linkShipmentOrder(
+    shipmentId: string,
+    orderId: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    await database
+      .insert(schema.shipmentOrders)
+      .values({ shipmentId, orderId })
+      .onConflictDoNothing();
+  }
+
+  async recalculateShipmentLoad(
+    shipmentId: string,
+    tx: NodePgDatabase<typeof schema>,
+    maxWeightKg?: number | null,
+  ) {
+    const [row] = await tx
+      .select({
+        tw: sql<string>`coalesce(sum((${schema.products.weightKg})::numeric * (${schema.shipmentItems.quantity})::numeric), 0)`,
+        tv: sql<string>`coalesce(sum((${schema.products.volumeM3})::numeric * (${schema.shipmentItems.quantity})::numeric), 0)`,
+      })
+      .from(schema.shipmentItems)
+      .innerJoin(
+        schema.batches,
+        eq(schema.shipmentItems.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(eq(schema.shipmentItems.shipmentId, shipmentId));
+
+    const tw = parseFloat(row?.tw ?? '0');
+    const tv = parseFloat(row?.tv ?? '0');
+    const overload =
+      maxWeightKg != null && maxWeightKg > 0 && tw > maxWeightKg;
+
+    await tx
+      .update(schema.shipments)
+      .set({
+        totalWeightKg: tw.toFixed(3),
+        totalVolumeM3: tv.toFixed(4),
+        overloadWarning: overload,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.shipments.id, shipmentId));
   }
 
   async createShipmentItems(

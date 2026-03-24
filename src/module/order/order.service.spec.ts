@@ -26,7 +26,14 @@ describe('OrderService', () => {
       getActiveProducts: jest.fn(),
       findAll: jest.fn(),
       findActiveProductsByIds: jest.fn(),
-      createOrderTransaction: jest.fn(),
+      findProductsWithSnapshotByIds: jest.fn(),
+      hasStaleUnconfirmedShipment: jest.fn().mockResolvedValue(false),
+      getStoreById: jest.fn(),
+      sumStoreInventoryByProduct: jest.fn(),
+      findExistingConsolidationGroupId: jest.fn().mockResolvedValue(null),
+      acquireStoreOrderingLock: jest.fn().mockResolvedValue(undefined),
+      lockStoreInventoryRowsForProducts: jest.fn().mockResolvedValue(undefined),
+      insertOrderWithItems: jest.fn(),
       getOrdersByStore: jest.fn(),
       getOrdersForCoordinator: jest.fn(),
       getOrderById: jest.fn(),
@@ -39,6 +46,8 @@ describe('OrderService', () => {
       getStoreWarehouseId: jest.fn(),
       getFulfillmentAnalytics: jest.fn(),
       getSlaAnalytics: jest.fn(),
+      setOrderProductionFlag: jest.fn(),
+      setOrderPendingPriceConfirm: jest.fn(),
       runTransaction: jest.fn(
         async (cb: (tx: jest.Mocked<OrderRepository>) => Promise<unknown>) =>
           cb(mockTx),
@@ -103,6 +112,26 @@ describe('OrderService', () => {
       orderRepo.findActiveProductsByIds.mockResolvedValue([
         { id: 1 },
       ] as never[]);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        {
+          id: 1,
+          unitPrice: '50000',
+          prepTimeHours: 24,
+          packagingInfo: 'Thùng 10kg',
+          isHighValue: false,
+          weightKg: '1',
+          volumeM3: '0.01',
+          unitName: 'kg',
+        },
+      ] as never[]);
+      orderRepo.getStoreById.mockResolvedValue({
+        id: 's-1',
+        transitTimeHours: 24,
+        maxStorageCapacity: null,
+      } as never);
+      orderRepo.getStoreWarehouseId.mockResolvedValue(1 as never);
+      orderRepo.sumStoreInventoryByProduct.mockResolvedValue(new Map([[1, 5]]));
+
       const createdOrder = {
         id: 'o-1',
         storeId: 's-1',
@@ -110,11 +139,12 @@ describe('OrderService', () => {
         deliveryDate: new Date('2026-05-01'),
         createdAt: new Date(),
       };
-      orderRepo.createOrderTransaction.mockResolvedValue(createdOrder as never);
+      orderRepo.insertOrderWithItems.mockResolvedValue(createdOrder as never);
 
       const result = await service.createOrder(user, dto);
-      expect(result).toEqual(createdOrder);
+      expect(result.id).toBe('o-1');
       expect(orderRepo.findActiveProductsByIds).toHaveBeenCalledWith([1]);
+      expect(orderRepo.insertOrderWithItems).toHaveBeenCalled();
     });
 
     it('should throw BadRequestException if items array is empty', async () => {
@@ -157,18 +187,48 @@ describe('OrderService', () => {
       );
     });
 
-    it('should throw ForbiddenException if ORDER_CLOSING_TIME has passed', async () => {
-      // Simulate closing time already passed: set to 00:01 so it's always past
+    it('should create order after ORDER_CLOSING_TIME (service điều chỉnh ngày giao / group)', async () => {
       systemConfigService.getConfigValue.mockResolvedValue('00:01');
 
       const dto: CreateOrderDto = {
-        deliveryDate: '2026-05-01',
+        deliveryDate: '2030-05-01',
         items: [{ productId: 1, quantity: 10 }],
       };
 
-      await expect(service.createOrder(user, dto)).rejects.toThrow(
-        ForbiddenException,
-      );
+      orderRepo.findActiveProductsByIds.mockResolvedValue([
+        { id: 1 },
+      ] as never[]);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        {
+          id: 1,
+          unitPrice: '50000',
+          prepTimeHours: 24,
+          packagingInfo: 'Thùng 10kg',
+          isHighValue: false,
+          weightKg: '1',
+          volumeM3: '0.01',
+          unitName: 'kg',
+        },
+      ] as never[]);
+      orderRepo.getStoreById.mockResolvedValue({
+        id: 's-1',
+        transitTimeHours: 24,
+        maxStorageCapacity: null,
+      } as never);
+      orderRepo.getStoreWarehouseId.mockResolvedValue(1 as never);
+      orderRepo.sumStoreInventoryByProduct.mockResolvedValue(new Map([[1, 5]]));
+
+      const createdOrder = {
+        id: 'o-1',
+        storeId: 's-1',
+        status: OrderStatus.PENDING,
+        deliveryDate: new Date('2030-05-01'),
+        createdAt: new Date(),
+      };
+      orderRepo.insertOrderWithItems.mockResolvedValue(createdOrder as never);
+
+      const result = await service.createOrder(user, dto);
+      expect(result.id).toBe('o-1');
     });
 
     it('should allow order if ORDER_CLOSING_TIME is not configured', async () => {
@@ -183,6 +243,26 @@ describe('OrderService', () => {
       orderRepo.findActiveProductsByIds.mockResolvedValue([
         { id: 1 },
       ] as never[]);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        {
+          id: 1,
+          unitPrice: '50000',
+          prepTimeHours: 24,
+          packagingInfo: null,
+          isHighValue: false,
+          weightKg: '1',
+          volumeM3: '0.01',
+          unitName: 'kg',
+        },
+      ] as never[]);
+      orderRepo.getStoreById.mockResolvedValue({
+        id: 's-1',
+        transitTimeHours: 24,
+        maxStorageCapacity: null,
+      } as never);
+      orderRepo.getStoreWarehouseId.mockResolvedValue(1 as never);
+      orderRepo.sumStoreInventoryByProduct.mockResolvedValue(new Map([[1, 0]]));
+
       const createdOrder = {
         id: 'o-1',
         storeId: 's-1',
@@ -190,7 +270,7 @@ describe('OrderService', () => {
         deliveryDate: new Date('2026-05-01'),
         createdAt: new Date(),
       };
-      orderRepo.createOrderTransaction.mockResolvedValue(createdOrder as never);
+      orderRepo.insertOrderWithItems.mockResolvedValue(createdOrder as never);
 
       const result = await service.createOrder(user, dto);
       expect(result.id).toBe('o-1');
@@ -204,14 +284,29 @@ describe('OrderService', () => {
         id: orderId,
         status: OrderStatus.PENDING,
         storeId: 's-1',
-        items: [{ id: 10, productId: 1, quantityRequested: '10' }],
+        consolidationGroupId: null as string | null,
+        store: { transitTimeHours: 24 },
+        items: [
+          {
+            id: 10,
+            productId: 1,
+            quantityRequested: '10',
+            priceSnapshot: '50000',
+          },
+        ],
       };
       mockTx.getOrderById.mockResolvedValue(order as never);
       mockTx.getCentralWarehouseId.mockResolvedValue(99 as never);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        { id: 1, unitPrice: '50000', prepTimeHours: 24 },
+      ] as never[]);
       mockTx.getBatchesForFEFO.mockResolvedValue([
         { batchId: 5, inventoryId: 55, quantity: '20', reservedQuantity: '0' },
       ] as never[]);
       mockTx.getStoreWarehouseId.mockResolvedValue(88 as never);
+      mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
+      mockTx.setOrderPendingPriceConfirm.mockResolvedValue(undefined as never);
+      systemConfigService.getConfigValue.mockResolvedValue(null);
 
       const result = await service.approveOrder(orderId);
 
@@ -233,16 +328,33 @@ describe('OrderService', () => {
         id: orderId,
         status: OrderStatus.PENDING,
         storeId: 's-1',
-        items: [{ id: 10, productId: 1, quantityRequested: '100' }],
+        consolidationGroupId: null as string | null,
+        store: { transitTimeHours: 24 },
+        items: [
+          {
+            id: 10,
+            productId: 1,
+            quantityRequested: '100',
+            priceSnapshot: '50000',
+          },
+        ],
       };
       mockTx.getOrderById.mockResolvedValue(order as never);
       mockTx.getCentralWarehouseId.mockResolvedValue(99 as never);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        { id: 1, unitPrice: '50000', prepTimeHours: 24 },
+      ] as never[]);
       mockTx.getBatchesForFEFO.mockResolvedValue([
         { batchId: 5, inventoryId: 55, quantity: '60', reservedQuantity: '0' },
       ] as never[]);
       mockTx.getStoreWarehouseId.mockResolvedValue(88 as never);
+      mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
+      mockTx.setOrderPendingPriceConfirm.mockResolvedValue(undefined as never);
+      systemConfigService.getConfigValue.mockResolvedValue(null);
 
-      const result = await service.approveOrder(orderId, true); // force due to low fill rate
+      const result = await service.approveOrder(orderId, true, {
+        production_confirm: true,
+      }); // force fill + production confirm for partial shortage
 
       expect(mockTx.updateOrderItemApprovedQuantity).toHaveBeenCalledWith(
         10,
@@ -380,7 +492,7 @@ describe('OrderService', () => {
       } as never);
 
       await expect(service.cancelOrder('o-1', user)).rejects.toThrow(
-        new BadRequestException('Không thể hủy đơn hàng đã được xử lý'),
+        BadRequestException,
       );
     });
   });
@@ -480,6 +592,148 @@ describe('OrderService', () => {
       expect(result.kpi.avgReviewTimeHours).toBe(1.5);
       expect(result.kpi.avgPickingTimeHours).toBe(2);
       expect(result.kpi.avgDeliveryTimeHours).toBe(2);
+    });
+  });
+
+  describe('ORD-OPTIMIZE', () => {
+    const user: IJwtPayload = {
+      sub: 'u-1',
+      storeId: 's-1',
+      role: UserRole.FRANCHISE_STORE_STAFF,
+      email: 'a@a.com',
+    };
+
+    it('should pass snapshot fields into insertOrderWithItems', async () => {
+      const dto: CreateOrderDto = {
+        deliveryDate: '2026-06-15',
+        items: [{ productId: 1, quantity: 2 }],
+      };
+      orderRepo.findActiveProductsByIds.mockResolvedValue([{ id: 1 }] as never[]);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        {
+          id: 1,
+          unitPrice: '45000',
+          prepTimeHours: 12,
+          packagingInfo: 'Hộp 2kg',
+          isHighValue: false,
+          weightKg: '1',
+          volumeM3: '0.01',
+          unitName: 'kg',
+        },
+      ] as never[]);
+      orderRepo.getStoreById.mockResolvedValue({
+        id: 's-1',
+        transitTimeHours: 12,
+        maxStorageCapacity: null,
+      } as never);
+      orderRepo.getStoreWarehouseId.mockResolvedValue(10 as never);
+      orderRepo.sumStoreInventoryByProduct.mockResolvedValue(new Map());
+      orderRepo.insertOrderWithItems.mockResolvedValue({
+        id: 'ord-snap',
+        storeId: 's-1',
+        status: OrderStatus.PENDING,
+        deliveryDate: new Date(dto.deliveryDate),
+        createdAt: new Date(),
+      } as never);
+
+      await service.createOrder(user, dto);
+
+      expect(orderRepo.insertOrderWithItems).toHaveBeenCalledWith(
+        mockTx,
+        expect.objectContaining({
+          storeId: 's-1',
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              productId: 1,
+              quantity: 2,
+              unitSnapshot: 'kg',
+              priceSnapshot: '45000.00',
+              packagingInfoSnapshot: 'Hộp 2kg',
+            }),
+          ]),
+          totalAmount: '90000.00',
+          consolidationGroupId: expect.any(String),
+        }),
+      );
+    });
+
+    it('should throw BadRequestException when order qty + stock exceeds max storage capacity', async () => {
+      const dto: CreateOrderDto = {
+        deliveryDate: '2026-06-15',
+        items: [{ productId: 1, quantity: 100 }],
+      };
+      orderRepo.findActiveProductsByIds.mockResolvedValue([{ id: 1 }] as never[]);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        {
+          id: 1,
+          unitPrice: '1',
+          prepTimeHours: 24,
+          packagingInfo: null,
+          isHighValue: false,
+          weightKg: '1',
+          volumeM3: '0',
+          unitName: 'kg',
+        },
+      ] as never[]);
+      orderRepo.getStoreById.mockResolvedValue({
+        id: 's-1',
+        transitTimeHours: 24,
+        maxStorageCapacity: '50',
+      } as never);
+      orderRepo.getStoreWarehouseId.mockResolvedValue(10 as never);
+      orderRepo.sumStoreInventoryByProduct.mockResolvedValue(
+        new Map([[1, 10]]),
+      );
+
+      await expect(service.createOrder(user, dto)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw ProductionConfirmNeeded path when partial shortage and no production_confirm', async () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-03-24T03:00:00.000Z'));
+
+      const orderId = 'o-pc';
+      const order = {
+        id: orderId,
+        status: OrderStatus.PENDING,
+        storeId: 's-1',
+        consolidationGroupId: null,
+        store: { transitTimeHours: 0 },
+        items: [
+          {
+            id: 1,
+            productId: 1,
+            quantityRequested: '10',
+            priceSnapshot: '100',
+          },
+        ],
+      };
+      mockTx.getOrderById.mockResolvedValue(order as never);
+      mockTx.getCentralWarehouseId.mockResolvedValue(1 as never);
+      orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
+        { id: 1, unitPrice: '100', prepTimeHours: 0 },
+      ] as never[]);
+      mockTx.getBatchesForFEFO.mockResolvedValue([
+        { batchId: 1, inventoryId: 1, quantity: '3', reservedQuantity: '0' },
+      ] as never[]);
+      mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
+      systemConfigService.getConfigValue.mockResolvedValue('06:00');
+
+      await expect(service.approveOrder(orderId, false, {})).rejects.toMatchObject(
+        {
+          response: expect.objectContaining({
+            code: 'PRODUCTION_CONFIRMATION_REQUIRED',
+          }),
+        },
+      );
+      expect(orderRepo.setOrderProductionFlag).toHaveBeenCalledWith(
+        orderId,
+        true,
+      );
+
+      jest.useRealTimers();
     });
   });
 });

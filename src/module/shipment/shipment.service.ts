@@ -43,16 +43,52 @@ export class ShipmentService {
     toWarehouseId: number,
     items: { batchId: number; quantity: number }[],
     tx: NodePgDatabase<typeof schema>,
+    opts?: {
+      consolidationGroupId?: string | null;
+      maxVehicleWeightKg?: number | null;
+    },
   ) {
-    // 1. Create Shipment Record
+    const groupId = opts?.consolidationGroupId ?? null;
+    const maxW = opts?.maxVehicleWeightKg ?? null;
+
+    if (groupId) {
+      const existing =
+        await this.shipmentRepository.findPreparingShipmentByConsolidationGroup(
+          groupId,
+          fromWarehouseId,
+          toWarehouseId,
+          tx,
+        );
+      if (existing) {
+        await this.shipmentRepository.linkShipmentOrder(
+          existing.id,
+          orderId,
+          tx,
+        );
+        const shipmentItems = items.map((item) => ({
+          shipmentId: existing.id,
+          batchId: item.batchId,
+          quantity: item.quantity.toString(),
+        }));
+        await this.shipmentRepository.createShipmentItems(shipmentItems, tx);
+        await this.shipmentRepository.recalculateShipmentLoad(
+          existing.id,
+          tx,
+          maxW,
+        );
+        return existing;
+      }
+    }
+
     const shipment = await this.shipmentRepository.createShipment(
       orderId,
       fromWarehouseId,
       toWarehouseId,
       tx,
+      groupId,
     );
+    await this.shipmentRepository.linkShipmentOrder(shipment.id, orderId, tx);
 
-    // 2. Create Shipment Items
     const shipmentItems = items.map((item) => ({
       shipmentId: shipment.id,
       batchId: item.batchId,
@@ -60,6 +96,11 @@ export class ShipmentService {
     }));
 
     await this.shipmentRepository.createShipmentItems(shipmentItems, tx);
+    await this.shipmentRepository.recalculateShipmentLoad(
+      shipment.id,
+      tx,
+      maxW,
+    );
 
     return shipment;
   }

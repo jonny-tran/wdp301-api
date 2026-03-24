@@ -23,6 +23,7 @@ import { ApproveOrderDto } from './dto/approve-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
+import { ProductionConfirmDto } from './dto/production-confirm.dto';
 import { RejectOrderDto } from './dto/reject-order.dto';
 import { OrderService } from './order.service';
 
@@ -108,7 +109,51 @@ export class OrderController {
     @Param('id') id: string,
     @Body() approveDto: ApproveOrderDto,
   ) {
-    return this.orderService.approveOrder(id, approveDto.force_approve);
+    return this.orderService.approveOrder(id, approveDto.force_approve, {
+      price_acknowledged: approveDto.price_acknowledged,
+      production_confirm: approveDto.production_confirm,
+    });
+  }
+
+  @Patch('coordinator/:id/force-cancel')
+  @Roles(
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+  )
+  @ApiOperation({
+    summary:
+      'Hủy bắt buộc (điều phối) — giải phóng reserve & tạo nhiệm vụ hoàn kho',
+  })
+  async forceCancelOrder(
+    @Param('id') id: string,
+    @CurrentUser() user: IJwtPayload,
+  ) {
+    return this.orderService.forceCancelOrder(id, user);
+  }
+
+  @Patch('franchise/:id/confirm-price')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Cửa hàng xác nhận đồng ý giá mới khi đơn bị khóa do lệch giá >20%',
+  })
+  async confirmPrice(@Param('id') id: string, @CurrentUser() user: IJwtPayload) {
+    return this.orderService.confirmStorePriceAcknowledgment(id, user);
+  }
+
+  @Patch('kitchen/:id/production-confirm')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF, UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Bếp xác nhận làm bù / từ chối (thiếu hàng cần phối hợp sản xuất)',
+  })
+  async kitchenProductionConfirm(
+    @Param('id') id: string,
+    @CurrentUser() user: IJwtPayload,
+    @Body() dto: ProductionConfirmDto,
+  ) {
+    return this.orderService.kitchenProductionConfirm(id, user, dto);
   }
 
   @Patch('coordinator/:id/reject')
