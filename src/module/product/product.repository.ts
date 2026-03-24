@@ -427,6 +427,7 @@ export class ProductRepository {
   async createBatch(data: {
     productId: number;
     batchCode: string;
+    manufacturedDate: string;
     expiryDate: string;
     imageUrl?: string;
   }) {
@@ -435,6 +436,7 @@ export class ProductRepository {
       .values({
         productId: data.productId,
         batchCode: data.batchCode,
+        manufacturedDate: data.manufacturedDate,
         expiryDate: data.expiryDate,
         imageUrl: data.imageUrl,
         status: 'pending',
@@ -447,6 +449,7 @@ export class ProductRepository {
     batchData: {
       productId: number;
       batchCode: string;
+      manufacturedDate: string;
       expiryDate: string;
       imageUrl?: string;
     },
@@ -458,6 +461,7 @@ export class ProductRepository {
         .values({
           productId: batchData.productId,
           batchCode: batchData.batchCode,
+          manufacturedDate: batchData.manufacturedDate,
           expiryDate: batchData.expiryDate,
           imageUrl: batchData.imageUrl,
         })

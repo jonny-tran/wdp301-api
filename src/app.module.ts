@@ -12,6 +12,7 @@ import { FranchiseStoreModule } from './module/franchise-store/franchise-store.m
 import { InboundModule } from './module/inbound/inbound.module';
 import { InventoryModule } from './module/inventory/inventory.module';
 import { OrderModule } from './module/order/order.module';
+import { ProductionModule } from './module/production/production.module';
 import { ProductModule } from './module/product/product.module';
 import { ShipmentModule } from './module/shipment/shipment.module';
 import { SupplierModule } from './module/supplier/supplier.module';
@@ -44,6 +45,7 @@ import { WarehouseModule } from './module/warehouse/warehouse.module';
     ProductModule,
     FranchiseStoreModule,
     InboundModule,
+    ProductionModule,
     SupplierModule,
     CloudinaryModule,
     SystemConfigModule,

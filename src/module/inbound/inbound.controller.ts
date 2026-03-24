@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -61,11 +62,17 @@ export class InboundController {
     summary:
       'Xem thông tin chi tiết và danh sách hàng hóa của một phiếu nhập [Kitchen]',
     description:
-      'Hiển thị toàn bộ các sản phẩm và mã lô đã khai báo trong biên lai.',
+      'Hiển thị toàn bộ các sản phẩm và mã lô đã khai báo trong biên lai. omitExpected=true: ẩn số dự kiến (màn kiểm đếm).',
   })
   @ResponseMessage('Lấy thông tin phiếu nhập thành công')
-  async getReceiptById(@Param('id') id: string) {
-    return this.inboundService.getReceiptById(id);
+  async getReceiptById(
+    @Param('id') id: string,
+    @Query('omitExpected') omitExpected?: string,
+  ) {
+    return this.inboundService.getReceiptById(
+      id,
+      omitExpected === 'true' || omitExpected === '1',
+    );
   }
 
   @Post('receipts/:id/items')
@@ -73,7 +80,7 @@ export class InboundController {
   @ApiOperation({
     summary: 'Khai báo hàng thực tế dỡ từ xe xuống vào phiếu nhập [Kitchen]',
     description:
-      'Hệ thống sẽ tự động sinh mã Lô (Batch Code) và tính Hạn sử dụng dựa trên Shelf Life.',
+      'Ghi nhận NSX, chấp nhận/từ chối, tách HSD. Mã lô (BAT-…) được tạo khi chốt phiếu.',
   })
   @ResponseMessage('Thêm hàng vào biên lai thành công')
   async addReceiptItem(
@@ -100,20 +107,43 @@ export class InboundController {
     summary:
       'Xác nhận hoàn tất biên lai và chính thức nhập hàng vào kho [Kitchen]',
     description:
-      'Chỉ sau khi gọi API này, số lượng hàng mới được cộng vào tồn kho khả dụng.',
+      'Tạo lô BAT-…, cộng tồn, ghi log IMPORT. Cần phê duyệt trước nếu nhập dư vượt ngưỡng.',
   })
   @ResponseMessage('Chốt phiếu thành công')
   async completeReceipt(@Param('id') id: string) {
     return this.inboundService.completeReceipt(id);
   }
 
+  @Patch('receipts/:id/variance-approval')
+  @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR)
+  @ApiOperation({
+    summary: 'Phê duyệt nhập vượt ngưỡng sai số (điều phối / quản lý)',
+  })
+  @ResponseMessage('Phê duyệt thành công')
+  async approveVariance(
+    @Param('id') id: string,
+    @CurrentUser() user: RequestWithUser['user'],
+  ) {
+    return this.inboundService.approveReceiptVariance(id, user);
+  }
+
+  @Delete('receipts/:receiptId/items/:itemId')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Xóa một dòng khỏi phiếu nhập nháp [Kitchen]',
+  })
+  @ResponseMessage('Xóa dòng thành công')
+  async deleteReceiptLine(
+    @Param('receiptId') receiptId: string,
+    @Param('itemId', ParseIntPipe) itemId: number,
+  ) {
+    return this.inboundService.deleteReceiptLine(receiptId, itemId);
+  }
+
   @Delete('items/:batchId')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Xóa một mặt hàng/lô hàng khỏi phiếu nhập (Chỉ áp dụng khi phiếu còn ở trạng thái Nháp)  [Kitchen]',
-    description:
-      'Dùng để sửa lỗi khi nhân viên khai báo sai sản phẩm hoặc số lượng.',
+    summary: 'Xóa theo batchId (tương thích phiếu cũ)',
   })
   @ResponseMessage('Xóa lô hàng lỗi thành công')
   async deleteBatchItem(@Param('batchId') batchId: string) {

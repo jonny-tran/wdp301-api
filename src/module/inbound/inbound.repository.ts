@@ -1,13 +1,19 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, gte, InferSelectModel, lte, SQL, sql } from 'drizzle-orm';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
+import { VN_TZ } from '../../common/time/vn-time';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
 
-type Transaction = Parameters<
-  Parameters<NodePgDatabase<typeof schema>['transaction']>[0]
->[0];
+/** Client DB hoặc trong transaction (cùng API Drizzle) */
+type DbOrTx = NodePgDatabase<typeof schema>;
 
 @Injectable()
 export class InboundRepository {
@@ -33,7 +39,7 @@ export class InboundRepository {
 
   // Khóa bản ghi Receipt để xử lý (Atomic Lock)
   async findReceiptWithLock(
-    tx: Transaction,
+    tx: DbOrTx,
     id: string,
   ): Promise<InferSelectModel<typeof schema.receipts> | undefined> {
     const [receipt] = await tx
@@ -45,7 +51,7 @@ export class InboundRepository {
   }
 
   // Cập nhật trạng thái Receipt
-  async updateReceiptStatus(tx: Transaction, id: string, status: 'completed') {
+  async updateReceiptStatus(tx: DbOrTx, id: string, status: 'completed') {
     await tx
       .update(schema.receipts)
       .set({ status, updatedAt: new Date() })
@@ -54,7 +60,7 @@ export class InboundRepository {
 
   // Cập nhật trạng thái Batch
   async updateBatchStatus(
-    tx: Transaction,
+    tx: DbOrTx,
     batchId: number,
     status: 'available',
   ) {
@@ -66,7 +72,7 @@ export class InboundRepository {
 
   // Upsert tồn kho (Quan trọng: Dùng CAST để tránh cộng chuỗi)
   async upsertInventory(
-    tx: Transaction,
+    tx: DbOrTx,
     warehouseId: number,
     batchId: number,
     quantity: string,
@@ -91,12 +97,13 @@ export class InboundRepository {
 
   // Ghi log giao dịch kho
   async insertInventoryTransaction(
-    tx: Transaction,
+    tx: DbOrTx,
     data: {
       warehouseId: number;
       batchId: number;
       quantityChange: string;
       referenceId: string;
+      reason?: string;
     },
   ) {
     await tx.insert(schema.inventoryTransactions).values({
@@ -105,8 +112,106 @@ export class InboundRepository {
       type: 'import',
       quantityChange: data.quantityChange,
       referenceId: data.referenceId,
-      reason: 'Inbound Receipt Completed',
+      reason: data.reason ?? 'Inbound Receipt Completed',
     });
+  }
+
+  /** Khóa logic sinh mã lô (tránh trùng khi đồng thời) */
+  async lockBatchCodeGeneration(tx: DbOrTx) {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(871002, 1)`);
+  }
+
+  /** Khóa kho theo warehouse khi cộng tồn (tránh race) */
+  async lockWarehouseStock(tx: DbOrTx, warehouseId: number) {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(90210, ${warehouseId})`);
+  }
+
+  sanitizeSkuForBatchCode(sku: string): string {
+    const s = sku.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    return s.length > 0 ? s.slice(0, 32) : 'X';
+  }
+
+  /** Định dạng BAT-YYYYMMDD-SKU-XXXX (XXXX tăng trong ngày + SKU, múi giờ VN) */
+  async nextBatchCode(tx: DbOrTx, sku: string): Promise<string> {
+    await this.lockBatchCodeGeneration(tx);
+    const dayStr = dayjs().tz(VN_TZ).format('YYYYMMDD');
+    const skuPart = this.sanitizeSkuForBatchCode(sku);
+    const prefix = `BAT-${dayStr}-${skuPart}-`;
+    const likePattern = `${prefix}%`;
+    const [row] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.batches)
+      .where(sql`${schema.batches.batchCode} like ${likePattern}`);
+    const next = (row?.n ?? 0) + 1;
+    return `${prefix}${String(next).padStart(4, '0')}`;
+  }
+
+  async insertBatch(
+    tx: DbOrTx,
+    data: {
+      productId: number;
+      batchCode: string;
+      manufacturedDate: string;
+      expiryDate: string;
+    },
+  ) {
+    const [batch] = await tx
+      .insert(schema.batches)
+      .values({
+        productId: data.productId,
+        batchCode: data.batchCode,
+        manufacturedDate: data.manufacturedDate,
+        expiryDate: data.expiryDate,
+        status: 'pending',
+      })
+      .returning();
+    return batch;
+  }
+
+  async updateReceiptItemBatchLink(
+    tx: DbOrTx,
+    itemId: number,
+    batchId: number,
+  ) {
+    await tx
+      .update(schema.receiptItems)
+      .set({ batchId })
+      .where(eq(schema.receiptItems.id, itemId));
+  }
+
+  async addReceiptItemLine(
+    data: {
+      receiptId: string;
+      productId: number;
+      quantityLine: string;
+      quantityAccepted: string;
+      quantityRejected: string;
+      rejectionReason: string | null;
+      expectedQuantity: string | null;
+      storageLocationCode: string | null;
+      manufacturedDate: string;
+      statedExpiryDate: string | null;
+    },
+    tx?: DbOrTx,
+  ) {
+    const runner = tx ?? this.db;
+    const [item] = await runner
+      .insert(schema.receiptItems)
+      .values({
+        receiptId: data.receiptId,
+        productId: data.productId,
+        batchId: null,
+        quantity: data.quantityLine,
+        quantityAccepted: data.quantityAccepted,
+        quantityRejected: data.quantityRejected,
+        rejectionReason: data.rejectionReason,
+        expectedQuantity: data.expectedQuantity,
+        storageLocationCode: data.storageLocationCode,
+        manufacturedDate: data.manufacturedDate,
+        statedExpiryDate: data.statedExpiryDate,
+      })
+      .returning();
+    return item;
   }
 
   // Helper: Lấy items của receipt
@@ -114,7 +219,18 @@ export class InboundRepository {
     return this.db.query.receiptItems.findMany({
       where: eq(schema.receiptItems.receiptId, receiptId),
       with: {
-        batch: true,
+        batch: { with: { product: { with: { baseUnit: true } } } },
+        product: { with: { baseUnit: true } },
+      },
+    });
+  }
+
+  async getReceiptItemsWithBatchesTx(tx: DbOrTx, receiptId: string) {
+    return tx.query.receiptItems.findMany({
+      where: eq(schema.receiptItems.receiptId, receiptId),
+      with: {
+        batch: { with: { product: { with: { baseUnit: true } } } },
+        product: { with: { baseUnit: true } },
       },
     });
   }
@@ -292,9 +408,51 @@ export class InboundRepository {
                 },
               },
             },
+            product: { with: { baseUnit: true } },
           },
         },
       },
+    });
+  }
+
+  async findReceiptItemById(id: number) {
+    return this.db.query.receiptItems.findFirst({
+      where: eq(schema.receiptItems.id, id),
+      with: { receipt: true },
+    });
+  }
+
+  async approveVariance(tx: DbOrTx, receiptId: string, userId: string) {
+    await tx
+      .update(schema.receipts)
+      .set({
+        varianceApprovedBy: userId,
+        varianceApprovedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.receipts.id, receiptId));
+  }
+
+  /** Xóa dòng phiếu nháp; nếu đã có batch (legacy) thì xóa cả batch */
+  async deleteReceiptLine(receiptItemId: number) {
+    return this.db.transaction(async (tx) => {
+      const item = await tx.query.receiptItems.findFirst({
+        where: eq(schema.receiptItems.id, receiptItemId),
+        with: { receipt: true },
+      });
+      if (!item) {
+        return { deleted: false as const };
+      }
+      if (item.receipt.status !== 'draft') {
+        return { deleted: false as const, reason: 'not_draft' as const };
+      }
+      await tx
+        .delete(schema.receiptItems)
+        .where(eq(schema.receiptItems.id, receiptItemId));
+      if (item.batchId) {
+        await tx.delete(schema.batches).where(eq(schema.batches.id, item.batchId));
+      }
+      return { deleted: true as const };
     });
   }
 }

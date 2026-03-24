@@ -81,6 +81,7 @@ async function main() {
     .values({
       batchCode: `BATCH_OLD_${uniqueSuffix}`,
       productId: product.id,
+      manufacturedDate: '2026-01-20',
       expiryDate: '2026-02-01',
     })
     .returning();
@@ -91,6 +92,7 @@ async function main() {
     .values({
       batchCode: `BATCH_NEW_${uniqueSuffix}`,
       productId: product.id,
+      manufacturedDate: '2026-02-01',
       expiryDate: '2026-02-15',
     })
     .returning();

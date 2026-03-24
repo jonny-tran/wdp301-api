@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -505,6 +506,50 @@ export class InventoryService {
       fulfilledQuantity: requiredQuantity - remaining,
       pickedBatches,
     };
+  }
+
+  /**
+   * Biến động tồn + audit log (quantityDelta âm/dương). Dùng pg_advisory_xact_lock theo warehouse.
+   */
+  async changeStock(
+    params: {
+      warehouseId: number;
+      batchId: number;
+      quantityDelta: number;
+      transactionType:
+        | 'import'
+        | 'export'
+        | 'waste'
+        | 'adjustment'
+        | 'production_consume'
+        | 'production_output';
+      referenceId?: string;
+      reason?: string;
+    },
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const run = async (db: NodePgDatabase<typeof schema>) => {
+      await db.execute(
+        sql`SELECT pg_advisory_xact_lock(90210, ${params.warehouseId})`,
+      );
+      await this.inventoryRepository.upsertInventory(
+        params.warehouseId,
+        params.batchId,
+        params.quantityDelta,
+        db,
+      );
+      return this.inventoryRepository.createInventoryTransaction(
+        params.warehouseId,
+        params.batchId,
+        params.transactionType,
+        params.quantityDelta,
+        params.referenceId,
+        params.reason,
+        db,
+      );
+    };
+    if (tx) return run(tx);
+    return this.db.transaction(run);
   }
 
   async receiveDiscrepancy(

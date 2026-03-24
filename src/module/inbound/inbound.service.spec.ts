@@ -3,8 +3,9 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
+import { UnitOfWork } from '../../database/unit-of-work';
 import { RequestWithUser } from '../auth/types/auth.types';
-import { ProductService } from '../product/product.service';
+import { SystemConfigService } from '../system-config/system-config.service';
 import { WarehouseRepository } from './../warehouse/warehouse.repository';
 import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
@@ -20,17 +21,20 @@ jest.mock('./helpers/inbound.util', () => ({
 describe('InboundService', () => {
   let service: InboundService;
   let inboundRepo: jest.Mocked<InboundRepository>;
-  let productService: jest.Mocked<ProductService>;
   let mockDb: { transaction: jest.Mock };
-  let mockTx: jest.Mocked<InboundRepository>;
+  let mockTx: unknown;
+  let systemConfig: { getConfigValue: jest.Mock };
 
   beforeEach(async () => {
+    mockTx = {};
+
     const mockInboundRepoObj = {
       findReceiptById: jest.fn(),
       getProductDetails: jest.fn(),
-      addReceiptItem: jest.fn(),
+      addReceiptItemLine: jest.fn(),
       findReceiptWithLock: jest.fn(),
       getReceiptItemsWithBatches: jest.fn(),
+      getReceiptItemsWithBatchesTx: jest.fn(),
       updateReceiptStatus: jest.fn(),
       updateBatchStatus: jest.fn(),
       upsertInventory: jest.fn(),
@@ -41,22 +45,33 @@ describe('InboundService', () => {
       getBatchDetails: jest.fn(),
       createReceipt: jest.fn(),
       findReceiptDetail: jest.fn(),
+      findReceiptItemById: jest.fn(),
+      deleteReceiptLine: jest.fn(),
+      nextBatchCode: jest.fn(),
+      insertBatch: jest.fn(),
+      updateReceiptItemBatchLink: jest.fn(),
+      lockWarehouseStock: jest.fn(),
+      approveVariance: jest.fn(),
     };
-
-    mockTx = mockInboundRepoObj as unknown as jest.Mocked<InboundRepository>;
 
     mockDb = {
       transaction: jest.fn(
-        async (
-          callback: (tx: jest.Mocked<InboundRepository>) => Promise<unknown>,
-        ) => {
+        async (callback: (tx: unknown) => Promise<unknown>) => {
           return callback(mockTx);
         },
       ),
     };
 
-    const mockProductServiceObj = {
-      createBatch: jest.fn(),
+    const mockUow = {
+      runInTransaction: jest.fn(
+        async <T>(work: (tx: unknown) => Promise<T>) => {
+          return work(mockTx);
+        },
+      ),
+    };
+
+    systemConfig = {
+      getConfigValue: jest.fn().mockResolvedValue('3'),
     };
 
     const mockWarehouseRepoObj = {
@@ -75,65 +90,58 @@ describe('InboundService', () => {
           useValue: mockDb,
         },
         {
-          provide: ProductService,
-          useValue: mockProductServiceObj,
-        },
-        {
           provide: WarehouseRepository,
           useValue: mockWarehouseRepoObj,
         },
+        { provide: UnitOfWork, useValue: mockUow },
+        { provide: SystemConfigService, useValue: systemConfig },
       ],
     }).compile();
 
     service = module.get<InboundService>(InboundService);
     inboundRepo = module.get(InboundRepository);
-    productService = module.get(ProductService);
   });
 
   afterEach(() => {
     jest.clearAllMocks();
   });
 
-  describe('addReceiptItem (Luồng sinh Batch)', () => {
-    it('should successfully add an item and return a warning if shelfLifeDays < 2', async () => {
-      // Arrange
+  describe('addReceiptItem', () => {
+    it('should add a draft line and warn if shelfLifeDays < 2', async () => {
       const receiptId = 'receipt-1';
-      const dto: AddReceiptItemDto = { productId: 1, quantity: 10 };
+      const dto: AddReceiptItemDto = {
+        productId: 1,
+        quantityAccepted: 10,
+        quantityRejected: 0,
+        manufacturedDate: '2026-03-20',
+      };
 
       inboundRepo.findReceiptById.mockResolvedValue({
         status: 'draft',
       } as never);
       inboundRepo.getProductDetails.mockResolvedValue({
         shelfLifeDays: 1,
-      } as never); // Warning condition
-      productService.createBatch.mockResolvedValue({
-        id: 100,
-        batchCode: 'B-100',
-        expiryDate: '2026-01-01',
+        sku: 'CK',
       } as never);
-      inboundRepo.addReceiptItem.mockResolvedValue(true as never);
+      inboundRepo.addReceiptItemLine.mockResolvedValue({ id: 99 } as never);
 
-      // Act
       const result = await service.addReceiptItem(receiptId, dto);
 
-      // Assert
-      expect(inboundRepo.findReceiptById).toHaveBeenCalledWith(receiptId);
-      expect(inboundRepo.getProductDetails).toHaveBeenCalledWith(dto.productId);
-      expect(productService.createBatch).toHaveBeenCalledWith(dto.productId);
-      expect(inboundRepo.addReceiptItem).toHaveBeenCalledWith(
-        receiptId,
-        100,
-        10,
-      );
+      expect(inboundRepo.addReceiptItemLine).toHaveBeenCalled();
       expect(result.warning).toBe(
         'Cảnh báo: Sản phẩm có hạn sử dụng ngắn (dưới 48 giờ)',
       );
+      expect(result.receiptItemId).toBe(99);
     });
 
     it('should throw NotFoundException if receipt does not exist', async () => {
       inboundRepo.findReceiptById.mockResolvedValue(null as never);
       await expect(
-        service.addReceiptItem('1', { productId: 1, quantity: 10 }),
+        service.addReceiptItem('1', {
+          productId: 1,
+          quantityAccepted: 10,
+          manufacturedDate: '2026-03-20',
+        } as AddReceiptItemDto),
       ).rejects.toThrow(NotFoundException);
     });
 
@@ -142,7 +150,11 @@ describe('InboundService', () => {
         status: 'completed',
       } as never);
       await expect(
-        service.addReceiptItem('1', { productId: 1, quantity: 10 }),
+        service.addReceiptItem('1', {
+          productId: 1,
+          quantityAccepted: 10,
+          manufacturedDate: '2026-03-20',
+        } as AddReceiptItemDto),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -154,56 +166,61 @@ describe('InboundService', () => {
         shelfLifeDays: null,
       } as never);
       await expect(
-        service.addReceiptItem('1', { productId: 1, quantity: 10 }),
+        service.addReceiptItem('1', {
+          productId: 1,
+          quantityAccepted: 10,
+          manufacturedDate: '2026-03-20',
+        } as AddReceiptItemDto),
       ).rejects.toThrow(BadRequestException);
     });
   });
 
-  describe('completeReceipt (Luồng Transaction chốt phiếu)', () => {
-    it('should complete receipt and perform transactions successfully', async () => {
+  describe('completeReceipt', () => {
+    it('should complete legacy line with batch (batchId set)', async () => {
       const receiptId = 'r-1';
-      mockTx.findReceiptWithLock.mockResolvedValue({
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
         warehouseId: 1,
         status: 'draft',
+        id: receiptId,
+        varianceApprovedBy: null,
       } as never);
-      mockTx.getReceiptItemsWithBatches.mockResolvedValue([
-        { batchId: 10, quantity: '5' },
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([
+        {
+          id: 1,
+          batchId: 10,
+          quantity: '5',
+          quantityAccepted: '5',
+          quantityRejected: '0',
+          storageLocationCode: null,
+        },
       ] as never);
-      mockTx.updateReceiptStatus.mockResolvedValue(true as never);
-      mockTx.updateBatchStatus.mockResolvedValue(true as never);
-      mockTx.upsertInventory.mockResolvedValue(true as never);
-      mockTx.insertInventoryTransaction.mockResolvedValue(true as never);
+      inboundRepo.updateReceiptStatus.mockResolvedValue(true as never);
+      inboundRepo.updateBatchStatus.mockResolvedValue(true as never);
+      inboundRepo.upsertInventory.mockResolvedValue(true as never);
+      inboundRepo.insertInventoryTransaction.mockResolvedValue(true as never);
+      inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
 
       const result = await service.completeReceipt(receiptId);
 
-      expect(mockDb.transaction).toHaveBeenCalled();
-      expect(mockTx.findReceiptWithLock).toHaveBeenCalledWith(
-        mockTx,
-        receiptId,
-      );
-      expect(mockTx.updateReceiptStatus).toHaveBeenCalledWith(
-        mockTx,
-        receiptId,
-        'completed',
-      );
-      expect(mockTx.updateBatchStatus).toHaveBeenCalledWith(
+      expect(inboundRepo.findReceiptWithLock).toHaveBeenCalled();
+      expect(inboundRepo.updateBatchStatus).toHaveBeenCalledWith(
         mockTx,
         10,
         'available',
       );
-      expect(mockTx.upsertInventory).toHaveBeenCalledWith(mockTx, 1, 10, '5');
+      expect(inboundRepo.upsertInventory).toHaveBeenCalledWith(mockTx, 1, 10, '5');
       expect(result).toEqual({ message: 'Success' });
     });
 
     it('should throw NotFoundException if receipt not found', async () => {
-      mockTx.findReceiptWithLock.mockResolvedValue(null as never);
+      inboundRepo.findReceiptWithLock.mockResolvedValue(null as never);
       await expect(service.completeReceipt('1')).rejects.toThrow(
         NotFoundException,
       );
     });
 
     it('should throw BadRequestException if receipt is not draft', async () => {
-      mockTx.findReceiptWithLock.mockResolvedValue({
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
         status: 'completed',
       } as never);
       await expect(service.completeReceipt('1')).rejects.toThrow(
@@ -212,17 +229,274 @@ describe('InboundService', () => {
     });
 
     it('should throw BadRequestException if receipt has no items', async () => {
-      mockTx.findReceiptWithLock.mockResolvedValue({
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
         status: 'draft',
+        varianceApprovedBy: null,
       } as never);
-      mockTx.getReceiptItemsWithBatches.mockResolvedValue([] as never);
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([] as never);
+      inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
       await expect(service.completeReceipt('1')).rejects.toThrow(
         'Không thể hoàn thành phiếu nhập rỗng (chưa có hàng hóa)',
       );
     });
+
+    it('should throw BadRequestException when received qty exceeds variance threshold without approval', async () => {
+      const receiptId = 'r-var';
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
+        warehouseId: 1,
+        status: 'draft',
+        id: receiptId,
+        varianceApprovedBy: null,
+      } as never);
+      systemConfig.getConfigValue.mockResolvedValue('3');
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([
+        {
+          id: 10,
+          batchId: null,
+          quantityAccepted: '100',
+          quantityRejected: '5',
+          expectedQuantity: '100',
+          storageLocationCode: 'LOC-1',
+          manufacturedDate: '2026-03-01',
+          statedExpiryDate: null,
+          product: { id: 1, sku: 'SKU1', shelfLifeDays: 5 },
+        },
+      ] as never);
+      inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
+
+      await expect(service.completeReceipt(receiptId)).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.completeReceipt(receiptId)).rejects.toThrow(
+        /Nhập vượt ngưỡng sai số \(3%\)/,
+      );
+    });
+
+    it('should complete new line when over threshold but variance already approved', async () => {
+      const receiptId = 'r-ok';
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
+        warehouseId: 1,
+        status: 'draft',
+        id: receiptId,
+        varianceApprovedBy: 'manager-uuid',
+      } as never);
+      systemConfig.getConfigValue.mockResolvedValue('3');
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([
+        {
+          id: 11,
+          batchId: null,
+          quantityAccepted: '100',
+          quantityRejected: '10',
+          expectedQuantity: '100',
+          storageLocationCode: 'LOC-2',
+          manufacturedDate: '2026-03-01',
+          statedExpiryDate: null,
+          product: { id: 2, sku: 'EGGX', shelfLifeDays: 3 },
+        },
+      ] as never);
+      inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
+      inboundRepo.nextBatchCode.mockResolvedValue('BAT-20260301-EGGX-0001');
+      inboundRepo.insertBatch.mockResolvedValue({ id: 501 } as never);
+      inboundRepo.updateReceiptItemBatchLink.mockResolvedValue(undefined as never);
+      inboundRepo.updateReceiptStatus.mockResolvedValue(undefined as never);
+      inboundRepo.updateBatchStatus.mockResolvedValue(undefined as never);
+      inboundRepo.upsertInventory.mockResolvedValue(undefined as never);
+      inboundRepo.insertInventoryTransaction.mockResolvedValue(undefined as never);
+
+      await expect(service.completeReceipt(receiptId)).resolves.toEqual({
+        message: 'Success',
+      });
+      expect(inboundRepo.insertBatch).toHaveBeenCalled();
+    });
+
+    it('should use statedExpiryDate when splitting lots with different expiry (not NSX + shelfLife)', async () => {
+      const receiptId = 'r-split';
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
+        warehouseId: 2,
+        status: 'draft',
+        id: receiptId,
+        varianceApprovedBy: null,
+      } as never);
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([
+        {
+          id: 20,
+          batchId: null,
+          quantityAccepted: '400',
+          quantityRejected: '0',
+          expectedQuantity: null,
+          storageLocationCode: 'RACK-9',
+          manufacturedDate: '2026-03-10',
+          statedExpiryDate: '2026-03-20',
+          product: { id: 3, sku: 'TRUNG', shelfLifeDays: 14 },
+        },
+      ] as never);
+      inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
+      inboundRepo.nextBatchCode.mockResolvedValue('BAT-20260310-TRUNG-0001');
+      inboundRepo.insertBatch.mockResolvedValue({ id: 600 } as never);
+      inboundRepo.updateReceiptItemBatchLink.mockResolvedValue(undefined as never);
+      inboundRepo.updateReceiptStatus.mockResolvedValue(undefined as never);
+      inboundRepo.updateBatchStatus.mockResolvedValue(undefined as never);
+      inboundRepo.upsertInventory.mockResolvedValue(undefined as never);
+      inboundRepo.insertInventoryTransaction.mockResolvedValue(undefined as never);
+
+      await service.completeReceipt(receiptId);
+
+      expect(inboundRepo.insertBatch).toHaveBeenCalledWith(
+        mockTx,
+        expect.objectContaining({
+          expiryDate: '2026-03-20',
+          manufacturedDate: '2026-03-10',
+        }),
+      );
+    });
+
+    it('should calculate expiry as manufacturedDate + shelfLifeDays when statedExpiryDate omitted', async () => {
+      const receiptId = 'r-calc';
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
+        warehouseId: 1,
+        status: 'draft',
+        id: receiptId,
+        varianceApprovedBy: null,
+      } as never);
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([
+        {
+          id: 21,
+          batchId: null,
+          quantityAccepted: '10',
+          quantityRejected: '0',
+          expectedQuantity: null,
+          storageLocationCode: 'A',
+          manufacturedDate: '2026-03-15',
+          statedExpiryDate: null,
+          product: { id: 4, sku: 'MEAT', shelfLifeDays: 2 },
+        },
+      ] as never);
+      inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
+      inboundRepo.nextBatchCode.mockResolvedValue('BAT-20260315-MEAT-0001');
+      inboundRepo.insertBatch.mockResolvedValue({ id: 700 } as never);
+      inboundRepo.updateReceiptItemBatchLink.mockResolvedValue(undefined as never);
+      inboundRepo.updateReceiptStatus.mockResolvedValue(undefined as never);
+      inboundRepo.updateBatchStatus.mockResolvedValue(undefined as never);
+      inboundRepo.upsertInventory.mockResolvedValue(undefined as never);
+      inboundRepo.insertInventoryTransaction.mockResolvedValue(undefined as never);
+
+      await service.completeReceipt(receiptId);
+
+      expect(inboundRepo.insertBatch).toHaveBeenCalledWith(
+        mockTx,
+        expect.objectContaining({
+          manufacturedDate: '2026-03-15',
+          expiryDate: '2026-03-17',
+        }),
+      );
+    });
+
+    it('should call lockWarehouseStock (pg_advisory) before updateReceiptStatus and before inventory writes', async () => {
+      const receiptId = 'r-lock';
+      const callOrder: string[] = [];
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
+        warehouseId: 99,
+        status: 'draft',
+        id: receiptId,
+        varianceApprovedBy: null,
+      } as never);
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([
+        {
+          id: 1,
+          batchId: 10,
+          quantity: '1',
+          quantityAccepted: '1',
+          quantityRejected: '0',
+          storageLocationCode: null,
+        },
+      ] as never);
+      inboundRepo.lockWarehouseStock.mockImplementation(async () => {
+        callOrder.push('lockWarehouseStock');
+      });
+      inboundRepo.updateReceiptStatus.mockImplementation(async () => {
+        callOrder.push('updateReceiptStatus');
+      });
+      inboundRepo.updateBatchStatus.mockImplementation(async () => {
+        callOrder.push('updateBatchStatus');
+      });
+      inboundRepo.upsertInventory.mockImplementation(async () => {
+        callOrder.push('upsertInventory');
+      });
+      inboundRepo.insertInventoryTransaction.mockImplementation(async () => {
+        callOrder.push('insertInventoryTransaction');
+      });
+
+      await service.completeReceipt(receiptId);
+
+      expect(callOrder[0]).toBe('lockWarehouseStock');
+      expect(callOrder[1]).toBe('updateReceiptStatus');
+      expect(callOrder).toContain('upsertInventory');
+      expect(inboundRepo.lockWarehouseStock).toHaveBeenCalledWith(mockTx, 99);
+    });
+
+    it('should call nextBatchCode before insertBatch for new lines (batch code lock inside repository)', async () => {
+      const receiptId = 'r-seq';
+      const seq: string[] = [];
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
+        warehouseId: 1,
+        status: 'draft',
+        id: receiptId,
+        varianceApprovedBy: null,
+      } as never);
+      inboundRepo.getReceiptItemsWithBatchesTx.mockResolvedValue([
+        {
+          id: 30,
+          batchId: null,
+          quantityAccepted: '5',
+          quantityRejected: '0',
+          expectedQuantity: null,
+          storageLocationCode: 'Z',
+          manufacturedDate: '2026-04-01',
+          statedExpiryDate: null,
+          product: { id: 1, sku: 'S1', shelfLifeDays: 1 },
+        },
+      ] as never);
+      inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
+      inboundRepo.nextBatchCode.mockImplementation(async () => {
+        seq.push('nextBatchCode');
+        return 'BAT-X';
+      });
+      inboundRepo.insertBatch.mockImplementation(async () => {
+        seq.push('insertBatch');
+        return { id: 1 } as never;
+      });
+      inboundRepo.updateReceiptItemBatchLink.mockResolvedValue(undefined as never);
+      inboundRepo.updateReceiptStatus.mockResolvedValue(undefined as never);
+      inboundRepo.updateBatchStatus.mockResolvedValue(undefined as never);
+      inboundRepo.upsertInventory.mockResolvedValue(undefined as never);
+      inboundRepo.insertInventoryTransaction.mockResolvedValue(undefined as never);
+
+      await service.completeReceipt(receiptId);
+
+      expect(seq).toEqual(['nextBatchCode', 'insertBatch']);
+    });
   });
 
-  describe('deleteBatchItem (Bảo vệ dữ liệu)', () => {
+  describe('approveReceiptVariance', () => {
+    it('should persist variance approval in transaction', async () => {
+      inboundRepo.findReceiptWithLock.mockResolvedValue({
+        status: 'draft',
+      } as never);
+      inboundRepo.approveVariance.mockResolvedValue(undefined as never);
+
+      await service.approveReceiptVariance('rid', {
+        userId: 'u-mgr',
+      } as RequestWithUser['user']);
+
+      expect(inboundRepo.approveVariance).toHaveBeenCalledWith(
+        mockTx,
+        'rid',
+        'u-mgr',
+      );
+    });
+  });
+
+  describe('deleteBatchItem', () => {
     it('should throw BadRequestException if receipt is not draft', async () => {
       inboundRepo.findReceiptItemByBatchId.mockResolvedValue({
         id: 1,
@@ -247,7 +521,7 @@ describe('InboundService', () => {
     });
   });
 
-  describe('getAllReceipts (Tính nhất quán của Meta Data)', () => {
+  describe('getAllReceipts', () => {
     it('should return paginated data correctly formatted', async () => {
       const mockResult = {
         items: [{ id: '1', status: 'completed' }],
@@ -272,7 +546,7 @@ describe('InboundService', () => {
     });
   });
 
-  describe('reprintBatchLabel (Audit Log)', () => {
+  describe('reprintBatchLabel', () => {
     it('should generate QR code and verify audit behavior', async () => {
       const dto: ReprintBatchDto = { batchId: 1 };
       const user = { userId: 'u-1' } as RequestWithUser['user'];
@@ -286,15 +560,15 @@ describe('InboundService', () => {
       jest
         .spyOn(inboundUtils, 'generateQrData')
         .mockReturnValue('QR_MOCK_DATA');
-      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
+      const loggerSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
 
       const result = await service.reprintBatchLabel(dto, user);
 
       expect(inboundUtils.generateQrData).toHaveBeenCalledWith(mockBatch);
-      expect(consoleSpy).toHaveBeenCalled();
+      expect(loggerSpy).toHaveBeenCalled();
       expect(result.qrData).toBe('QR_MOCK_DATA');
 
-      consoleSpy.mockRestore();
+      loggerSpy.mockRestore();
     });
 
     it('should throw NotFoundException if batch not found', async () => {

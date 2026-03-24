@@ -2,13 +2,16 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
+import { UnitOfWork } from '../../database/unit-of-work';
+import { parseToStartOfDayVn } from '../../common/time/vn-time';
 import { RequestWithUser } from '../auth/types/auth.types';
-import { ProductService } from '../product/product.service';
+import { SystemConfigService } from '../system-config/system-config.service';
 import { WarehouseRepository } from './../warehouse/warehouse.repository';
 import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
@@ -17,17 +20,23 @@ import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import { generateQrData } from './helpers/inbound.util';
 import { InboundRepository } from './inbound.repository';
 
+type Tx = NodePgDatabase<typeof schema>;
+
+const VARIANCE_CONFIG_KEY = 'inbound.receipt_variance_percent';
+
 @Injectable()
 export class InboundService {
+  private readonly logger = new Logger(InboundService.name);
+
   constructor(
     private readonly inboundRepo: InboundRepository,
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly WarehouseRepo: WarehouseRepository,
-    private readonly productService: ProductService,
+    private readonly uow: UnitOfWork,
+    private readonly systemConfigService: SystemConfigService,
   ) {}
 
-  // API 1: Khởi tạo phiếu nhập
   async createReceipt(user: RequestWithUser['user'], dto: CreateReceiptDto) {
     const warehouseId = await this.WarehouseRepo.findCentralWarehouseId();
     if (!warehouseId) {
@@ -43,10 +52,12 @@ export class InboundService {
     });
   }
 
-  // API 4: Chốt phiếu nhập kho (Atomic Transaction)
+  /**
+   * Chốt phiếu: tạo lô (BAT-YYYYMMDD-SKU-XXXX), tăng tồn, ghi log IMPORT trong transaction.
+   * Dòng đã có batch (legacy) chỉ kích hoạt lô + nhập kho.
+   */
   async completeReceipt(receiptId: string) {
-    return this.db.transaction(async (tx) => {
-      // 1. Lock & Validate Receipt
+    return this.uow.runInTransaction(async (tx) => {
       const receipt = await this.inboundRepo.findReceiptWithLock(tx, receiptId);
       if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
       if (receipt.status !== 'draft') {
@@ -55,47 +66,98 @@ export class InboundService {
         );
       }
 
-      // 2. Lấy danh sách hàng hóa (Read-only, no lock needed on items if receipt is locked)
-      // Note: We use the repository method which uses the standard connection.
-      // Since the receipt is locked for update, no one else can modify its items effectively during this transaction
-      // if modification requires locking the receipt first (which we enforce in business logic).
-      const items =
-        await this.inboundRepo.getReceiptItemsWithBatches(receiptId);
+      const items = await this.inboundRepo.getReceiptItemsWithBatchesTx(
+        tx,
+        receiptId,
+      );
       if (items.length === 0) {
         throw new BadRequestException(
           'Không thể hoàn thành phiếu nhập rỗng (chưa có hàng hóa)',
         );
       }
 
-      // 3. Update Receipt Status
+      await this.assertVarianceApprovedOrNotNeeded(tx, receipt, items);
+
+      await this.inboundRepo.lockWarehouseStock(tx, receipt.warehouseId);
+
       await this.inboundRepo.updateReceiptStatus(tx, receiptId, 'completed');
 
-      // 4. Process Each Item
       for (const item of items) {
-        if (!item.batchId) {
+        const acceptedStr =
+          item.quantityAccepted != null
+            ? String(item.quantityAccepted)
+            : String(item.quantity);
+        const accepted = parseFloat(acceptedStr);
+        if (accepted <= 0) {
+          continue;
+        }
+
+        if (
+          !item.batchId &&
+          !item.storageLocationCode?.trim()
+        ) {
           throw new BadRequestException(
-            `Invalid batch configuration for item in receipt`,
+            `Thiếu mã vị trí kệ (storageLocationCode) cho dòng sản phẩm #${item.id}`,
           );
         }
 
-        // A. Activate Batch
-        await this.inboundRepo.updateBatchStatus(tx, item.batchId, 'available');
+        if (item.batchId) {
+          await this.completeLegacyLine(tx, receipt, receiptId, item, acceptedStr);
+          continue;
+        }
 
-        // B. Upsert Inventory
-        // quantity is string/decimal
+        const product = item.product;
+        if (!product) {
+          throw new BadRequestException(`Thiếu sản phẩm trên dòng #${item.id}`);
+        }
+        if (!product.shelfLifeDays) {
+          throw new BadRequestException(
+            `Sản phẩm #${product.id} chưa cấu hình shelf life`,
+          );
+        }
+        if (!item.manufacturedDate) {
+          throw new BadRequestException(
+            `Thiếu ngày sản xuất trên dòng phiếu #${item.id}`,
+          );
+        }
+
+        const mfg = parseToStartOfDayVn(item.manufacturedDate).format(
+          'YYYY-MM-DD',
+        );
+        let expiryStr: string;
+        if (item.statedExpiryDate) {
+          expiryStr = parseToStartOfDayVn(item.statedExpiryDate).format(
+            'YYYY-MM-DD',
+          );
+        } else {
+          expiryStr = parseToStartOfDayVn(item.manufacturedDate)
+            .add(product.shelfLifeDays, 'day')
+            .format('YYYY-MM-DD');
+        }
+
+        const batchCode = await this.inboundRepo.nextBatchCode(tx, product.sku);
+        const batch = await this.inboundRepo.insertBatch(tx, {
+          productId: product.id,
+          batchCode,
+          manufacturedDate: mfg,
+          expiryDate: expiryStr,
+        });
+
+        await this.inboundRepo.updateReceiptItemBatchLink(tx, item.id, batch.id);
+
+        await this.inboundRepo.updateBatchStatus(tx, batch.id, 'available');
         await this.inboundRepo.upsertInventory(
           tx,
           receipt.warehouseId,
-          item.batchId,
-          item.quantity,
+          batch.id,
+          acceptedStr,
         );
-
-        // C. Audit Log
         await this.inboundRepo.insertInventoryTransaction(tx, {
           warehouseId: receipt.warehouseId,
-          batchId: item.batchId,
-          quantityChange: item.quantity,
-          referenceId: `RECEIPT_ID_${receiptId}`,
+          batchId: batch.id,
+          quantityChange: acceptedStr,
+          referenceId: `RECEIPT:${receiptId}`,
+          reason: `IMPORT receipt ${receiptId} line ${item.id}`,
         });
       }
 
@@ -103,9 +165,72 @@ export class InboundService {
     });
   }
 
-  // API 2: Thêm hàng vào phiếu (Tạo Batch)
+  private async assertVarianceApprovedOrNotNeeded(
+    tx: Tx,
+    receipt: { id: string; varianceApprovedBy: string | null },
+    items: Awaited<
+      ReturnType<InboundRepository['getReceiptItemsWithBatchesTx']>
+    >,
+  ) {
+    const threshold = parseFloat(
+      (await this.systemConfigService.getConfigValue(VARIANCE_CONFIG_KEY)) ??
+        '3',
+    );
+    if (Number.isNaN(threshold)) {
+      return;
+    }
+
+    for (const item of items) {
+      const exp = item.expectedQuantity
+        ? parseFloat(String(item.expectedQuantity))
+        : null;
+      if (exp == null || exp <= 0) continue;
+
+      const acc = parseFloat(
+        String(item.quantityAccepted ?? item.quantity ?? '0'),
+      );
+      const rej = parseFloat(String(item.quantityRejected ?? '0'));
+      const received = acc + rej;
+      const overRatio = ((received - exp) / exp) * 100;
+      if (overRatio > threshold && !receipt.varianceApprovedBy) {
+        throw new BadRequestException(
+          `Nhập vượt ngưỡng sai số (${threshold}%) so với số dự kiến dòng #${item.id}. Cần điều phối / quản lý phê duyệt trước.`,
+        );
+      }
+    }
+  }
+
+  private async completeLegacyLine(
+    tx: Tx,
+    receipt: { warehouseId: number },
+    receiptId: string,
+    item: {
+      id: number;
+      batchId: number | null;
+      quantity: string | null;
+      quantityAccepted?: string | null;
+    },
+    quantityStr: string,
+  ) {
+    if (!item.batchId) return;
+    await this.inboundRepo.updateBatchStatus(tx, item.batchId, 'available');
+    await this.inboundRepo.upsertInventory(
+      tx,
+      receipt.warehouseId,
+      item.batchId,
+      quantityStr,
+    );
+    await this.inboundRepo.insertInventoryTransaction(tx, {
+      warehouseId: receipt.warehouseId,
+      batchId: item.batchId,
+      quantityChange: quantityStr,
+      referenceId: `RECEIPT:${receiptId}`,
+      reason: `IMPORT receipt ${receiptId} line ${item.id} (legacy batch)`,
+    });
+  }
+
+  /** Khai báo dòng nhận hàng (chưa tạo lô — lô sinh khi chốt phiếu) */
   async addReceiptItem(receiptId: string, dto: AddReceiptItemDto) {
-    // 1. Validate Status
     const receipt = await this.inboundRepo.findReceiptById(receiptId);
     if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
     if (receipt.status !== 'draft') {
@@ -114,7 +239,6 @@ export class InboundService {
       );
     }
 
-    // 2. Get Product Info (SKU + ShelfLife)
     const product = await this.inboundRepo.getProductDetails(dto.productId);
     if (!product) throw new NotFoundException('Không tìm thấy sản phẩm');
     if (!product.shelfLifeDays) {
@@ -123,28 +247,79 @@ export class InboundService {
       );
     }
 
-    // 3. Expiry Warning Check (High-perishability: < 48 hours)
+    const rejected = dto.quantityRejected ?? 0;
+    const accepted = dto.quantityAccepted;
+    if (accepted + rejected <= 0) {
+      throw new BadRequestException(
+        'Tổng số lượng chấp nhận và từ chối phải lớn hơn 0',
+      );
+    }
+    if (rejected > 0 && !dto.rejectionReason?.trim()) {
+      throw new BadRequestException('Phải nhập lý do khi có số lượng từ chối');
+    }
+
+    parseToStartOfDayVn(dto.manufacturedDate);
+    if (dto.statedExpiryDate) {
+      const exp = parseToStartOfDayVn(dto.statedExpiryDate);
+      const mfg = parseToStartOfDayVn(dto.manufacturedDate);
+      if (exp.isBefore(mfg, 'day')) {
+        throw new BadRequestException(
+          'Hạn sử dụng không được trước ngày sản xuất',
+        );
+      }
+    }
+
     let warning: string | undefined;
     if (product.shelfLifeDays < 2) {
       warning = 'Cảnh báo: Sản phẩm có hạn sử dụng ngắn (dưới 48 giờ)';
     }
 
-    // 4. Create Batch via ProductService (Centralized Logic)
-    const batch = await this.productService.createBatch(dto.productId);
-
-    // 5. Add Receipt Item
-    await this.inboundRepo.addReceiptItem(receiptId, batch.id, dto.quantity);
+    const qtyLine = (accepted + rejected).toString();
+    const item = await this.inboundRepo.addReceiptItemLine({
+      receiptId,
+      productId: dto.productId,
+      quantityLine: qtyLine,
+      quantityAccepted: accepted.toString(),
+      quantityRejected: rejected.toString(),
+      rejectionReason: rejected > 0 ? dto.rejectionReason!.trim() : null,
+      expectedQuantity:
+        dto.expectedQuantity != null ? String(dto.expectedQuantity) : null,
+      storageLocationCode: dto.storageLocationCode?.trim() ?? null,
+      manufacturedDate: parseToStartOfDayVn(dto.manufacturedDate).format(
+        'YYYY-MM-DD',
+      ),
+      statedExpiryDate: dto.statedExpiryDate
+        ? parseToStartOfDayVn(dto.statedExpiryDate).format('YYYY-MM-DD')
+        : null,
+    });
 
     return {
-      batchId: batch.id,
-      batchCode: batch.batchCode,
-      manufactureDate: new Date(),
-      expiryDate: new Date(batch.expiryDate),
+      receiptItemId: item.id,
+      manufactureDate: dto.manufacturedDate,
+      expectedExpiryHint: dto.statedExpiryDate
+        ? dto.statedExpiryDate
+        : parseToStartOfDayVn(dto.manufacturedDate)
+            .add(product.shelfLifeDays, 'day')
+            .format('YYYY-MM-DD'),
       warning,
     };
   }
 
-  // API 3: Lấy data in tem
+  async approveReceiptVariance(
+    receiptId: string,
+    user: RequestWithUser['user'],
+  ) {
+    return this.uow.runInTransaction(async (tx) => {
+      const receipt = await this.inboundRepo.findReceiptWithLock(tx, receiptId);
+      if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
+      if (receipt.status !== 'draft') {
+        throw new BadRequestException('Chỉ phê duyệt sai số khi phiếu còn nháp');
+      }
+      await this.inboundRepo.approveVariance(tx, receiptId, user.userId);
+      return { message: 'Đã ghi nhận phê duyệt nhập dư' };
+    });
+  }
+
   async getBatchLabel(batchId: number) {
     const batch = await this.inboundRepo.getBatchDetails(batchId);
     if (!batch) throw new NotFoundException('Không tìm thấy lô hàng');
@@ -159,30 +334,41 @@ export class InboundService {
     };
   }
 
-  // API 5: Xóa lô hàng lỗi
-  async deleteBatchItem(batchId: number) {
-    const item = await this.inboundRepo.findReceiptItemByBatchId(batchId);
-
-    if (!item) throw new NotFoundException('Không tìm thấy chi tiết lô hàng');
-
-    // Validate: Chỉ được xóa khi phiếu còn Draft
+  async deleteReceiptLine(receiptId: string, receiptItemId: number) {
+    const item = await this.inboundRepo.findReceiptItemById(receiptItemId);
+    if (!item || item.receiptId !== receiptId) {
+      throw new NotFoundException('Không tìm thấy dòng phiếu');
+    }
     if (item.receipt.status !== 'draft') {
       throw new BadRequestException(
         'Chỉ có thể xóa hàng hóa trong phiếu nhập nháp',
       );
     }
+    const result = await this.inboundRepo.deleteReceiptLine(receiptItemId);
+    if (!result.deleted) {
+      throw new BadRequestException('Không thể xóa dòng này');
+    }
+    return { message: 'Success' };
+  }
 
+  /** @deprecated dùng deleteReceiptLine */
+  async deleteBatchItem(batchId: number) {
+    const item = await this.inboundRepo.findReceiptItemByBatchId(batchId);
+    if (!item) throw new NotFoundException('Không tìm thấy chi tiết lô hàng');
+    if (item.receipt.status !== 'draft') {
+      throw new BadRequestException(
+        'Chỉ có thể xóa hàng hóa trong phiếu nhập nháp',
+      );
+    }
     await this.inboundRepo.deleteBatchAndItem(batchId, item.id);
     return { message: 'Success' };
   }
 
-  // API 8: Yêu cầu in lại tem (Ghi log)
   async reprintBatchLabel(dto: ReprintBatchDto, user: RequestWithUser['user']) {
     const batch = await this.inboundRepo.getBatchDetails(dto.batchId);
     if (!batch) throw new NotFoundException('Không tìm thấy lô hàng');
 
-    // LOGIC LOG: Ghi lại ai đã yêu cầu in lại
-    console.warn(
+    this.logger.warn(
       `[AUDIT] User ${user.userId} reprinted Batch ${batch.batchCode} at ${new Date().toISOString()}`,
     );
 
@@ -195,12 +381,12 @@ export class InboundService {
       },
     };
   }
+
   async getAllReceipts(query: GetReceiptsDto) {
     return this.inboundRepo.findAllReceipts(query);
   }
 
-  // API: Get Receipt Details
-  async getReceiptById(id: string) {
+  async getReceiptById(id: string, omitExpected?: boolean) {
     const receipt = await this.inboundRepo.findReceiptDetail(id);
     if (!receipt) {
       throw new NotFoundException(
@@ -213,6 +399,7 @@ export class InboundService {
       status: receipt.status,
       note: receipt.note,
       createdAt: receipt.createdAt,
+      varianceApprovedAt: receipt.varianceApprovedAt,
       supplier: {
         id: receipt.supplier.id,
         name: receipt.supplier.name,
@@ -223,24 +410,49 @@ export class InboundService {
         id: receipt.user.id,
         username: receipt.user.username,
       },
-      items: receipt.items.map((item) => ({
-        id: item.id,
-        quantity: item.quantity,
-        batch: item.batch
-          ? {
-              id: item.batch.id,
-              batchCode: item.batch.batchCode,
-              expiryDate: item.batch.expiryDate,
-              status: item.batch.status,
-              product: {
-                id: item.batch.product.id,
-                name: item.batch.product.name,
-                sku: item.batch.product.sku,
-                unit: item.batch.product.baseUnit?.name || 'N/A',
-              },
-            }
-          : null,
-      })),
+      items: receipt.items.map((item) => {
+        const productFromBatch = item.batch?.product;
+        const productFromLine = item.product;
+        const p = productFromBatch ?? productFromLine;
+        const base: Record<string, unknown> = {
+          id: item.id,
+          quantity: item.quantity,
+          quantityAccepted: item.quantityAccepted,
+          quantityRejected: item.quantityRejected,
+          rejectionReason: item.rejectionReason,
+          manufacturedDate: item.manufacturedDate,
+          statedExpiryDate: item.statedExpiryDate,
+          storageLocationCode: item.storageLocationCode,
+          batch: item.batch
+            ? {
+                id: item.batch.id,
+                batchCode: item.batch.batchCode,
+                expiryDate: item.batch.expiryDate,
+                status: item.batch.status,
+                product: p
+                  ? {
+                      id: p.id,
+                      name: p.name,
+                      sku: p.sku,
+                      unit: p.baseUnit?.name || 'N/A',
+                    }
+                  : null,
+              }
+            : null,
+          product: p
+            ? {
+                id: p.id,
+                name: p.name,
+                sku: p.sku,
+                unit: p.baseUnit?.name || 'N/A',
+              }
+            : null,
+        };
+        if (!omitExpected) {
+          base.expectedQuantity = item.expectedQuantity;
+        }
+        return base;
+      }),
     };
   }
 }

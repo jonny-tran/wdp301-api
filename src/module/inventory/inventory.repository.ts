@@ -303,7 +303,13 @@ export class InventoryRepository {
   async createInventoryTransaction(
     warehouseId: number,
     batchId: number,
-    type: 'import' | 'export' | 'waste' | 'adjustment',
+    type:
+      | 'import'
+      | 'export'
+      | 'waste'
+      | 'adjustment'
+      | 'production_consume'
+      | 'production_output',
     quantityChange: number,
     referenceId?: string,
     reason?: string,

@@ -9,6 +9,6 @@ import { WarehouseService } from './warehouse.service';
   imports: [DatabaseModule, SystemConfigModule],
   controllers: [WarehouseController],
   providers: [WarehouseService, WarehouseRepository],
-  exports: [WarehouseService],
+  exports: [WarehouseService, WarehouseRepository],
 })
 export class WarehouseModule {}

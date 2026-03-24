@@ -4,7 +4,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import dayjs from 'dayjs';
 import { generateBatchCode } from '../../common/utils/generate-batch-code.util';
+import { nowVn } from '../../common/time/vn-time';
 import { SkuUtil } from '../../common/utils/generate-product-sku.util';
 import { BaseUnitRepository } from './base-unit/base-unit.repository';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -151,6 +153,7 @@ export class ProductService {
     today.setHours(0, 0, 0, 0);
 
     let finalExpiryDateStr = '';
+    let manufacturedDateStr: string;
 
     if (explicitExpiryDate) {
       const parsedDate = new Date(explicitExpiryDate);
@@ -161,11 +164,14 @@ export class ProductService {
         );
       }
       finalExpiryDateStr = explicitExpiryDate;
+      manufacturedDateStr = dayjs(explicitExpiryDate)
+        .subtract(product.shelfLifeDays, 'day')
+        .format('YYYY-MM-DD');
     } else {
-      // FEFO Logic: Calculate expiry date from TODAY
-      const expiryDate = new Date();
-      expiryDate.setDate(expiryDate.getDate() + product.shelfLifeDays);
-      finalExpiryDateStr = expiryDate.toISOString().split('T')[0];
+      manufacturedDateStr = nowVn().format('YYYY-MM-DD');
+      finalExpiryDateStr = nowVn()
+        .add(product.shelfLifeDays, 'day')
+        .format('YYYY-MM-DD');
 
       const parsedDate = new Date(finalExpiryDateStr);
       parsedDate.setHours(0, 0, 0, 0);
@@ -179,6 +185,7 @@ export class ProductService {
     return await this.productRepository.createBatch({
       productId: productId,
       batchCode: generatedBatchCode,
+      manufacturedDate: manufacturedDateStr,
       expiryDate: finalExpiryDateStr,
       imageUrl: imageUrl,
     });

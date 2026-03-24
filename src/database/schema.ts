@@ -52,6 +52,8 @@ export const transactionTypeEnum = pgEnum('transaction_type', [
   'export',
   'waste',
   'adjustment',
+  'production_consume',
+  'production_output',
 ]);
 export const claimStatusEnum = pgEnum('claim_status', [
   'pending',
@@ -182,6 +184,8 @@ export const batches = pgTable(
     productId: integer('product_id')
       .references(() => products.id)
       .notNull(),
+    /** Ngày sản xuất gốc (truy xuất nguồn gốc) */
+    manufacturedDate: date('manufactured_date').notNull(),
     expiryDate: date('expiry_date').notNull(),
     status: batchStatusEnum('status').default('pending').notNull(),
     imageUrl: text('image_url'),
@@ -205,6 +209,73 @@ export const suppliers = pgTable('suppliers', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+export const productionOrderStatusEnum = pgEnum('production_order_status', [
+  'draft',
+  'in_progress',
+  'completed',
+  'cancelled',
+]);
+
+/** Công thức (BOM): một thành phẩm = nhiều dòng nguyên liệu */
+export const recipes = pgTable('recipes', {
+  id: serial('id').primaryKey(),
+  outputProductId: integer('output_product_id')
+    .references(() => products.id)
+    .notNull(),
+  name: text('name').notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const recipeItems = pgTable('recipe_items', {
+  id: serial('id').primaryKey(),
+  recipeId: integer('recipe_id')
+    .references(() => recipes.id, { onDelete: 'cascade' })
+    .notNull(),
+  ingredientProductId: integer('ingredient_product_id')
+    .references(() => products.id)
+    .notNull(),
+  /** Số lượng nguyên liệu cho 1 đơn vị thành phẩm đầu ra */
+  quantityPerOutput: decimal('quantity_per_output', {
+    precision: 12,
+    scale: 4,
+  }).notNull(),
+});
+
+export const productionOrders = pgTable('production_orders', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  recipeId: integer('recipe_id')
+    .references(() => recipes.id)
+    .notNull(),
+  warehouseId: integer('warehouse_id')
+    .references(() => warehouses.id)
+    .notNull(),
+  outputQuantity: decimal('output_quantity', {
+    precision: 12,
+    scale: 4,
+  }).notNull(),
+  status: productionOrderStatusEnum('status').default('draft').notNull(),
+  createdBy: uuid('created_by')
+    .references(() => users.id)
+    .notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const productionReservations = pgTable('production_reservations', {
+  id: serial('id').primaryKey(),
+  productionOrderId: uuid('production_order_id')
+    .references(() => productionOrders.id, { onDelete: 'cascade' })
+    .notNull(),
+  batchId: integer('batch_id')
+    .references(() => batches.id)
+    .notNull(),
+  reservedQuantity: decimal('reserved_quantity', {
+    precision: 12,
+    scale: 4,
+  }).notNull(),
+});
+
 // Receipts (Phiếu nhập)
 export const receipts = pgTable('receipts', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -219,6 +290,9 @@ export const receipts = pgTable('receipts', {
     .notNull(),
   status: receiptStatusEnum('status').default('draft').notNull(),
   note: text('note'),
+  /** Phê duyệt nhập vượt ngưỡng sai số (manager / điều phối) */
+  varianceApprovedBy: uuid('variance_approved_by').references(() => users.id),
+  varianceApprovedAt: timestamp('variance_approved_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -229,8 +303,21 @@ export const receiptItems = pgTable('receipt_items', {
   receiptId: uuid('receipt_id')
     .references(() => receipts.id)
     .notNull(),
-  batchId: integer('batch_id').references(() => batches.id), // Link tới Batch vừa tạo
+  productId: integer('product_id').references(() => products.id),
+  batchId: integer('batch_id').references(() => batches.id), // Gán khi chốt phiếu (hoặc legacy khi đã tạo lô trước đó)
+  /** Tổng thực tế dòng (accepted + rejected), giữ tương thích API cũ */
   quantity: decimal('quantity').notNull(),
+  quantityAccepted: decimal('quantity_accepted'),
+  quantityRejected: decimal('quantity_rejected').default('0'),
+  rejectionReason: text('rejection_reason'),
+  /** Số lượng dự kiến theo đặt hàng — dùng kiểm tra sai số nhập dư */
+  expectedQuantity: decimal('expected_quantity'),
+  /** Mã quét vị trí kệ/ô sau khi xác nhận */
+  storageLocationCode: text('storage_location_code'),
+  /** NSX khai báo trên dòng phiếu (nháp) */
+  manufacturedDate: date('manufactured_date'),
+  /** HSD ghi nhận khi tách lô (ví dụ trứng nhiều HSD); nếu null thì tính từ NSX + shelf life */
+  statedExpiryDate: date('stated_expiry_date'),
 });
 
 export const inventory = pgTable(
@@ -583,6 +670,10 @@ export const receiptItemRelations = relations(receiptItems, ({ one }) => ({
     fields: [receiptItems.receiptId],
     references: [receipts.id],
   }),
+  product: one(products, {
+    fields: [receiptItems.productId],
+    references: [products.id],
+  }),
   batch: one(batches, {
     fields: [receiptItems.batchId],
     references: [batches.id],
@@ -592,3 +683,51 @@ export const receiptItemRelations = relations(receiptItems, ({ one }) => ({
 export const supplierRelations = relations(suppliers, ({ many }) => ({
   receipts: many(receipts),
 }));
+
+export const recipesRelations = relations(recipes, ({ one, many }) => ({
+  outputProduct: one(products, {
+    fields: [recipes.outputProductId],
+    references: [products.id],
+  }),
+  items: many(recipeItems),
+}));
+
+export const recipeItemsRelations = relations(recipeItems, ({ one }) => ({
+  recipe: one(recipes, {
+    fields: [recipeItems.recipeId],
+    references: [recipes.id],
+  }),
+  ingredient: one(products, {
+    fields: [recipeItems.ingredientProductId],
+    references: [products.id],
+  }),
+}));
+
+export const productionOrdersRelations = relations(
+  productionOrders,
+  ({ one, many }) => ({
+    recipe: one(recipes, {
+      fields: [productionOrders.recipeId],
+      references: [recipes.id],
+    }),
+    creator: one(users, {
+      fields: [productionOrders.createdBy],
+      references: [users.id],
+    }),
+    reservations: many(productionReservations),
+  }),
+);
+
+export const productionReservationsRelations = relations(
+  productionReservations,
+  ({ one }) => ({
+    order: one(productionOrders, {
+      fields: [productionReservations.productionOrderId],
+      references: [productionOrders.id],
+    }),
+    batch: one(batches, {
+      fields: [productionReservations.batchId],
+      references: [batches.id],
+    }),
+  }),
+);
