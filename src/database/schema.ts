@@ -84,6 +84,33 @@ export const batchStatusEnum = pgEnum('batch_status', [
   'damaged',
 ]);
 
+/** Lệnh điều xe (WH-OPTIMIZE): gom nhiều đơn / shipment một chuyến */
+export const manifestStatusEnum = pgEnum('manifest_status', [
+  'preparing',
+  'departed',
+  'cancelled',
+]);
+
+export const pickingListStatusEnum = pgEnum('picking_list_status', [
+  'open',
+  'picking',
+  'staged',
+  'completed',
+]);
+
+export const manifests = pgTable(
+  'manifests',
+  {
+    id: serial('id').primaryKey(),
+    code: text('code').notNull().unique(),
+    driverName: text('driver_name'),
+    vehiclePlate: text('vehicle_plate'),
+    status: manifestStatusEnum('status').default('preparing').notNull(),
+    departureAt: timestamp('departure_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+);
+
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
   username: text('username').notNull(),
@@ -532,6 +559,8 @@ export const shipments = pgTable(
     orderId: uuid('order_id')
       .references(() => orders.id)
       .notNull(),
+    /** Gom chuyến theo manifest (wave picking / xuất kho theo xe) */
+    manifestId: integer('manifest_id').references(() => manifests.id),
     fromWarehouseId: integer('from_warehouse_id')
       .references(() => warehouses.id)
       .notNull(),
@@ -551,8 +580,52 @@ export const shipments = pgTable(
   (t) => [
     {
       statusIdx: index('idx_shipments_status').on(t.status), // <-- THÊM INDEX
+      manifestIdx: index('idx_shipments_manifest_id').on(t.manifestId),
     },
   ],
+);
+
+export const pickingLists = pgTable(
+  'picking_lists',
+  {
+    id: serial('id').primaryKey(),
+    manifestId: integer('manifest_id')
+      .references(() => manifests.id)
+      .notNull()
+      .unique(),
+    status: pickingListStatusEnum('status').default('open').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (t) => ({
+    manifestIdx: index('idx_picking_lists_manifest').on(t.manifestId),
+  }),
+);
+
+export const pickingListItems = pgTable(
+  'picking_list_items',
+  {
+    id: serial('id').primaryKey(),
+    pickingListId: integer('picking_list_id')
+      .references(() => pickingLists.id, { onDelete: 'cascade' })
+      .notNull(),
+    productId: integer('product_id')
+      .references(() => products.id)
+      .notNull(),
+    totalPlannedQuantity: decimal('total_planned_quantity', {
+      precision: 12,
+      scale: 2,
+    }).notNull(),
+    totalPickedQuantity: decimal('total_picked_quantity', {
+      precision: 12,
+      scale: 2,
+    })
+      .default('0')
+      .notNull(),
+  },
+  (t) => ({
+    listIdx: index('idx_picking_list_items_list').on(t.pickingListId),
+    productIdx: index('idx_picking_list_items_product').on(t.productId),
+  }),
 );
 
 export const shipmentItems = pgTable('shipment_items', {
@@ -563,6 +636,10 @@ export const shipmentItems = pgTable('shipment_items', {
   batchId: integer('batch_id')
     .references(() => batches.id)
     .notNull(),
+  /** Lô FEFO hệ thống chỉ định (phải quét đúng trừ khi báo hỏng) */
+  suggestedBatchId: integer('suggested_batch_id').references(() => batches.id),
+  /** Lô thực tế sau khi quét xác nhận */
+  actualBatchId: integer('actual_batch_id').references(() => batches.id),
   quantity: decimal('quantity', { precision: 10, scale: 2 }).notNull(),
 });
 
@@ -670,6 +747,12 @@ export const batchRelations = relations(batches, ({ one, many }) => ({
   inventory: many(inventory),
   lineageAsParent: many(batchLineage, { relationName: 'lineageParent' }),
   lineageAsChild: many(batchLineage, { relationName: 'lineageChild' }),
+  shipmentItemsAsSuggested: many(shipmentItems, {
+    relationName: 'shipmentItemSuggestedBatch',
+  }),
+  shipmentItemsAsActual: many(shipmentItems, {
+    relationName: 'shipmentItemActualBatch',
+  }),
 }));
 
 export const orderRelations = relations(orders, ({ one, many }) => ({
@@ -687,8 +770,42 @@ export const orderItemRelations = relations(orderItems, ({ one }) => ({
   }),
 }));
 
+export const manifestRelations = relations(manifests, ({ one, many }) => ({
+  pickingList: one(pickingLists, {
+    fields: [manifests.id],
+    references: [pickingLists.manifestId],
+  }),
+  shipments: many(shipments),
+}));
+
+export const pickingListRelations = relations(pickingLists, ({ one, many }) => ({
+  manifest: one(manifests, {
+    fields: [pickingLists.manifestId],
+    references: [manifests.id],
+  }),
+  items: many(pickingListItems),
+}));
+
+export const pickingListItemRelations = relations(
+  pickingListItems,
+  ({ one }) => ({
+    pickingList: one(pickingLists, {
+      fields: [pickingListItems.pickingListId],
+      references: [pickingLists.id],
+    }),
+    product: one(products, {
+      fields: [pickingListItems.productId],
+      references: [products.id],
+    }),
+  }),
+);
+
 export const shipmentRelations = relations(shipments, ({ one, many }) => ({
   order: one(orders, { fields: [shipments.orderId], references: [orders.id] }),
+  manifest: one(manifests, {
+    fields: [shipments.manifestId],
+    references: [manifests.id],
+  }),
   items: many(shipmentItems),
   claims: many(claims),
   orderLinks: many(shipmentOrders),
@@ -716,6 +833,16 @@ export const shipmentItemRelations = relations(shipmentItems, ({ one }) => ({
   batch: one(batches, {
     fields: [shipmentItems.batchId],
     references: [batches.id],
+  }),
+  suggestedBatch: one(batches, {
+    fields: [shipmentItems.suggestedBatchId],
+    references: [batches.id],
+    relationName: 'shipmentItemSuggestedBatch',
+  }),
+  actualBatch: one(batches, {
+    fields: [shipmentItems.actualBatchId],
+    references: [batches.id],
+    relationName: 'shipmentItemActualBatch',
   }),
 }));
 

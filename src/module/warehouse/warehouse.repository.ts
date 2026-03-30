@@ -1,5 +1,17 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, count, eq, ilike, or, sql, SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  SQL,
+} from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -149,16 +161,15 @@ export class WarehouseRepository {
     dto: { batchId: number },
     shipmentItem: { id: number; quantity: string; shipmentId: string },
     productId: number,
+    existingTx?: NodePgDatabase<typeof schema>,
   ) {
-    return this.db.transaction(async (tx) => {
+    const run = async (tx: NodePgDatabase<typeof schema>) => {
       const qtyNeeded = parseFloat(shipmentItem.quantity);
 
-      // 1. Xóa Shipment Item cũ
       await tx
         .delete(schema.shipmentItems)
         .where(eq(schema.shipmentItems.id, shipmentItem.id));
 
-      // 2. Giảm Reserved Qty lô hỏng
       await tx
         .update(schema.inventory)
         .set({
@@ -171,7 +182,6 @@ export class WarehouseRepository {
           ),
         );
 
-      // 3. Tìm lô mới (FEFO Logic inside Transaction)
       const candidateBatches = await tx
         .select()
         .from(schema.inventory)
@@ -189,7 +199,6 @@ export class WarehouseRepository {
         )
         .orderBy(asc(schema.batches.expiryDate));
 
-      // 4. Phân bổ lại lô mới
       let remainingToPick = qtyNeeded;
       const newAllocations: { batch: string; qty: number }[] = [];
 
@@ -203,6 +212,7 @@ export class WarehouseRepository {
         await tx.insert(schema.shipmentItems).values({
           shipmentId: shipmentItem.shipmentId,
           batchId: candidate.batches.id,
+          suggestedBatchId: candidate.batches.id,
           quantity: take.toString(),
         });
 
@@ -222,7 +232,105 @@ export class WarehouseRepository {
       }
 
       return { remainingToPick, newAllocations };
+    };
+
+    if (existingTx) return run(existingTx);
+    return this.db.transaction(run);
+  }
+
+  async findShipmentsReadyForManifest(
+    orderIds: string[],
+    centralWarehouseId: number,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    return this.getDb(tx).query.shipments.findMany({
+      where: and(
+        inArray(schema.shipments.orderId, orderIds),
+        eq(schema.shipments.fromWarehouseId, centralWarehouseId),
+        eq(schema.shipments.status, 'preparing'),
+        isNull(schema.shipments.manifestId),
+      ),
+      with: {
+        items: { with: { batch: { with: { product: true } } } },
+      },
     });
+  }
+
+  async findManifestById(
+    id: number,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    return this.getDb(tx).query.manifests.findFirst({
+      where: eq(schema.manifests.id, id),
+      with: {
+        pickingList: {
+          with: {
+            items: { with: { product: { with: { baseUnit: true } } } },
+          },
+        },
+        shipments: {
+          with: {
+            order: { with: { store: true } },
+            items: {
+              with: {
+                batch: { with: { product: true } },
+                suggestedBatch: true,
+                actualBatch: true,
+              },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  async syncPickingListPickedTotals(
+    manifestId: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    const rows = await tx
+      .select({
+        productId: schema.batches.productId,
+        pickedSum: sql<string>`coalesce(sum(${schema.shipmentItems.quantity}::numeric), 0)`,
+      })
+      .from(schema.shipmentItems)
+      .innerJoin(
+        schema.shipments,
+        eq(schema.shipmentItems.shipmentId, schema.shipments.id),
+      )
+      .innerJoin(
+        schema.batches,
+        eq(schema.shipmentItems.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.shipments.manifestId, manifestId),
+          isNotNull(schema.shipmentItems.actualBatchId),
+        ),
+      )
+      .groupBy(schema.batches.productId);
+
+    const pickedByProduct = new Map<number, string>();
+    for (const r of rows) {
+      pickedByProduct.set(r.productId, String(r.pickedSum));
+    }
+
+    const list = await tx.query.pickingLists.findFirst({
+      where: eq(schema.pickingLists.manifestId, manifestId),
+    });
+    if (!list) return;
+
+    const plItems = await tx.query.pickingListItems.findMany({
+      where: eq(schema.pickingListItems.pickingListId, list.id),
+    });
+
+    for (const pl of plItems) {
+      const picked = pickedByProduct.get(pl.productId) ?? '0';
+      await tx
+        .update(schema.pickingListItems)
+        .set({ totalPickedQuantity: picked })
+        .where(eq(schema.pickingListItems.id, pl.id));
+    }
   }
 
   // Helper để Service dùng khi cần query inventory trong transaction logic riêng (nếu có)
@@ -261,5 +369,20 @@ export class WarehouseRepository {
           eq(schema.inventory.batchId, batchId),
         ),
       );
+  }
+
+  async findShipmentItemById(
+    id: number,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    return this.getDb(tx).query.shipmentItems.findFirst({
+      where: eq(schema.shipmentItems.id, id),
+      with: {
+        shipment: true,
+        batch: { with: { product: true } },
+        suggestedBatch: true,
+        actualBatch: true,
+      },
+    });
   }
 }

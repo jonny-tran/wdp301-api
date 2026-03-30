@@ -127,6 +127,20 @@
       "when": 1774884989700,
       "tag": "0017_familiar_maginty",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1774886000000,
+      "tag": "0018_wh_optimize_manifest",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1774886044377,
+      "tag": "0019_open_blackheart",
+      "breakpoints": true
     }
   ]
 }

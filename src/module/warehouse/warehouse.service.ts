@@ -1,21 +1,32 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { and, asc, eq, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
+import { UnitOfWork } from '../../database/unit-of-work';
 import * as schema from '../../database/schema';
+import { InventoryRepository } from '../inventory/inventory.repository';
+import { InventoryService } from '../inventory/inventory.service';
+import {
+  invFromDb,
+  invToDbString,
+} from '../inventory/utils/inventory-decimal.util';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { SystemConfigService } from '../system-config/system-config.service';
+import { CreateManifestDto } from './dto/create-manifest.dto';
 import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
 
 import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
 
 import { ReportIssueDto } from './dto/report-issue.dto';
+import { ReportManifestBatchIssueDto } from './dto/report-manifest-batch-issue.dto';
+import { VerifyManifestItemDto } from './dto/verify-manifest-item.dto';
 import { WarehouseRepository } from './warehouse.repository';
 
 @Injectable()
@@ -27,6 +38,9 @@ export class WarehouseService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly systemConfigService: SystemConfigService,
+    private readonly uow: UnitOfWork,
+    private readonly inventoryRepository: InventoryRepository,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   async getCentralWarehouseId(): Promise<number> {
@@ -242,6 +256,15 @@ export class WarehouseService {
           );
         }
 
+        const shipmentRow = await tx.query.shipments.findFirst({
+          where: eq(schema.shipments.orderId, orderDto.orderId),
+        });
+        if (shipmentRow?.manifestId != null) {
+          throw new BadRequestException(
+            'Đơn đã gán vào chuyến manifest. Hãy dùng xác nhận xuất kho khi xe rời kho (POST /warehouse/manifests/:id/depart).',
+          );
+        }
+
         // 2. Loop Picked Items & Validate
         for (const item of orderDto.pickedItems) {
           const batch = await tx.query.batches.findFirst({
@@ -320,6 +343,391 @@ export class WarehouseService {
       }
 
       return { message: 'Consolidated fulfillment successful' };
+    });
+  }
+
+  // --- WH-OPTIMIZE: Manifest / wave picking / xuất kho theo xe ---
+
+  async createManifest(dto: CreateManifestDto) {
+    const centralId = await this.getCentralWarehouseId();
+    const uniqueOrderIds = [...new Set(dto.orderIds)];
+    if (uniqueOrderIds.length !== dto.orderIds.length) {
+      throw new BadRequestException('Danh sách đơn không được trùng lặp.');
+    }
+
+    return this.uow.runInTransaction(async (tx) => {
+      const orders = await tx.query.orders.findMany({
+        where: inArray(schema.orders.id, uniqueOrderIds),
+      });
+      if (orders.length !== uniqueOrderIds.length) {
+        throw new NotFoundException('Một hoặc nhiều đơn hàng không tồn tại.');
+      }
+      for (const o of orders) {
+        if (o.status !== OrderStatus.APPROVED) {
+          throw new BadRequestException(
+            `Đơn ${o.id} không ở trạng thái đã duyệt (approved).`,
+          );
+        }
+      }
+
+      const shipments = await this.warehouseRepo.findShipmentsReadyForManifest(
+        uniqueOrderIds,
+        centralId,
+        tx,
+      );
+      if (shipments.length !== uniqueOrderIds.length) {
+        throw new BadRequestException(
+          'Thiếu phiếu giao preparing, hoặc đơn không cùng kho trung tâm / đã gán manifest.',
+        );
+      }
+
+      const code = `MAN-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+
+      const [manifest] = await tx
+        .insert(schema.manifests)
+        .values({
+          code,
+          driverName: dto.driverName ?? null,
+          vehiclePlate: dto.vehiclePlate ?? null,
+          status: 'preparing',
+        })
+        .returning();
+
+      for (const sh of shipments) {
+        await tx
+          .update(schema.shipments)
+          .set({ manifestId: manifest.id, updatedAt: new Date() })
+          .where(eq(schema.shipments.id, sh.id));
+      }
+
+      for (const sh of shipments) {
+        for (const it of sh.items) {
+          await tx
+            .update(schema.shipmentItems)
+            .set({ suggestedBatchId: it.batchId })
+            .where(eq(schema.shipmentItems.id, it.id));
+        }
+      }
+
+      const [pickingList] = await tx
+        .insert(schema.pickingLists)
+        .values({ manifestId: manifest.id, status: 'open' })
+        .returning();
+
+      const byProduct = new Map<number, number>();
+      for (const sh of shipments) {
+        for (const it of sh.items) {
+          const pid = it.batch.productId;
+          const q = invFromDb(it.quantity);
+          byProduct.set(pid, (byProduct.get(pid) ?? 0) + q);
+        }
+      }
+
+      for (const [productId, qty] of byProduct) {
+        await tx.insert(schema.pickingListItems).values({
+          pickingListId: pickingList.id,
+          productId,
+          totalPlannedQuantity: invToDbString(qty),
+          totalPickedQuantity: '0',
+        });
+      }
+
+      return {
+        manifestId: manifest.id,
+        code: manifest.code,
+        pickingListId: pickingList.id,
+        orderCount: shipments.length,
+        aggregatedProductLines: byProduct.size,
+      };
+    });
+  }
+
+  async getManifestPickingList(manifestId: number) {
+    await this.uow.runInTransaction(async (tx) => {
+      await this.warehouseRepo.syncPickingListPickedTotals(manifestId, tx);
+    });
+    const m = await this.warehouseRepo.findManifestById(manifestId);
+    if (!m) {
+      throw new NotFoundException('Không tìm thấy manifest.');
+    }
+    return {
+      manifestId: m.id,
+      code: m.code,
+      status: m.status,
+      driverName: m.driverName,
+      vehiclePlate: m.vehiclePlate,
+      pickingList: m.pickingList
+        ? {
+            id: m.pickingList.id,
+            status: m.pickingList.status,
+            items: m.pickingList.items.map((row) => ({
+              id: row.id,
+              productId: row.productId,
+              productName: row.product.name,
+              unit: row.product.baseUnit?.name,
+              totalPlannedQuantity: row.totalPlannedQuantity,
+              totalPickedQuantity: row.totalPickedQuantity,
+            })),
+          }
+        : null,
+      shipments: m.shipments.map((sh) => ({
+        shipmentId: sh.id,
+        orderId: sh.orderId,
+        storeName: sh.order?.store?.name,
+        items: sh.items.map((it) => ({
+          shipmentItemId: it.id,
+          productName: it.batch.product.name,
+          quantity: it.quantity,
+          suggestedBatchId: it.suggestedBatchId ?? it.batchId,
+          suggestedBatchCode: it.suggestedBatch?.batchCode ?? it.batch.batchCode,
+          actualBatchId: it.actualBatchId,
+        })),
+      })),
+    };
+  }
+
+  async verifyManifestItem(manifestId: number, dto: VerifyManifestItemDto) {
+    return this.uow.runInTransaction(async (tx) => {
+      const item = await this.warehouseRepo.findShipmentItemById(
+        dto.shipmentItemId,
+        tx,
+      );
+      if (!item) {
+        throw new NotFoundException('Không tìm thấy dòng shipment.');
+      }
+      const shipment = await tx.query.shipments.findFirst({
+        where: eq(schema.shipments.id, item.shipmentId),
+      });
+      if (!shipment || shipment.manifestId !== manifestId) {
+        throw new BadRequestException('Dòng hàng không thuộc manifest này.');
+      }
+      const suggested = item.suggestedBatchId ?? item.batchId;
+      if (dto.scannedBatchId !== suggested) {
+        throw new ForbiddenException(
+          'Sai lô hàng! Bạn phải lấy lô cũ nhất theo chỉ định.',
+        );
+      }
+      await tx
+        .update(schema.shipmentItems)
+        .set({ actualBatchId: dto.scannedBatchId })
+        .where(eq(schema.shipmentItems.id, item.id));
+
+      await tx
+        .update(schema.pickingLists)
+        .set({ status: 'picking' })
+        .where(eq(schema.pickingLists.manifestId, manifestId));
+
+      await this.warehouseRepo.syncPickingListPickedTotals(manifestId, tx);
+      return { success: true };
+    });
+  }
+
+  async reportManifestBatchIssue(
+    manifestId: number,
+    dto: ReportManifestBatchIssueDto,
+  ) {
+    const centralId = await this.getCentralWarehouseId();
+    return this.uow.runInTransaction(async (tx) => {
+      const m = await tx.query.manifests.findFirst({
+        where: eq(schema.manifests.id, manifestId),
+      });
+      if (!m) {
+        throw new NotFoundException('Không tìm thấy manifest.');
+      }
+      if (m.status !== 'preparing') {
+        throw new BadRequestException(
+          'Chỉ báo hỏng lô khi manifest đang chuẩn bị.',
+        );
+      }
+
+      const item = await this.warehouseRepo.findShipmentItemById(
+        dto.shipmentItemId,
+        tx,
+      );
+      if (!item) {
+        throw new NotFoundException('Không tìm thấy dòng shipment.');
+      }
+      const shipment = await tx.query.shipments.findFirst({
+        where: eq(schema.shipments.id, item.shipmentId),
+      });
+      if (!shipment || shipment.manifestId !== manifestId) {
+        throw new BadRequestException('Dòng hàng không thuộc manifest này.');
+      }
+
+      const suggested = item.suggestedBatchId ?? item.batchId;
+      if (dto.batchId !== suggested) {
+        throw new BadRequestException(
+          'Chỉ báo hỏng đúng lô đang được hệ thống chỉ định.',
+        );
+      }
+
+      const productId = item.batch.productId;
+      const result = await this.warehouseRepo.replaceDamagedBatchTransaction(
+        centralId,
+        { batchId: dto.batchId },
+        {
+          id: item.id,
+          quantity: String(item.quantity),
+          shipmentId: item.shipmentId,
+        },
+        productId,
+        tx,
+      );
+
+      if (result.remainingToPick > 0) {
+        throw new BadRequestException(
+          `Không đủ hàng thay thế. Còn thiếu: ${result.remainingToPick}`,
+        );
+      }
+
+      await this.inventoryRepository.updateBatchStatus(tx, dto.batchId, 'damaged');
+
+      await this.warehouseRepo.syncPickingListPickedTotals(manifestId, tx);
+
+      return {
+        message: `Đã báo hỏng lô và chỉ định lô mới. Lý do: ${dto.reason}`,
+        replacedWith: result.newAllocations,
+      };
+    });
+  }
+
+  async confirmManifestDeparture(manifestId: number) {
+    return this.uow.runInTransaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(${manifestId}::bigint)`,
+      );
+
+      const m = await tx.query.manifests.findFirst({
+        where: eq(schema.manifests.id, manifestId),
+      });
+      if (!m) {
+        throw new NotFoundException('Không tìm thấy manifest.');
+      }
+      if (m.status !== 'preparing') {
+        throw new BadRequestException(
+          'Manifest không thể xuất ở trạng thái hiện tại.',
+        );
+      }
+
+      const shipments = await tx.query.shipments.findMany({
+        where: eq(schema.shipments.manifestId, manifestId),
+        with: { items: true },
+      });
+
+      for (const sh of shipments) {
+        for (const it of sh.items) {
+          if (it.actualBatchId == null) {
+            throw new BadRequestException(
+              'Chưa quét đủ tất cả lô hàng theo chỉ định trước khi xe rời kho.',
+            );
+          }
+        }
+      }
+
+      for (const sh of shipments) {
+        const fromWarehouseId = sh.fromWarehouseId;
+        for (const it of sh.items) {
+          const qty = invFromDb(it.quantity);
+          const batchId = it.batchId;
+
+          await this.inventoryRepository.decreasePhysicalAndReserved(
+            fromWarehouseId,
+            batchId,
+            qty,
+            tx,
+          );
+
+          await this.inventoryRepository.createInventoryTransaction(
+            fromWarehouseId,
+            batchId,
+            'export',
+            -qty,
+            sh.id,
+            'Xuất kho theo manifest (EXPORT)',
+            tx,
+          );
+
+          await this.inventoryRepository.syncBatchTotalsFromInventory(
+            tx,
+            batchId,
+          );
+        }
+
+        await tx
+          .update(schema.shipments)
+          .set({
+            status: 'in_transit',
+            shipDate: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.shipments.id, sh.id));
+
+        await tx
+          .update(schema.orders)
+          .set({ status: OrderStatus.DELIVERING, updatedAt: new Date() })
+          .where(eq(schema.orders.id, sh.orderId));
+      }
+
+      await tx
+        .update(schema.manifests)
+        .set({
+          status: 'departed',
+          departureAt: new Date(),
+        })
+        .where(eq(schema.manifests.id, manifestId));
+
+      const pl = await tx.query.pickingLists.findFirst({
+        where: eq(schema.pickingLists.manifestId, manifestId),
+      });
+      if (pl) {
+        await tx
+          .update(schema.pickingLists)
+          .set({ status: 'completed' })
+          .where(eq(schema.pickingLists.id, pl.id));
+      }
+
+      return { message: 'Đã xác nhận xe rời kho và trừ tồn kho.' };
+    });
+  }
+
+  async cancelManifest(manifestId: number) {
+    const centralId = await this.getCentralWarehouseId();
+    return this.uow.runInTransaction(async (tx) => {
+      const m = await tx.query.manifests.findFirst({
+        where: eq(schema.manifests.id, manifestId),
+      });
+      if (!m) {
+        throw new NotFoundException('Không tìm thấy manifest.');
+      }
+      if (m.status !== 'preparing') {
+        throw new BadRequestException('Chỉ hủy manifest đang chuẩn bị.');
+      }
+
+      const shipments = await tx.query.shipments.findMany({
+        where: eq(schema.shipments.manifestId, manifestId),
+      });
+
+      for (const sh of shipments) {
+        await this.inventoryService.releaseStockForShipment(
+          sh.id,
+          centralId,
+          tx,
+        );
+      }
+
+      for (const sh of shipments) {
+        await tx
+          .update(schema.shipments)
+          .set({ manifestId: null, updatedAt: new Date() })
+          .where(eq(schema.shipments.id, sh.id));
+      }
+
+      await tx
+        .update(schema.manifests)
+        .set({ status: 'cancelled' })
+        .where(eq(schema.manifests.id, manifestId));
+
+      return { message: 'Đã hủy manifest và hoàn chỗ trên tồn kho.' };
     });
   }
 

@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
@@ -14,11 +15,14 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { CreateManifestDto } from './dto/create-manifest.dto';
 import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
 
 import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
 
 import { ReportIssueDto } from './dto/report-issue.dto';
+import { ReportManifestBatchIssueDto } from './dto/report-manifest-batch-issue.dto';
+import { VerifyManifestItemDto } from './dto/verify-manifest-item.dto';
 import { ScanCheckDto } from './dto/scan-check.dto';
 import { WarehouseService } from './warehouse.service';
 
@@ -115,5 +119,73 @@ export class WarehouseController {
   async reportIssue(@Body() dto: ReportIssueDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.reportIssue(warehouseId, dto);
+  }
+
+  @Post('manifests')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Tạo manifest từ nhiều đơn (wave picking)',
+    description:
+      'Gom đơn vào một chuyến xe, sinh picking list gộp theo sản phẩm (WH-OPTIMIZE).',
+  })
+  @ResponseMessage('Tạo manifest thành công')
+  async createManifest(@Body() dto: CreateManifestDto) {
+    return this.warehouseService.createManifest(dto);
+  }
+
+  @Get('manifests/:id/picking-list')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Lấy master list soạn hàng gộp theo manifest',
+  })
+  @ResponseMessage('Lấy picking list manifest thành công')
+  async getManifestPickingList(@Param('id', ParseIntPipe) id: number) {
+    return this.warehouseService.getManifestPickingList(id);
+  }
+
+  @Patch('manifests/:id/verify-item')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Quét xác nhận lô hàng (FEFO cứng)',
+  })
+  @ResponseMessage('Xác nhận quét lô thành công')
+  async verifyManifestItem(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: VerifyManifestItemDto,
+  ) {
+    return this.warehouseService.verifyManifestItem(id, dto);
+  }
+
+  @Post('manifests/:id/report-batch-issue')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Báo hỏng lô theo manifest (chỉ định lô tiếp theo)',
+  })
+  @ResponseMessage('Đã xử lý báo hỏng lô')
+  async reportManifestBatchIssue(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ReportManifestBatchIssueDto,
+  ) {
+    return this.warehouseService.reportManifestBatchIssue(id, dto);
+  }
+
+  @Post('manifests/:id/depart')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Xe rời kho — trừ tồn kho (EXPORT) theo toàn bộ manifest',
+  })
+  @ResponseMessage('Đã xác nhận xuất kho theo manifest')
+  async confirmManifestDeparture(@Param('id', ParseIntPipe) id: number) {
+    return this.warehouseService.confirmManifestDeparture(id);
+  }
+
+  @Post('manifests/:id/cancel')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Hủy manifest (hoàn reserved) trước khi xe rời kho',
+  })
+  @ResponseMessage('Đã hủy manifest')
+  async cancelManifest(@Param('id', ParseIntPipe) id: number) {
+    return this.warehouseService.cancelManifest(id);
   }
 }
