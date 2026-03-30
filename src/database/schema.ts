@@ -189,6 +189,19 @@ export const batches = pgTable(
     expiryDate: date('expiry_date').notNull(),
     status: batchStatusEnum('status').default('pending').notNull(),
     imageUrl: text('image_url'),
+    /** Tổng khả dụng / giữ chỗ cấp lô (bổ sung theo PROD-LOGIC; nguồn chính vẫn là `inventory`) */
+    availableQuantity: decimal('available_quantity', {
+      precision: 12,
+      scale: 2,
+    })
+      .default('0')
+      .notNull(),
+    reservedQuantity: decimal('reserved_quantity', {
+      precision: 12,
+      scale: 2,
+    })
+      .default('0')
+      .notNull(),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },
@@ -223,6 +236,13 @@ export const recipes = pgTable('recipes', {
     .references(() => products.id)
     .notNull(),
   name: text('name').notNull(),
+  /** Định mức đầu ra chuẩn của công thức (ví dụ 10 kg / mẻ); định mức nguyên liệu tính theo đơn vị này */
+  standardOutput: decimal('standard_output', {
+    precision: 12,
+    scale: 4,
+  })
+    .default('1')
+    .notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
@@ -244,22 +264,48 @@ export const recipeItems = pgTable('recipe_items', {
 
 export const productionOrders = pgTable('production_orders', {
   id: uuid('id').defaultRandom().primaryKey(),
+  code: text('code').notNull().unique(),
   recipeId: integer('recipe_id')
     .references(() => recipes.id)
     .notNull(),
   warehouseId: integer('warehouse_id')
     .references(() => warehouses.id)
     .notNull(),
-  outputQuantity: decimal('output_quantity', {
+  plannedQuantity: decimal('planned_quantity', {
     precision: 12,
     scale: 4,
   }).notNull(),
+  actualQuantity: decimal('actual_quantity', {
+    precision: 12,
+    scale: 4,
+  }),
   status: productionOrderStatusEnum('status').default('draft').notNull(),
+  kitchenStaffId: uuid('kitchen_staff_id').references(() => users.id),
   createdBy: uuid('created_by')
     .references(() => users.id)
     .notNull(),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+/** Liên kết cha–con giữa lô nguyên liệu và lô thành phẩm (truy xuất nguồn gốc) */
+export const batchLineage = pgTable('batch_lineage', {
+  id: serial('id').primaryKey(),
+  parentBatchId: integer('parent_batch_id')
+    .references(() => batches.id)
+    .notNull(),
+  childBatchId: integer('child_batch_id')
+    .references(() => batches.id)
+    .notNull(),
+  productionOrderId: uuid('production_order_id')
+    .references(() => productionOrders.id)
+    .notNull(),
+  consumedQuantity: decimal('consumed_quantity', {
+    precision: 12,
+    scale: 4,
+  }).notNull(),
 });
 
 export const productionReservations = pgTable('production_reservations', {
@@ -529,6 +575,12 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   store: one(stores, { fields: [users.storeId], references: [stores.id] }),
   refreshTokens: many(refreshTokens),
   otpCodes: many(otpCodes),
+  createdProductionOrders: many(productionOrders, {
+    relationName: 'productionOrderCreator',
+  }),
+  kitchenStaffProductionOrders: many(productionOrders, {
+    relationName: 'productionOrderKitchenStaff',
+  }),
 }));
 
 export const storeRelations = relations(stores, ({ many }) => ({
@@ -560,6 +612,8 @@ export const batchRelations = relations(batches, ({ one, many }) => ({
     references: [products.id],
   }),
   inventory: many(inventory),
+  lineageAsParent: many(batchLineage, { relationName: 'lineageParent' }),
+  lineageAsChild: many(batchLineage, { relationName: 'lineageChild' }),
 }));
 
 export const orderRelations = relations(orders, ({ one, many }) => ({
@@ -713,10 +767,34 @@ export const productionOrdersRelations = relations(
     creator: one(users, {
       fields: [productionOrders.createdBy],
       references: [users.id],
+      relationName: 'productionOrderCreator',
+    }),
+    kitchenStaff: one(users, {
+      fields: [productionOrders.kitchenStaffId],
+      references: [users.id],
+      relationName: 'productionOrderKitchenStaff',
     }),
     reservations: many(productionReservations),
+    batchLineages: many(batchLineage),
   }),
 );
+
+export const batchLineageRelations = relations(batchLineage, ({ one }) => ({
+  productionOrder: one(productionOrders, {
+    fields: [batchLineage.productionOrderId],
+    references: [productionOrders.id],
+  }),
+  parentBatch: one(batches, {
+    fields: [batchLineage.parentBatchId],
+    references: [batches.id],
+    relationName: 'lineageParent',
+  }),
+  childBatch: one(batches, {
+    fields: [batchLineage.childBatchId],
+    references: [batches.id],
+    relationName: 'lineageChild',
+  }),
+}));
 
 export const productionReservationsRelations = relations(
   productionReservations,

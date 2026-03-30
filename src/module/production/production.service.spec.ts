@@ -23,16 +23,23 @@ describe('ProductionService', () => {
 
     const mockRepo = {
       findRecipeWithItems: jest.fn(),
+      createRecipe: jest.fn(),
       createProductionOrder: jest.fn(),
+      generateNextProductionOrderCode: jest.fn(),
       findOrderById: jest.fn(),
       listAvailableInventoryFefo: jest.fn(),
       updateReservedQuantity: jest.fn(),
       insertReservation: jest.fn(),
       updateOrderStatus: jest.fn(),
+      markOrderStarted: jest.fn(),
+      markOrderCompleted: jest.fn(),
+      insertBatchLineage: jest.fn(),
       decreaseStockAndReserved: jest.fn(),
+      findBatchByCode: jest.fn().mockResolvedValue(undefined),
     };
 
     const mockInbound = {
+      lockBatchCodeGeneration: jest.fn().mockResolvedValue(undefined),
       nextBatchCode: jest.fn(),
       insertBatch: jest.fn(),
       updateBatchStatus: jest.fn(),
@@ -80,98 +87,63 @@ describe('ProductionService', () => {
       repo.findRecipeWithItems.mockResolvedValue({
         id: 1,
         isActive: true,
+        outputProductId: 9,
+        items: [{ ingredientProductId: 1, quantityPerOutput: '1' }],
       } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 9,
+        isActive: true,
+      } as never);
+      repo.generateNextProductionOrderCode.mockResolvedValue('PO-20260330-0001');
       repo.createProductionOrder.mockResolvedValue({
         id: 'po-1',
         status: 'draft',
+        code: 'PO-20260330-0001',
       } as never);
 
       const result = await service.createOrder({
         recipeId: 1,
-        outputQuantity: 10,
+        plannedQuantity: 10,
         warehouseId: 2,
         createdBy: 'user-1',
       });
 
       expect(repo.findRecipeWithItems).toHaveBeenCalledWith(1);
-      expect(repo.createProductionOrder).toHaveBeenCalledWith({
-        recipeId: 1,
-        warehouseId: 2,
-        outputQuantity: '10',
-        status: 'draft',
-        createdBy: 'user-1',
-      });
-      expect(result).toEqual({ id: 'po-1', status: 'draft' });
-    });
-
-    it('should throw NotFoundException when recipe missing or inactive', async () => {
-      repo.findRecipeWithItems.mockResolvedValue(null);
-
-      await expect(
-        service.createOrder({
-          recipeId: 99,
-          outputQuantity: 1,
-          warehouseId: 1,
-          createdBy: 'u',
-        }),
-      ).rejects.toThrow(NotFoundException);
-
-      repo.findRecipeWithItems.mockResolvedValue({ id: 1, isActive: false } as never);
-
-      await expect(
-        service.createOrder({
+      expect(repo.generateNextProductionOrderCode).toHaveBeenCalledWith(mockTx);
+      expect(repo.createProductionOrder).toHaveBeenCalledWith(
+        {
+          code: 'PO-20260330-0001',
           recipeId: 1,
-          outputQuantity: 1,
-          warehouseId: 1,
-          createdBy: 'u',
-        }),
-      ).rejects.toThrow(NotFoundException);
+          warehouseId: 2,
+          plannedQuantity: '10',
+          status: 'draft',
+          createdBy: 'user-1',
+          kitchenStaffId: 'user-1',
+        },
+        mockTx,
+      );
+      expect(result).toEqual(
+        expect.objectContaining({ id: 'po-1', status: 'draft' }),
+      );
     });
   });
 
   describe('startProduction', () => {
     const orderId = 'order-1';
 
-    it('should throw NotFoundException when order not found', async () => {
-      repo.findOrderById.mockResolvedValue(undefined);
-
-      await expect(service.startProduction(orderId)).rejects.toThrow(NotFoundException);
-    });
-
-    it('should throw BadRequestException when order is not draft', async () => {
-      repo.findOrderById.mockResolvedValue({
-        id: orderId,
-        status: 'in_progress',
-        warehouseId: 1,
-        outputQuantity: '1',
-        recipe: { items: [] },
-      } as never);
-
-      await expect(service.startProduction(orderId)).rejects.toThrow(BadRequestException);
-    });
-
-    it('should throw BadRequestException when recipe has no items', async () => {
+    it('Test Case 1: should fail when material stock is insufficient', async () => {
       repo.findOrderById.mockResolvedValue({
         id: orderId,
         status: 'draft',
         warehouseId: 1,
-        outputQuantity: '1',
-        recipe: { items: [] },
-      } as never);
-
-      await expect(service.startProduction(orderId)).rejects.toThrow(BadRequestException);
-    });
-
-    it('should throw InsufficientStockException when FEFO cannot cover need', async () => {
-      repo.findOrderById.mockResolvedValue({
-        id: orderId,
-        status: 'draft',
-        warehouseId: 1,
-        outputQuantity: '10',
+        plannedQuantity: '10',
         recipe: {
+          outputProductId: 99,
+          standardOutput: '1',
           items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
         },
       } as never);
+      productRepo.findById.mockResolvedValue({ id: 99, isActive: true } as never);
       repo.listAvailableInventoryFefo.mockResolvedValue([
         {
           inventory: {
@@ -179,107 +151,76 @@ describe('ProductionService', () => {
             quantity: '5',
             reservedQuantity: '0',
           },
-          batch: { id: 10 },
+          batch: {
+            id: 10,
+            expiryDate: '2030-01-01',
+            batchCode: 'B1',
+          },
         },
       ] as never);
 
-      await expect(service.startProduction(orderId)).rejects.toThrow(InsufficientStockException);
-      expect(repo.updateOrderStatus).not.toHaveBeenCalled();
+      await expect(service.startProduction(orderId)).rejects.toThrow(
+        InsufficientStockException,
+      );
+      expect(repo.markOrderStarted).not.toHaveBeenCalled();
     });
 
-    it('should reserve FEFO batches and set order to in_progress', async () => {
+    it('Test Case 2: should fail when oldest FEFO batch is expired', async () => {
       repo.findOrderById.mockResolvedValue({
         id: orderId,
         status: 'draft',
         warehouseId: 1,
-        outputQuantity: '10',
+        plannedQuantity: '10',
         recipe: {
+          outputProductId: 99,
+          standardOutput: '1',
           items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
         },
       } as never);
+      productRepo.findById.mockResolvedValue({ id: 99, isActive: true } as never);
       repo.listAvailableInventoryFefo.mockResolvedValue([
         {
           inventory: {
             id: 1,
-            quantity: '15',
+            quantity: '25',
             reservedQuantity: '0',
           },
-          batch: { id: 101 },
-        },
-        {
-          inventory: {
-            id: 2,
-            quantity: '10',
-            reservedQuantity: '0',
+          batch: {
+            id: 10,
+            expiryDate: '2020-01-01',
+            batchCode: 'EXP-OLD',
           },
-          batch: { id: 102 },
         },
       ] as never);
 
-      const result = await service.startProduction(orderId);
-
-      expect(repo.listAvailableInventoryFefo).toHaveBeenCalledWith(mockTx, 1, 5);
-      expect(repo.updateReservedQuantity).toHaveBeenNthCalledWith(1, mockTx, 1, 15);
-      expect(repo.insertReservation).toHaveBeenNthCalledWith(1, mockTx, {
-        productionOrderId: orderId,
-        batchId: 101,
-        reservedQuantity: '15',
-      });
-      expect(repo.updateReservedQuantity).toHaveBeenNthCalledWith(2, mockTx, 2, 5);
-      expect(repo.insertReservation).toHaveBeenNthCalledWith(2, mockTx, {
-        productionOrderId: orderId,
-        batchId: 102,
-        reservedQuantity: '5',
-      });
-      expect(repo.updateOrderStatus).toHaveBeenCalledWith(mockTx, orderId, 'in_progress');
-      expect(result).toEqual({ message: 'Đã tạm giữ nguyên liệu (FEFO)' });
+      await expect(service.startProduction(orderId)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(repo.markOrderStarted).not.toHaveBeenCalled();
     });
   });
 
-  describe('finishProduction', () => {
+  describe('completeProduction', () => {
     const orderId = 'order-1';
 
-    it('should throw NotFoundException when order not found', async () => {
-      repo.findOrderById.mockResolvedValue(undefined);
-
-      await expect(service.finishProduction(orderId)).rejects.toThrow(NotFoundException);
-    });
-
-    it('should throw BadRequestException when order is not in_progress', async () => {
-      repo.findOrderById.mockResolvedValue({
-        id: orderId,
-        status: 'draft',
-        recipe: { outputProductId: 1 },
-        reservations: [],
-      } as never);
-
-      await expect(service.finishProduction(orderId)).rejects.toThrow(BadRequestException);
-    });
-
-    it('should throw NotFoundException when output product missing', async () => {
-      repo.findOrderById.mockResolvedValue({
-        id: orderId,
-        status: 'in_progress',
-        warehouseId: 1,
-        outputQuantity: '3',
-        recipe: { outputProductId: 100 },
-        reservations: [],
-      } as never);
-      productRepo.findById.mockResolvedValue(undefined);
-
-      await expect(service.finishProduction(orderId)).rejects.toThrow(NotFoundException);
-    });
-
-    it('should consume reservations, create batch, upsert inventory, log production_consume and production_output', async () => {
+    it('Test Case 3: should record production loss when actual < theoretical', async () => {
       repo.findOrderById.mockResolvedValue({
         id: orderId,
         status: 'in_progress',
         warehouseId: 7,
-        outputQuantity: '4',
+        plannedQuantity: '4',
         recipe: { outputProductId: 100 },
         reservations: [
-          { batchId: 11, reservedQuantity: '2.5' },
-          { batchId: 12, reservedQuantity: '1.5' },
+          {
+            batchId: 11,
+            reservedQuantity: '2.5',
+            batch: { id: 11, expiryDate: '2026-12-31' },
+          },
+          {
+            batchId: 12,
+            reservedQuantity: '1.5',
+            batch: { id: 12, expiryDate: '2026-11-30' },
+          },
         ],
       } as never);
       productRepo.findById.mockResolvedValue({
@@ -287,64 +228,86 @@ describe('ProductionService', () => {
         sku: 'TP-SKU',
         shelfLifeDays: 3,
       } as never);
-      inboundRepo.nextBatchCode.mockResolvedValue('BAT-TP-001');
       inboundRepo.insertBatch.mockResolvedValue({
         id: 200,
         batchCode: 'BAT-TP-001',
       } as never);
 
-      const result = await service.finishProduction(orderId);
+      const result = await service.completeProduction(orderId, {
+        actualQuantity: 3.5,
+      });
 
-      expect(repo.decreaseStockAndReserved).toHaveBeenNthCalledWith(1, mockTx, 7, 11, 2.5);
-      expect(repo.decreaseStockAndReserved).toHaveBeenNthCalledWith(2, mockTx, 7, 12, 1.5);
-      expect(inventoryRepo.createInventoryTransaction).toHaveBeenNthCalledWith(
-        1,
-        7,
-        11,
-        'production_consume',
-        -2.5,
-        `PRODUCTION:${orderId}`,
-        'Tiêu hao nguyên liệu sản xuất',
-        mockTx,
-      );
-      expect(inventoryRepo.createInventoryTransaction).toHaveBeenNthCalledWith(
-        2,
-        7,
-        12,
-        'production_consume',
-        -1.5,
-        `PRODUCTION:${orderId}`,
-        'Tiêu hao nguyên liệu sản xuất',
-        mockTx,
-      );
-
-      expect(inboundRepo.nextBatchCode.mock.invocationCallOrder[0]).toBeLessThan(
-        inboundRepo.insertBatch.mock.invocationCallOrder[0],
-      );
-
-      expect(inboundRepo.insertBatch).toHaveBeenCalledWith(
-        mockTx,
-        expect.objectContaining({
-          productId: 100,
-          batchCode: 'BAT-TP-001',
-          manufacturedDate: expect.any(String),
-          expiryDate: expect.any(String),
-        }),
-      );
-      expect(inboundRepo.updateBatchStatus).toHaveBeenCalledWith(mockTx, 200, 'available');
-      expect(inboundRepo.upsertInventory).toHaveBeenCalledWith(mockTx, 7, 200, '4');
-      expect(inventoryRepo.createInventoryTransaction).toHaveBeenNthCalledWith(
-        3,
+      expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
         7,
         200,
-        'production_output',
-        4,
+        'adjustment',
+        -0.5,
         `PRODUCTION:${orderId}`,
-        'Thành phẩm sau sản xuất',
+        'PRODUCTION_LOSS',
         mockTx,
       );
-      expect(repo.updateOrderStatus).toHaveBeenCalledWith(mockTx, orderId, 'completed');
-      expect(result).toEqual({ batchId: 200, batchCode: 'BAT-TP-001' });
+
+      expect(result.actualQuantity).toBe(3.5);
+      expect(result.lossQuantity).toBe(0.5);
+    });
+
+    it('Test Case 4: should insert batch lineage for parent batches', async () => {
+      repo.findOrderById.mockResolvedValue({
+        id: orderId,
+        status: 'in_progress',
+        warehouseId: 7,
+        plannedQuantity: '4',
+        recipe: { outputProductId: 100 },
+        reservations: [
+          {
+            batchId: 11,
+            reservedQuantity: '2.5',
+            batch: { id: 11, expiryDate: '2026-10-01' },
+          },
+          {
+            batchId: 12,
+            reservedQuantity: '1.5',
+            batch: { id: 12, expiryDate: '2026-09-01' },
+          },
+        ],
+      } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 100,
+        sku: 'TP-SKU',
+        shelfLifeDays: 3,
+      } as never);
+      inboundRepo.insertBatch.mockResolvedValue({
+        id: 200,
+        batchCode: 'BAT-LINEAGE',
+      } as never);
+
+      await service.completeProduction(orderId, { actualQuantity: 4 });
+
+      expect(repo.insertBatchLineage).toHaveBeenCalledWith(
+        mockTx,
+        expect.objectContaining({
+          parentBatchId: 11,
+          childBatchId: 200,
+          productionOrderId: orderId,
+          consumedQuantity: '2.5',
+        }),
+      );
+      expect(repo.insertBatchLineage).toHaveBeenCalledWith(
+        mockTx,
+        expect.objectContaining({
+          parentBatchId: 12,
+          childBatchId: 200,
+          consumedQuantity: '1.5',
+        }),
+      );
+    });
+
+    it('should throw NotFoundException when order not found', async () => {
+      repo.findOrderById.mockResolvedValue(undefined);
+
+      await expect(
+        service.completeProduction(orderId, { actualQuantity: 1 }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

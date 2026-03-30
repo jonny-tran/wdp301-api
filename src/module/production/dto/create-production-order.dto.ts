@@ -7,9 +7,9 @@ export class CreateProductionOrderDto {
   @IsNotEmpty()
   recipeId: number;
 
-  @ApiProperty({ description: 'Số lượng thành phẩm cần sản xuất' })
+  @ApiProperty({ description: 'Số lượng thành phẩm dự kiến (planned)' })
   @IsNumber()
   @Min(0.0001)
   @IsNotEmpty()
-  outputQuantity: number;
+  plannedQuantity: number;
 }

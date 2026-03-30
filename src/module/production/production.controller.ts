@@ -16,7 +16,9 @@ import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { RequestWithUser } from '../auth/types/auth.types';
 import { WarehouseRepository } from '../warehouse/warehouse.repository';
+import { CompleteProductionDto } from './dto/complete-production.dto';
 import { CreateProductionOrderDto } from './dto/create-production-order.dto';
+import { CreateRecipeDto } from './dto/create-recipe.dto';
 import { ProductionService } from './production.service';
 
 @ApiTags('Production')
@@ -28,6 +30,22 @@ export class ProductionController {
     private readonly productionService: ProductionService,
     private readonly warehouseRepo: WarehouseRepository,
   ) {}
+
+  @Post('recipes')
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({ summary: 'Tạo BOM / công thức sản xuất' })
+  @ResponseMessage('Đã tạo công thức')
+  async createRecipe(@Body() dto: CreateRecipeDto) {
+    return this.productionService.createRecipe({
+      name: dto.name,
+      productId: dto.productId,
+      standardOutput: dto.standardOutput,
+      items: dto.items.map((i) => ({
+        materialId: i.materialId,
+        quantity: i.quantity,
+      })),
+    });
+  }
 
   @Post('orders')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF, UserRole.MANAGER)
@@ -43,7 +61,7 @@ export class ProductionController {
     }
     return this.productionService.createOrder({
       recipeId: dto.recipeId,
-      outputQuantity: dto.outputQuantity,
+      plannedQuantity: dto.plannedQuantity,
       warehouseId: wh.id,
       createdBy: user.userId,
     });
@@ -51,17 +69,23 @@ export class ProductionController {
 
   @Post('orders/:id/start')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: 'Bắt đầu: tạm giữ nguyên liệu FEFO' })
+  @ApiOperation({ summary: 'Bắt đầu: kiểm tra BOM/tồn/HSD và tạm giữ nguyên liệu (FEFO)' })
   @ResponseMessage('Đã tạm giữ nguyên liệu')
   async start(@Param('id', ParseUUIDPipe) id: string) {
     return this.productionService.startProduction(id);
   }
 
-  @Post('orders/:id/finish')
+  @Post('orders/:id/complete')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: 'Hoàn tất: trừ NL, tạo lô TP, ghi log' })
+  @ApiOperation({ summary: 'Hoàn tất: nhập sản lượng thực tế, trừ NL, tạo lô TP, lineage' })
   @ResponseMessage('Hoàn tất sản xuất')
-  async finish(@Param('id', ParseUUIDPipe) id: string) {
-    return this.productionService.finishProduction(id);
+  async complete(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CompleteProductionDto,
+  ) {
+    return this.productionService.completeProduction(id, {
+      actualQuantity: dto.actualQuantity,
+      surplusNote: dto.surplusNote,
+    });
   }
 }

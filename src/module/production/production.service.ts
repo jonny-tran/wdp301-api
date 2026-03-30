@@ -1,6 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { generateBatchCode } from '../../common/utils/generate-batch-code.util';
 import { InsufficientStockException } from '../../common/exceptions/insufficient-stock.exception';
-import { nowVn } from '../../common/time/vn-time';
+import { nowVn, parseToStartOfDayVn } from '../../common/time/vn-time';
 import { UnitOfWork } from '../../database/unit-of-work';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
@@ -17,9 +22,42 @@ export class ProductionService {
     private readonly inventoryRepo: InventoryRepository,
   ) {}
 
+  async createRecipe(input: {
+    name: string;
+    productId: number;
+    standardOutput?: number;
+    items: { materialId: number; quantity: number }[];
+  }) {
+    const output = await this.productRepo.findById(input.productId);
+    if (!output || !output.isActive) {
+      throw new NotFoundException('Thành phẩm (product) không tồn tại hoặc đã ngừng');
+    }
+    for (const line of input.items) {
+      const m = await this.productRepo.findById(line.materialId);
+      if (!m || !m.isActive) {
+        throw new BadRequestException(
+          `Nguyên liệu #${line.materialId} không tồn tại hoặc không còn hiệu lực`,
+        );
+      }
+    }
+    const std = input.standardOutput ?? 1;
+    if (std <= 0) {
+      throw new BadRequestException('standardOutput phải > 0');
+    }
+    return this.repo.createRecipe({
+      name: input.name,
+      productId: input.productId,
+      standardOutput: String(std),
+      items: input.items.map((i) => ({
+        materialId: i.materialId,
+        quantity: String(i.quantity),
+      })),
+    });
+  }
+
   async createOrder(input: {
     recipeId: number;
-    outputQuantity: number;
+    plannedQuantity: number;
     warehouseId: number;
     createdBy: string;
   }) {
@@ -27,16 +65,32 @@ export class ProductionService {
     if (!recipe?.isActive) {
       throw new NotFoundException('Không tìm thấy công thức (recipe)');
     }
-    return this.repo.createProductionOrder({
-      recipeId: input.recipeId,
-      warehouseId: input.warehouseId,
-      outputQuantity: String(input.outputQuantity),
-      status: 'draft',
-      createdBy: input.createdBy,
+    const outputProduct = await this.productRepo.findById(recipe.outputProductId);
+    if (!outputProduct || !outputProduct.isActive) {
+      throw new BadRequestException('Thành phẩm theo công thức không còn hiệu lực');
+    }
+    if (!recipe.items?.length) {
+      throw new BadRequestException('Công thức chưa có định mức nguyên liệu');
+    }
+
+    return this.uow.runInTransaction(async (tx) => {
+      const code = await this.repo.generateNextProductionOrderCode(tx);
+      return this.repo.createProductionOrder(
+        {
+          code,
+          recipeId: input.recipeId,
+          warehouseId: input.warehouseId,
+          plannedQuantity: String(input.plannedQuantity),
+          status: 'draft',
+          createdBy: input.createdBy,
+          kitchenStaffId: input.createdBy,
+        },
+        tx,
+      );
     });
   }
 
-  /** Tạm giữ nguyên liệu theo FEFO */
+  /** Bước 1–3: công thức, tồn, HSD — tạm giữ FEFO */
   async startProduction(orderId: string) {
     return this.uow.runInTransaction(async (tx) => {
       const order = await this.repo.findOrderById(tx, orderId);
@@ -48,12 +102,22 @@ export class ProductionService {
       if (!recipe?.items?.length) {
         throw new BadRequestException('Công thức không có nguyên liệu');
       }
+      const outputProduct = await this.productRepo.findById(recipe.outputProductId);
+      if (!outputProduct || !outputProduct.isActive) {
+        throw new BadRequestException('Thành phẩm không còn hiệu lực');
+      }
 
-      const outQty = parseFloat(String(order.outputQuantity));
+      const std = parseFloat(String(recipe.standardOutput ?? '1'));
+      if (std <= 0) {
+        throw new BadRequestException('standardOutput của công thức không hợp lệ');
+      }
+
+      const outQty = parseFloat(String(order.plannedQuantity));
+      const todayStr = nowVn().format('YYYY-MM-DD');
 
       for (const line of recipe.items) {
         const need =
-          parseFloat(String(line.quantityPerOutput)) * outQty;
+          (parseFloat(String(line.quantityPerOutput)) * outQty) / std;
         let remaining = need;
         const rows = await this.repo.listAvailableInventoryFefo(
           tx,
@@ -67,6 +131,14 @@ export class ProductionService {
           const res = parseFloat(String(row.inventory.reservedQuantity));
           const avail = phys - res;
           if (avail <= 0) continue;
+
+          const exp = String(row.batch.expiryDate);
+          if (exp < todayStr) {
+            throw new BadRequestException(
+              `Lô ${row.batch.batchCode} đã hết hạn. Vui lòng xử lý lô hàng trước khi sản xuất.`,
+            );
+          }
+
           const take = Math.min(avail, remaining);
           await this.repo.updateReservedQuantity(tx, row.inventory.id, take);
           await this.repo.insertReservation(tx, {
@@ -79,23 +151,34 @@ export class ProductionService {
 
         if (remaining > 0.0001) {
           throw new InsufficientStockException(
-            `Không đủ tồn nguyên liệu sản phẩm #${line.ingredientProductId}`,
+            `Không đủ tồn nguyên liệu sản phẩm #${line.ingredientProductId} (còn thiếu ~${remaining.toFixed(4)})`,
           );
         }
       }
 
-      await this.repo.updateOrderStatus(tx, order.id, 'in_progress');
-      return { message: 'Đã tạm giữ nguyên liệu (FEFO)' };
+      await this.repo.markOrderStarted(tx, order.id);
+      return { message: 'Đã tạm giữ nguyên liệu (FEFO), lệnh đang thực hiện' };
     });
   }
 
-  /** Trừ nguyên liệu, tạo lô thành phẩm, ghi log */
-  async finishProduction(orderId: string) {
+  /** Hoàn tất: trừ NL, lô TP, lineage, hao hụt / dư, log kho */
+  async completeProduction(
+    orderId: string,
+    input: { actualQuantity: number; surplusNote?: string },
+  ) {
     return this.uow.runInTransaction(async (tx) => {
       const order = await this.repo.findOrderById(tx, orderId);
       if (!order) throw new NotFoundException('Không tìm thấy lệnh sản xuất');
       if (order.status !== 'in_progress') {
         throw new BadRequestException('Lệnh phải đang chạy mới hoàn tất được');
+      }
+
+      const planned = parseFloat(String(order.plannedQuantity));
+      const actual = input.actualQuantity;
+      if (actual > planned && !input.surplusNote?.trim()) {
+        throw new BadRequestException(
+          'Sản lượng vượt định mức: cần surplusNote (giải trình)',
+        );
       }
 
       const recipe = order.recipe;
@@ -104,6 +187,9 @@ export class ProductionService {
       if (!product) {
         throw new NotFoundException('Thành phẩm không tồn tại');
       }
+
+      const loss = Math.max(0, planned - actual);
+      const surplus = Math.max(0, actual - planned);
 
       for (const res of order.reservations) {
         const qty = parseFloat(String(res.reservedQuantity));
@@ -124,38 +210,98 @@ export class ProductionService {
         );
       }
 
-      const batchCode = await this.inboundRepo.nextBatchCode(tx, product.sku);
+      await this.inboundRepo.lockBatchCodeGeneration(tx);
+      let batchCode = generateBatchCode(product.sku);
+      for (let i = 0; i < 12; i++) {
+        const exists = await this.repo.findBatchByCode(tx, batchCode);
+        if (!exists) break;
+        batchCode = generateBatchCode(product.sku);
+      }
+
       const mfg = nowVn().format('YYYY-MM-DD');
-      const exp = nowVn().add(product.shelfLifeDays, 'day').format('YYYY-MM-DD');
+      let minParentExpiry: string | null = null;
+      for (const res of order.reservations) {
+        const b = res.batch;
+        if (!b) continue;
+        const e = String(b.expiryDate);
+        if (!minParentExpiry || e < minParentExpiry) minParentExpiry = e;
+      }
+      const shelfCap = parseToStartOfDayVn(mfg)
+        .add(product.shelfLifeDays, 'day')
+        .format('YYYY-MM-DD');
+      let expiryDate = shelfCap;
+      if (minParentExpiry) {
+        expiryDate = minParentExpiry < shelfCap ? minParentExpiry : shelfCap;
+      }
 
       const batch = await this.inboundRepo.insertBatch(tx, {
         productId: outputProductId,
         batchCode,
         manufacturedDate: mfg,
-        expiryDate: exp,
+        expiryDate,
       });
 
       await this.inboundRepo.updateBatchStatus(tx, batch.id, 'available');
 
-      const outQty = parseFloat(String(order.outputQuantity));
+      for (const res of order.reservations) {
+        await this.repo.insertBatchLineage(tx, {
+          parentBatchId: res.batchId,
+          childBatchId: batch.id,
+          productionOrderId: order.id,
+          consumedQuantity: String(res.reservedQuantity),
+        });
+      }
+
       await this.inboundRepo.upsertInventory(
         tx,
         order.warehouseId,
         batch.id,
-        outQty.toString(),
+        actual.toString(),
       );
+
       await this.inventoryRepo.createInventoryTransaction(
         order.warehouseId,
         batch.id,
         'production_output',
-        outQty,
+        planned,
         `PRODUCTION:${orderId}`,
-        'Thành phẩm sau sản xuất',
+        'Thành phẩm theo định mức (lý thuyết)',
         tx,
       );
 
-      await this.repo.updateOrderStatus(tx, order.id, 'completed');
-      return { batchId: batch.id, batchCode: batch.batchCode };
+      if (loss > 0.0001) {
+        await this.inventoryRepo.createInventoryTransaction(
+          order.warehouseId,
+          batch.id,
+          'adjustment',
+          -loss,
+          `PRODUCTION:${orderId}`,
+          'PRODUCTION_LOSS',
+          tx,
+        );
+      }
+      if (surplus > 0.0001) {
+        await this.inventoryRepo.createInventoryTransaction(
+          order.warehouseId,
+          batch.id,
+          'adjustment',
+          surplus,
+          `PRODUCTION:${orderId}`,
+          `PRODUCTION_SURPLUS:${input.surplusNote ?? ''}`,
+          tx,
+        );
+      }
+
+      await this.repo.markOrderCompleted(tx, order.id, String(actual));
+
+      return {
+        batchId: batch.id,
+        batchCode: batch.batchCode,
+        plannedQuantity: planned,
+        actualQuantity: actual,
+        lossQuantity: loss > 0.0001 ? loss : 0,
+        surplusQuantity: surplus > 0.0001 ? surplus : 0,
+      };
     });
   }
 }
