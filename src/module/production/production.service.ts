@@ -7,10 +7,19 @@ import { generateBatchCode } from '../../common/utils/generate-batch-code.util';
 import { InsufficientStockException } from '../../common/exceptions/insufficient-stock.exception';
 import { nowVn, parseToStartOfDayVn } from '../../common/time/vn-time';
 import { UnitOfWork } from '../../database/unit-of-work';
+import { UserRole } from '../auth/dto/create-user.dto';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { ProductRepository } from '../product/product.repository';
+import { PRODUCTION_SURPLUS_APPROVAL_RATIO } from './production.constants';
 import { ProductionRepository } from './production.repository';
+import {
+  fromDbDecimal,
+  hasMaterialRemaining,
+  isLossPositive,
+  isPositivePlannedQuantity,
+  isSurplusPositive,
+} from './utils/production-decimal.util';
 
 @Injectable()
 export class ProductionService {
@@ -61,6 +70,12 @@ export class ProductionService {
     warehouseId: number;
     createdBy: string;
   }) {
+    if (!isPositivePlannedQuantity(input.plannedQuantity)) {
+      throw new BadRequestException(
+        'Số lượng dự kiến (plannedQuantity) phải lớn hơn 0.',
+      );
+    }
+
     const recipe = await this.repo.findRecipeWithItems(input.recipeId);
     if (!recipe?.isActive) {
       throw new NotFoundException('Không tìm thấy công thức (recipe)');
@@ -107,17 +122,23 @@ export class ProductionService {
         throw new BadRequestException('Thành phẩm không còn hiệu lực');
       }
 
-      const std = parseFloat(String(recipe.standardOutput ?? '1'));
+      const std = fromDbDecimal(recipe.standardOutput ?? '1');
       if (std <= 0) {
         throw new BadRequestException('standardOutput của công thức không hợp lệ');
       }
 
-      const outQty = parseFloat(String(order.plannedQuantity));
+      const outQty = fromDbDecimal(order.plannedQuantity);
+      if (!isPositivePlannedQuantity(outQty)) {
+        throw new BadRequestException(
+          'Số lượng dự kiến trên lệnh không hợp lệ (≤ 0). Không thể bắt đầu sản xuất.',
+        );
+      }
+
       const todayStr = nowVn().format('YYYY-MM-DD');
 
       for (const line of recipe.items) {
         const need =
-          (parseFloat(String(line.quantityPerOutput)) * outQty) / std;
+          (fromDbDecimal(line.quantityPerOutput) * outQty) / std;
         let remaining = need;
         const rows = await this.repo.listAvailableInventoryFefo(
           tx,
@@ -126,9 +147,9 @@ export class ProductionService {
         );
 
         for (const row of rows) {
-          if (remaining <= 0) break;
-          const phys = parseFloat(String(row.inventory.quantity));
-          const res = parseFloat(String(row.inventory.reservedQuantity));
+          if (!hasMaterialRemaining(remaining)) break;
+          const phys = fromDbDecimal(row.inventory.quantity);
+          const res = fromDbDecimal(row.inventory.reservedQuantity);
           const avail = phys - res;
           if (avail <= 0) continue;
 
@@ -149,9 +170,11 @@ export class ProductionService {
           remaining -= take;
         }
 
-        if (remaining > 0.0001) {
+        if (hasMaterialRemaining(remaining)) {
           throw new InsufficientStockException(
-            `Không đủ tồn nguyên liệu sản phẩm #${line.ingredientProductId} (còn thiếu ~${remaining.toFixed(4)})`,
+            `Không đủ tồn khả dụng cho nguyên liệu (mã sản phẩm #${line.ingredientProductId}) tại kho lệnh. ` +
+              `Theo định mức (FEFO) vẫn còn thiếu khoảng ${remaining.toFixed(4)} đơn vị so với nhu cầu. ` +
+              `Hãy nhập thêm hàng, điều chỉnh plannedQuantity hoặc kiểm tra các lô hết hạn đã được xử lý chưa.`,
           );
         }
       }
@@ -161,10 +184,43 @@ export class ProductionService {
     });
   }
 
+  /**
+   * HSD thành phẩm: không lấy HSD sau ngày “cap” theo shelf life từ NSX;
+   * không lấy sau HSD nguyên liệu đầu vào (truy xuất).
+   */
+  private calculateFinishedGoodExpiry(params: {
+    manufacturedDateYmd: string;
+    shelfLifeDays: number;
+    parentExpiryYmds: string[];
+  }): string {
+    const shelfCap = parseToStartOfDayVn(params.manufacturedDateYmd)
+      .add(params.shelfLifeDays, 'day')
+      .format('YYYY-MM-DD');
+
+    let minParent: string | null = null;
+    for (const e of params.parentExpiryYmds) {
+      if (!minParent || e < minParent) minParent = e;
+    }
+
+    if (!minParent) return shelfCap;
+    return minParent < shelfCap ? minParent : shelfCap;
+  }
+
+  private static canApproveHighSurplus(callerRole?: string): boolean {
+    if (!callerRole) return false;
+    return (
+      callerRole === UserRole.MANAGER || callerRole === UserRole.ADMIN
+    );
+  }
+
   /** Hoàn tất: trừ NL, lô TP, lineage, hao hụt / dư, log kho */
   async completeProduction(
     orderId: string,
-    input: { actualQuantity: number; surplusNote?: string },
+    input: {
+      actualQuantity: number;
+      surplusNote?: string;
+      callerRole?: string;
+    },
   ) {
     return this.uow.runInTransaction(async (tx) => {
       const order = await this.repo.findOrderById(tx, orderId);
@@ -173,11 +229,35 @@ export class ProductionService {
         throw new BadRequestException('Lệnh phải đang chạy mới hoàn tất được');
       }
 
-      const planned = parseFloat(String(order.plannedQuantity));
+      const planned = fromDbDecimal(order.plannedQuantity);
+      if (!isPositivePlannedQuantity(planned)) {
+        throw new BadRequestException(
+          'Định mức trên lệnh không hợp lệ; không thể hoàn tất.',
+        );
+      }
+
       const actual = input.actualQuantity;
+      if (!isPositivePlannedQuantity(actual)) {
+        throw new BadRequestException(
+          'Sản lượng thực tế phải lớn hơn 0.',
+        );
+      }
+
+      const maxAllowedWithoutManager =
+        planned * (1 + PRODUCTION_SURPLUS_APPROVAL_RATIO);
+      if (
+        actual > maxAllowedWithoutManager &&
+        !ProductionService.canApproveHighSurplus(input.callerRole)
+      ) {
+        throw new BadRequestException(
+          `Sản lượng thực tế vượt quá ${Math.round(PRODUCTION_SURPLUS_APPROVAL_RATIO * 100)}% so với định mức (${planned}). ` +
+            `Chỉ tài khoản quản lý hoặc admin mới được ghi nhận mức dư lớn như vậy.`,
+        );
+      }
+
       if (actual > planned && !input.surplusNote?.trim()) {
         throw new BadRequestException(
-          'Sản lượng vượt định mức: cần surplusNote (giải trình)',
+          'Sản lượng vượt định mức: bắt buộc nhập surplusNote (giải trình).',
         );
       }
 
@@ -192,7 +272,7 @@ export class ProductionService {
       const surplus = Math.max(0, actual - planned);
 
       for (const res of order.reservations) {
-        const qty = parseFloat(String(res.reservedQuantity));
+        const qty = fromDbDecimal(res.reservedQuantity);
         await this.repo.decreaseStockAndReserved(
           tx,
           order.warehouseId,
@@ -219,20 +299,18 @@ export class ProductionService {
       }
 
       const mfg = nowVn().format('YYYY-MM-DD');
-      let minParentExpiry: string | null = null;
+      const parentExpiries: string[] = [];
       for (const res of order.reservations) {
         const b = res.batch;
         if (!b) continue;
-        const e = String(b.expiryDate);
-        if (!minParentExpiry || e < minParentExpiry) minParentExpiry = e;
+        parentExpiries.push(String(b.expiryDate));
       }
-      const shelfCap = parseToStartOfDayVn(mfg)
-        .add(product.shelfLifeDays, 'day')
-        .format('YYYY-MM-DD');
-      let expiryDate = shelfCap;
-      if (minParentExpiry) {
-        expiryDate = minParentExpiry < shelfCap ? minParentExpiry : shelfCap;
-      }
+
+      const expiryDate = this.calculateFinishedGoodExpiry({
+        manufacturedDateYmd: mfg,
+        shelfLifeDays: product.shelfLifeDays,
+        parentExpiryYmds: parentExpiries,
+      });
 
       const batch = await this.inboundRepo.insertBatch(tx, {
         productId: outputProductId,
@@ -265,11 +343,11 @@ export class ProductionService {
         'production_output',
         planned,
         `PRODUCTION:${orderId}`,
-        'Thành phẩm theo định mức (lý thuyết)',
+        'Thành phẩm theo định mức đầy đủ (planned) — nền cho đối soát hao hụt/dư',
         tx,
       );
 
-      if (loss > 0.0001) {
+      if (isLossPositive(loss)) {
         await this.inventoryRepo.createInventoryTransaction(
           order.warehouseId,
           batch.id,
@@ -280,14 +358,16 @@ export class ProductionService {
           tx,
         );
       }
-      if (surplus > 0.0001) {
+      if (isSurplusPositive(surplus)) {
+        const trimmedNote = input.surplusNote?.trim() ?? '';
+        const surplusReason = `PRODUCTION_SURPLUS | ${trimmedNote}`;
         await this.inventoryRepo.createInventoryTransaction(
           order.warehouseId,
           batch.id,
           'adjustment',
           surplus,
           `PRODUCTION:${orderId}`,
-          `PRODUCTION_SURPLUS:${input.surplusNote ?? ''}`,
+          surplusReason,
           tx,
         );
       }
@@ -299,8 +379,8 @@ export class ProductionService {
         batchCode: batch.batchCode,
         plannedQuantity: planned,
         actualQuantity: actual,
-        lossQuantity: loss > 0.0001 ? loss : 0,
-        surplusQuantity: surplus > 0.0001 ? surplus : 0,
+        lossQuantity: isLossPositive(loss) ? loss : 0,
+        surplusQuantity: isSurplusPositive(surplus) ? surplus : 0,
       };
     });
   }

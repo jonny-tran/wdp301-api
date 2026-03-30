@@ -4,6 +4,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { InsufficientStockException } from '../../common/exceptions/insufficient-stock.exception';
 import { UnitOfWork } from '../../database/unit-of-work';
+import { UserRole } from '../auth/dto/create-user.dto';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { ProductRepository } from '../product/product.repository';
@@ -126,10 +127,42 @@ describe('ProductionService', () => {
         expect.objectContaining({ id: 'po-1', status: 'draft' }),
       );
     });
+
+    it('should reject plannedQuantity <= 0', async () => {
+      await expect(
+        service.createOrder({
+          recipeId: 1,
+          plannedQuantity: 0,
+          warehouseId: 1,
+          createdBy: 'u',
+        }),
+      ).rejects.toThrow(BadRequestException);
+      expect(repo.findRecipeWithItems).not.toHaveBeenCalled();
+    });
   });
 
   describe('startProduction', () => {
     const orderId = 'order-1';
+
+    it('should reject when plannedQuantity on order is not positive', async () => {
+      repo.findOrderById.mockResolvedValue({
+        id: orderId,
+        status: 'draft',
+        warehouseId: 1,
+        plannedQuantity: '0',
+        recipe: {
+          outputProductId: 99,
+          standardOutput: '1',
+          items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
+        },
+      } as never);
+      productRepo.findById.mockResolvedValue({ id: 99, isActive: true } as never);
+
+      await expect(service.startProduction(orderId)).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(repo.listAvailableInventoryFefo).not.toHaveBeenCalled();
+    });
 
     it('Test Case 1: should fail when material stock is insufficient', async () => {
       repo.findOrderById.mockResolvedValue({
@@ -203,26 +236,28 @@ describe('ProductionService', () => {
   describe('completeProduction', () => {
     const orderId = 'order-1';
 
+    const baseOrderMock = {
+      id: orderId,
+      status: 'in_progress',
+      warehouseId: 7,
+      plannedQuantity: '4',
+      recipe: { outputProductId: 100 },
+      reservations: [
+        {
+          batchId: 11,
+          reservedQuantity: '2.5',
+          batch: { id: 11, expiryDate: '2026-12-31' },
+        },
+        {
+          batchId: 12,
+          reservedQuantity: '1.5',
+          batch: { id: 12, expiryDate: '2026-11-30' },
+        },
+      ],
+    };
+
     it('Test Case 3: should record production loss when actual < theoretical', async () => {
-      repo.findOrderById.mockResolvedValue({
-        id: orderId,
-        status: 'in_progress',
-        warehouseId: 7,
-        plannedQuantity: '4',
-        recipe: { outputProductId: 100 },
-        reservations: [
-          {
-            batchId: 11,
-            reservedQuantity: '2.5',
-            batch: { id: 11, expiryDate: '2026-12-31' },
-          },
-          {
-            batchId: 12,
-            reservedQuantity: '1.5',
-            batch: { id: 12, expiryDate: '2026-11-30' },
-          },
-        ],
-      } as never);
+      repo.findOrderById.mockResolvedValue(baseOrderMock as never);
       productRepo.findById.mockResolvedValue({
         id: 100,
         sku: 'TP-SKU',
@@ -235,7 +270,18 @@ describe('ProductionService', () => {
 
       const result = await service.completeProduction(orderId, {
         actualQuantity: 3.5,
+        callerRole: UserRole.CENTRAL_KITCHEN_STAFF,
       });
+
+      expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
+        7,
+        200,
+        'production_output',
+        4,
+        `PRODUCTION:${orderId}`,
+        expect.any(String),
+        mockTx,
+      );
 
       expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
         7,
@@ -253,11 +299,7 @@ describe('ProductionService', () => {
 
     it('Test Case 4: should insert batch lineage for parent batches', async () => {
       repo.findOrderById.mockResolvedValue({
-        id: orderId,
-        status: 'in_progress',
-        warehouseId: 7,
-        plannedQuantity: '4',
-        recipe: { outputProductId: 100 },
+        ...baseOrderMock,
         reservations: [
           {
             batchId: 11,
@@ -281,7 +323,10 @@ describe('ProductionService', () => {
         batchCode: 'BAT-LINEAGE',
       } as never);
 
-      await service.completeProduction(orderId, { actualQuantity: 4 });
+      await service.completeProduction(orderId, {
+        actualQuantity: 4,
+        callerRole: UserRole.CENTRAL_KITCHEN_STAFF,
+      });
 
       expect(repo.insertBatchLineage).toHaveBeenCalledWith(
         mockTx,
@@ -299,6 +344,105 @@ describe('ProductionService', () => {
           childBatchId: 200,
           consumedQuantity: '1.5',
         }),
+      );
+    });
+
+    it('Surplus Production: should save surplusNote in inventory transaction reason', async () => {
+      repo.findOrderById.mockResolvedValue({
+        ...baseOrderMock,
+        plannedQuantity: '4',
+      } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 100,
+        sku: 'TP-SKU',
+        shelfLifeDays: 3,
+      } as never);
+      inboundRepo.insertBatch.mockResolvedValue({
+        id: 200,
+        batchCode: 'BAT-SURP',
+      } as never);
+
+      const note = 'Cân đủ thêm từ lô phụ';
+      await service.completeProduction(orderId, {
+        actualQuantity: 4.5,
+        surplusNote: note,
+        callerRole: UserRole.CENTRAL_KITCHEN_STAFF,
+      });
+
+      expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
+        7,
+        200,
+        'adjustment',
+        0.5,
+        `PRODUCTION:${orderId}`,
+        `PRODUCTION_SURPLUS | ${note}`,
+        mockTx,
+      );
+    });
+
+    it('should reject surplus > 20% over planned for kitchen staff', async () => {
+      repo.findOrderById.mockResolvedValue({
+        ...baseOrderMock,
+        plannedQuantity: '10',
+        reservations: [
+          {
+            batchId: 11,
+            reservedQuantity: '10',
+            batch: { id: 11, expiryDate: '2026-12-31' },
+          },
+        ],
+      } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 100,
+        sku: 'TP-SKU',
+        shelfLifeDays: 3,
+      } as never);
+
+      await expect(
+        service.completeProduction(orderId, {
+          actualQuantity: 13,
+          surplusNote: 'Vượt ngưỡng',
+          callerRole: UserRole.CENTRAL_KITCHEN_STAFF,
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should allow surplus > 20% over planned for manager with surplusNote', async () => {
+      repo.findOrderById.mockResolvedValue({
+        ...baseOrderMock,
+        plannedQuantity: '10',
+        reservations: [
+          {
+            batchId: 11,
+            reservedQuantity: '10',
+            batch: { id: 11, expiryDate: '2026-12-31' },
+          },
+        ],
+      } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 100,
+        sku: 'TP-SKU',
+        shelfLifeDays: 3,
+      } as never);
+      inboundRepo.insertBatch.mockResolvedValue({
+        id: 200,
+        batchCode: 'BAT-MGR',
+      } as never);
+
+      await service.completeProduction(orderId, {
+        actualQuantity: 13,
+        surplusNote: 'Được quản lý xác nhận',
+        callerRole: UserRole.MANAGER,
+      });
+
+      expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
+        7,
+        200,
+        'adjustment',
+        3,
+        `PRODUCTION:${orderId}`,
+        'PRODUCTION_SURPLUS | Được quản lý xác nhận',
+        mockTx,
       );
     });
 

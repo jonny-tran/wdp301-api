@@ -1,3 +1,8 @@
+/**
+ * Truy vấn lệnh sản xuất / FEFO / reservation.
+ * Số lượng từ DB (numeric) nên được truyền sang service dưới dạng string
+ * và được parse bằng `fromDbDecimal` trước khi so sánh.
+ */
 import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import dayjs from 'dayjs';

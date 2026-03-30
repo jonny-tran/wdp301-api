@@ -82,10 +82,12 @@ export class ProductionController {
   async complete(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CompleteProductionDto,
+    @CurrentUser() user: RequestWithUser['user'],
   ) {
     return this.productionService.completeProduction(id, {
       actualQuantity: dto.actualQuantity,
       surplusNote: dto.surplusNote,
+      callerRole: user.role,
     });
   }
 }
