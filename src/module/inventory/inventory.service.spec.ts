@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/unbound-method */
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { UnitOfWork } from '../../database/unit-of-work';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import {
   AgingReportQueryDto,
@@ -16,6 +17,7 @@ describe('InventoryService', () => {
   let inventoryRepo: jest.Mocked<InventoryRepository>;
   let mockDb: { transaction: jest.Mock };
   let mockTx: jest.Mocked<InventoryRepository>;
+  let mockUow: { runInTransaction: jest.Mock };
 
   beforeEach(async () => {
     const mockInventoryRepoObj = {
@@ -34,6 +36,14 @@ describe('InventoryService', () => {
       getAgingReport: jest.fn(),
       getWasteReport: jest.fn(),
       getFinancialLoss: jest.fn(),
+      syncBatchTotalsFromInventory: jest.fn(),
+      findBatchesForFEFOWithShelfBuffer: jest.fn(),
+      reserveInventoryQuantity: jest.fn(),
+      findInventoryTransactionsByReferenceAndType: jest.fn(),
+      listBatchesToExpire: jest.fn(),
+      updateBatchStatus: jest.fn(),
+      clearReservedForBatchInventory: jest.fn(),
+      decreasePhysicalAndReserved: jest.fn(),
     };
 
     mockTx =
@@ -49,6 +59,30 @@ describe('InventoryService', () => {
       ),
     };
 
+    mockUow = {
+      runInTransaction: jest.fn(async (cb: (tx: unknown) => Promise<unknown>) => {
+        const tx = {
+          execute: jest.fn().mockResolvedValue(undefined),
+          query: {
+            batches: {
+              findFirst: jest.fn().mockResolvedValue({
+                id: 1,
+                status: 'available',
+              }),
+            },
+            inventory: {
+              findFirst: jest.fn().mockResolvedValue({
+                id: 1,
+                quantity: '100',
+                reservedQuantity: '0',
+              }),
+            },
+          },
+        };
+        return cb(tx);
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         InventoryService,
@@ -59,6 +93,10 @@ describe('InventoryService', () => {
         {
           provide: DATABASE_CONNECTION,
           useValue: mockDb,
+        },
+        {
+          provide: UnitOfWork,
+          useValue: mockUow,
         },
       ],
     }).compile();
@@ -555,6 +593,70 @@ describe('InventoryService', () => {
       );
 
       expect(result.receivedQty).toBe(8);
+    });
+  });
+
+  describe('Inventory Engine (audit / FEFO / atomicity)', () => {
+    it('should not sync batch when audit insert fails (atomicity)', async () => {
+      inventoryRepo.adjustBatchQuantity.mockResolvedValue({ quantity: '95' } as never);
+      inventoryRepo.createInventoryTransaction.mockRejectedValue(
+        new Error('simulated insert failure'),
+      );
+      inventoryRepo.syncBatchTotalsFromInventory.mockResolvedValue(undefined);
+
+      await expect(
+        service.adjustStock({
+          warehouseId: 1,
+          batchId: 1,
+          quantityDelta: -5,
+          reason: 'Test',
+        }),
+      ).rejects.toThrow('simulated insert failure');
+
+      expect(inventoryRepo.syncBatchTotalsFromInventory).not.toHaveBeenCalled();
+    });
+
+    it('should not allocate when FEFO+buffer returns no eligible batches', async () => {
+      inventoryRepo.findBatchesForFEFOWithShelfBuffer.mockResolvedValue([]);
+
+      const result = await service.lockStockForOrder(
+        'order-1',
+        1,
+        [{ orderItemId: 1, productId: 1, quantityRequested: 50 }],
+        mockTx as never,
+      );
+
+      expect(result.results[0].approved).toBe(0);
+      expect(result.results[0].missing).toBe(50);
+      expect(inventoryRepo.reserveInventoryQuantity).not.toHaveBeenCalled();
+    });
+
+    it('should create exactly one adjust_loss transaction with correct sign', async () => {
+      inventoryRepo.adjustBatchQuantity.mockResolvedValue({ quantity: '90' } as never);
+      inventoryRepo.createInventoryTransaction.mockResolvedValue({ id: 1 } as never);
+      inventoryRepo.syncBatchTotalsFromInventory.mockResolvedValue(undefined);
+
+      await service.adjustStock({
+        warehouseId: 1,
+        batchId: 1,
+        quantityDelta: -10,
+        reason: 'Lý do',
+        evidenceImage: 'https://example.com/evidence.png',
+      });
+
+      expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledTimes(1);
+      expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
+        1,
+        1,
+        'adjust_loss',
+        -10,
+        undefined,
+        'Lý do',
+        expect.anything(),
+        expect.objectContaining({
+          evidenceImage: 'https://example.com/evidence.png',
+        }),
+      );
     });
   });
 });

@@ -8,6 +8,7 @@ import {
   gte,
   inArray,
   lte,
+  ne,
   or,
   sql,
   SQL,
@@ -482,12 +483,19 @@ export class OrderRepository {
         schema.batches,
         eq(schema.inventory.batchId, schema.batches.id),
       )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
       .where(
         and(
           eq(schema.inventory.warehouseId, warehouseId),
           eq(schema.batches.productId, productId),
-          sql`${schema.inventory.quantity} > ${schema.inventory.reservedQuantity}`,
-          sql`${schema.batches.expiryDate}::date > CURRENT_DATE`,
+          sql`${schema.inventory.quantity}::numeric > ${schema.inventory.reservedQuantity}::numeric`,
+          sql`${schema.batches.expiryDate}::date > CURRENT_DATE + (COALESCE(${schema.products.minShelfLife}, 0)::int * interval '1 day')`,
+          ne(schema.batches.status, 'expired'),
+          ne(schema.batches.status, 'damaged'),
+          ne(schema.batches.status, 'empty'),
         ),
       )
       .orderBy(schema.batches.expiryDate);

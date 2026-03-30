@@ -2,10 +2,13 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { Cron } from '@nestjs/schedule';
+import { and, eq, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { UnitOfWork } from '../../database/unit-of-work';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import {
@@ -17,8 +20,10 @@ import {
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
 import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
+import { AdjustmentDto, OrderItemLockLine } from './dto/adjustment.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryRepository } from './inventory.repository';
+import { invFromDb, invPct, invToDbString } from './utils/inventory-decimal.util';
 
 export interface AgingBucketItem {
   batchCode: string;
@@ -30,8 +35,11 @@ export interface AgingBucketItem {
 
 @Injectable()
 export class InventoryService {
+  private readonly logger = new Logger(InventoryService.name);
+
   constructor(
     private readonly inventoryRepository: InventoryRepository,
+    private readonly uow: UnitOfWork,
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
@@ -580,5 +588,374 @@ export class InventoryService {
     );
 
     return { message: 'Success', receivedQty };
+  }
+
+  // --- Inventory Engine (audit, FEFO buffer, atomicity) ---
+
+  /**
+   * Điều chỉnh tồn: chỉ qua transaction + ghi adjust_loss / adjust_surplus.
+   * Không cập nhật trực tiếp bảng batches ngoài đồng bộ từ inventory.
+   */
+  async adjustStock(dto: AdjustmentDto): Promise<void> {
+    return this.uow.runInTransaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(90210, ${dto.warehouseId})`,
+      );
+
+      const batch = await tx.query.batches.findFirst({
+        where: eq(schema.batches.id, dto.batchId),
+      });
+      if (!batch) {
+        throw new NotFoundException('Không tìm thấy lô hàng');
+      }
+
+      const invRow = await tx.query.inventory.findFirst({
+        where: and(
+          eq(schema.inventory.warehouseId, dto.warehouseId),
+          eq(schema.inventory.batchId, dto.batchId),
+        ),
+      });
+      if (!invRow) {
+        throw new BadRequestException(
+          'Không có bản ghi tồn kho cho kho/lô này để điều chỉnh',
+        );
+      }
+
+      const physical = invFromDb(invRow.quantity);
+      const delta = dto.quantityDelta;
+
+      if (delta < 0) {
+        const lossAbs = Math.abs(delta);
+        const pct = invPct(lossAbs, physical);
+        if (pct > 5 && !(dto.evidenceImage && dto.evidenceImage.trim())) {
+          throw new BadRequestException(
+            'Điều chỉnh giảm vượt 5% giá trị tồn lô yêu cầu ảnh chứng minh (evidenceImage).',
+          );
+        }
+        const nextQty = physical + delta;
+        if (nextQty < 0) {
+          throw new BadRequestException(
+            'Số lượng điều chỉnh vượt quá tồn vật lý hiện có',
+          );
+        }
+      }
+
+      await this.inventoryRepository.adjustBatchQuantity(
+        dto.warehouseId,
+        dto.batchId,
+        dto.quantityDelta,
+        tx,
+      );
+
+      const txType = delta < 0 ? 'adjust_loss' : 'adjust_surplus';
+      const signedChange = invToDbString(delta);
+
+      await this.inventoryRepository.createInventoryTransaction(
+        dto.warehouseId,
+        dto.batchId,
+        txType,
+        parseFloat(signedChange),
+        undefined,
+        dto.reason,
+        tx,
+        {
+          evidenceImage: dto.evidenceImage ?? undefined,
+          createdBy: dto.createdBy ?? undefined,
+        },
+      );
+
+      await this.inventoryRepository.syncBatchTotalsFromInventory(tx, dto.batchId);
+    });
+  }
+
+  /**
+   * Đặt chỗ theo đơn (FEFO + đệm min_shelf_life): Available ↓, Reserved ↑, Physical không đổi.
+   */
+  async lockStockForOrder(
+    orderId: string,
+    warehouseId: number,
+    items: OrderItemLockLine[],
+    tx: NodePgDatabase<typeof schema>,
+    createdBy?: string | null,
+  ): Promise<{
+    shipmentItems: { batchId: number; quantity: number }[];
+    results: {
+      orderItemId: number;
+      productId: number;
+      requested: number;
+      approved: number;
+      missing: number;
+    }[];
+  }> {
+    const shipmentItems: { batchId: number; quantity: number }[] = [];
+    const results: {
+      orderItemId: number;
+      productId: number;
+      requested: number;
+      approved: number;
+      missing: number;
+    }[] = [];
+
+    for (const line of items) {
+      let remaining = line.quantityRequested;
+      let approved = 0;
+
+      const batches =
+        await this.inventoryRepository.findBatchesForFEFOWithShelfBuffer(
+          line.productId,
+          warehouseId,
+          tx,
+        );
+
+      for (const batch of batches) {
+        if (remaining <= 0) break;
+        const phys = invFromDb(batch.quantity);
+        const res = invFromDb(batch.reservedQuantity);
+        const available = phys - res;
+        if (available <= 0) continue;
+
+        const takeNum = Math.min(available, remaining);
+
+        await this.inventoryRepository.reserveInventoryQuantity(
+          batch.inventoryId,
+          takeNum,
+          tx,
+        );
+
+        await this.inventoryRepository.createInventoryTransaction(
+          warehouseId,
+          batch.batchId,
+          'reservation',
+          takeNum,
+          orderId,
+          'Giữ chỗ theo đơn hàng (RESERVATION)',
+          tx,
+          { createdBy: createdBy ?? undefined },
+        );
+
+        await this.inventoryRepository.syncBatchTotalsFromInventory(
+          tx,
+          batch.batchId,
+        );
+
+        shipmentItems.push({ batchId: batch.batchId, quantity: takeNum });
+        approved += takeNum;
+        remaining -= takeNum;
+      }
+
+      results.push({
+        orderItemId: line.orderItemId,
+        productId: line.productId,
+        requested: line.quantityRequested,
+        approved,
+        missing: Math.max(0, line.quantityRequested - approved),
+      });
+    }
+
+    return { shipmentItems, results };
+  }
+
+  /**
+   * Hoàn chỗ: Reserved ↓, Available ↑ (Physical không đổi). Ưu tiên theo log RESERVATION.
+   */
+  async releaseStock(
+    orderId: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    const run = async (db: NodePgDatabase<typeof schema>) => {
+      const reservations =
+        await this.inventoryRepository.findInventoryTransactionsByReferenceAndType(
+          orderId,
+          'reservation',
+          db,
+        );
+
+      if (reservations.length > 0) {
+        for (const r of reservations) {
+          const qty = parseFloat(String(r.quantityChange));
+          if (qty <= 0) continue;
+
+          const inv = await db.query.inventory.findFirst({
+            where: and(
+              eq(schema.inventory.warehouseId, r.warehouseId),
+              eq(schema.inventory.batchId, r.batchId),
+            ),
+          });
+          if (!inv) continue;
+
+          await db
+            .update(schema.inventory)
+            .set({
+              reservedQuantity: sql`GREATEST((${schema.inventory.reservedQuantity})::numeric - ${String(qty)}::numeric, 0)`,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.inventory.id, inv.id));
+
+          await this.inventoryRepository.createInventoryTransaction(
+            r.warehouseId,
+            r.batchId,
+            'release',
+            qty,
+            orderId,
+            'Hoàn chỗ (RELEASE)',
+            db,
+          );
+
+          await this.inventoryRepository.syncBatchTotalsFromInventory(
+            db,
+            r.batchId,
+          );
+        }
+        return;
+      }
+
+      const shipment = await db.query.shipments.findFirst({
+        where: eq(schema.shipments.orderId, orderId),
+      });
+      if (shipment) {
+        await this.releaseStockForShipment(
+          shipment.id,
+          shipment.fromWarehouseId,
+          db,
+        );
+      }
+    };
+
+    if (tx) return run(tx);
+    return this.db.transaction(run);
+  }
+
+  /** Giải phóng reserved theo dòng shipment (legacy / không có log RESERVATION). */
+  async releaseStockForShipment(
+    shipmentId: string,
+    centralWarehouseId: number,
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    const items = await tx.query.shipmentItems.findMany({
+      where: eq(schema.shipmentItems.shipmentId, shipmentId),
+    });
+    const shipment = await tx.query.shipments.findFirst({
+      where: eq(schema.shipments.id, shipmentId),
+    });
+    const orderId = shipment?.orderId;
+
+    for (const line of items) {
+      const qty = parseFloat(String(line.quantity));
+      if (qty <= 0) continue;
+
+      await tx
+        .update(schema.inventory)
+        .set({
+          reservedQuantity: sql`GREATEST((${schema.inventory.reservedQuantity})::numeric - ${String(qty)}::numeric, 0)`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(schema.inventory.warehouseId, centralWarehouseId),
+            eq(schema.inventory.batchId, line.batchId),
+          ),
+        );
+
+      await this.inventoryRepository.createInventoryTransaction(
+        centralWarehouseId,
+        line.batchId,
+        'release',
+        qty,
+        orderId ?? undefined,
+        'Hoàn chỗ theo shipment (RELEASE)',
+        tx,
+      );
+
+      await this.inventoryRepository.syncBatchTotalsFromInventory(
+        tx,
+        line.batchId,
+      );
+    }
+  }
+
+  /**
+   * Xuất kho giao hàng: Physical ↓, Reserved ↓ (Available không đổi theo phương trình đã giữ chỗ).
+   */
+  async confirmExport(
+    shipmentId: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    const run = async (db: NodePgDatabase<typeof schema>) => {
+      const shipment = await db.query.shipments.findFirst({
+        where: eq(schema.shipments.id, shipmentId),
+        with: { items: true },
+      });
+      if (!shipment) {
+        throw new NotFoundException('Không tìm thấy chuyến hàng');
+      }
+      const fromWarehouseId = shipment.fromWarehouseId;
+
+      for (const it of shipment.items ?? []) {
+        const qty = parseFloat(String(it.quantity));
+        if (qty <= 0) continue;
+
+        await this.inventoryRepository.decreasePhysicalAndReserved(
+          fromWarehouseId,
+          it.batchId,
+          qty,
+          db,
+        );
+
+        await this.inventoryRepository.createInventoryTransaction(
+          fromWarehouseId,
+          it.batchId,
+          'export',
+          -qty,
+          shipmentId,
+          'Xuất kho giao hàng (EXPORT)',
+          db,
+        );
+
+        await this.inventoryRepository.syncBatchTotalsFromInventory(
+          db,
+          it.batchId,
+        );
+      }
+    };
+
+    if (tx) return run(tx);
+    return this.db.transaction(run);
+  }
+
+  /** Job đánh dấu lô hết hạn (00:01 Asia/Ho_Chi_Minh). */
+  @Cron('1 0 * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
+  async cronExpireBatches(): Promise<void> {
+    try {
+      await this.runAutoExpireExpiredBatches();
+    } catch (e) {
+      this.logger.error('cronExpireBatches failed', e);
+    }
+  }
+
+  async runAutoExpireExpiredBatches(): Promise<void> {
+    return this.uow.runInTransaction(async (tx) => {
+      const candidates = await this.inventoryRepository.listBatchesToExpire(tx);
+
+      for (const b of candidates) {
+        const invRows = await tx.query.inventory.findMany({
+          where: eq(schema.inventory.batchId, b.id),
+        });
+
+        let reservedTotal = 0;
+        for (const row of invRows) {
+          reservedTotal += invFromDb(row.reservedQuantity);
+        }
+
+        if (reservedTotal > 0) {
+          this.logger.warn(
+            `[COORDINATOR] Lô ${b.batchCode} (id=${b.id}) hết hạn nhưng còn reserved=${reservedTotal} — đã hoàn chỗ reserved.`,
+          );
+        }
+
+        await this.inventoryRepository.clearReservedForBatchInventory(tx, b.id);
+        await this.inventoryRepository.updateBatchStatus(tx, b.id, 'expired');
+        await this.inventoryRepository.syncBatchTotalsFromInventory(tx, b.id);
+      }
+    });
   }
 }

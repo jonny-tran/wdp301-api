@@ -1,0 +1,104 @@
+-- SP26SWP07: Inventory engine — min_shelf_life, batch physical, tx audit, adjustment tickets
+
+ALTER TABLE "products" ADD COLUMN IF NOT EXISTS "min_shelf_life" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "products" ALTER COLUMN "min_shelf_life" SET DEFAULT 0;--> statement-breakpoint
+
+ALTER TABLE "batches" ADD COLUMN IF NOT EXISTS "physical_quantity" numeric(12, 2) DEFAULT '0' NOT NULL;--> statement-breakpoint
+
+DO $$ BEGIN
+  ALTER TYPE "batch_status" ADD VALUE 'active';
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TYPE "batch_status" ADD VALUE 'damaged';
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+
+DO $$ BEGIN
+  ALTER TYPE "transaction_type" ADD VALUE 'reservation';
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TYPE "transaction_type" ADD VALUE 'release';
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TYPE "transaction_type" ADD VALUE 'adjust_loss';
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TYPE "transaction_type" ADD VALUE 'adjust_surplus';
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+
+ALTER TABLE "inventory_transactions" ADD COLUMN IF NOT EXISTS "evidence_image" text;--> statement-breakpoint
+ALTER TABLE "inventory_transactions" ADD COLUMN IF NOT EXISTS "created_by" uuid;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "inventory_transactions" ADD CONSTRAINT "inventory_transactions_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+
+CREATE INDEX IF NOT EXISTS "idx_inventory_tx_reference" ON "inventory_transactions" USING btree ("reference_id");--> statement-breakpoint
+
+DO $$ BEGIN
+  CREATE TYPE "public"."inventory_adjustment_ticket_status" AS ENUM('pending', 'approved', 'rejected');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS "inventory_adjustment_tickets" (
+	"id" serial PRIMARY KEY NOT NULL,
+	"warehouse_id" integer NOT NULL,
+	"batch_id" integer NOT NULL,
+	"quantity_change" numeric(12, 2) NOT NULL,
+	"reason" text,
+	"evidence_image" text,
+	"status" "inventory_adjustment_ticket_status" DEFAULT 'pending' NOT NULL,
+	"requested_by" uuid,
+	"decided_by" uuid,
+	"decided_at" timestamp,
+	"created_at" timestamp DEFAULT now()
+);
+--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "inventory_adjustment_tickets" ADD CONSTRAINT "inventory_adjustment_tickets_warehouse_id_warehouses_id_fk" FOREIGN KEY ("warehouse_id") REFERENCES "public"."warehouses"("id") ON DELETE no action ON UPDATE no action;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "inventory_adjustment_tickets" ADD CONSTRAINT "inventory_adjustment_tickets_batch_id_batches_id_fk" FOREIGN KEY ("batch_id") REFERENCES "public"."batches"("id") ON DELETE no action ON UPDATE no action;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "inventory_adjustment_tickets" ADD CONSTRAINT "inventory_adjustment_tickets_requested_by_users_id_fk" FOREIGN KEY ("requested_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "inventory_adjustment_tickets" ADD CONSTRAINT "inventory_adjustment_tickets_decided_by_users_id_fk" FOREIGN KEY ("decided_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
+
+-- Đồng bộ tồn lô từ inventory (Physical = Available + Reserved)
+UPDATE "batches" b
+SET
+	"physical_quantity" = COALESCE(s.p, 0)::numeric(12,2),
+	"reserved_quantity" = COALESCE(s.r, 0)::numeric(12,2),
+	"available_quantity" = GREATEST(COALESCE(s.p, 0) - COALESCE(s.r, 0), 0)::numeric(12,2)
+FROM (
+	SELECT
+		batch_id,
+		SUM(quantity::numeric) AS p,
+		SUM(reserved_quantity::numeric) AS r
+	FROM inventory
+	GROUP BY batch_id
+) s
+WHERE b.id = s.batch_id;

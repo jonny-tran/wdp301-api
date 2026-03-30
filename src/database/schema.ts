@@ -54,6 +54,14 @@ export const transactionTypeEnum = pgEnum('transaction_type', [
   'adjustment',
   'production_consume',
   'production_output',
+  /** Đặt chỗ theo đơn (Available ↓, Reserved ↑) */
+  'reservation',
+  /** Hoàn chỗ khi hủy / lỗi (Reserved ↓, Available ↑) */
+  'release',
+  /** Điều chỉnh giảm (hao hụt, trộm…) */
+  'adjust_loss',
+  /** Điều chỉnh tăng (kiểm kê dư) */
+  'adjust_surplus',
 ]);
 export const claimStatusEnum = pgEnum('claim_status', [
   'pending',
@@ -70,6 +78,10 @@ export const batchStatusEnum = pgEnum('batch_status', [
   'available',
   'empty',
   'expired',
+  /** Lô đang hoạt động (có thể phân bổ theo FEFO) */
+  'active',
+  /** Hỏng / không sử dụng được */
+  'damaged',
 ]);
 
 export const users = pgTable('users', {
@@ -172,6 +184,10 @@ export const products = pgTable('products', {
   weightKg: decimal('weight_kg', { precision: 10, scale: 3 }).default('0').notNull(),
   volumeM3: decimal('volume_m3', { precision: 10, scale: 4 }).default('0').notNull(),
   isHighValue: boolean('is_high_value').default(false).notNull(),
+  /**
+   * Đệm an toàn (ngày): chỉ bán khi HSD > CURRENT_DATE + min_shelf_life (mô hình KFC).
+   */
+  minShelfLife: integer('min_shelf_life').default(0).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -189,7 +205,14 @@ export const batches = pgTable(
     expiryDate: date('expiry_date').notNull(),
     status: batchStatusEnum('status').default('pending').notNull(),
     imageUrl: text('image_url'),
-    /** Tổng khả dụng / giữ chỗ cấp lô (bổ sung theo PROD-LOGIC; nguồn chính vẫn là `inventory`) */
+    /** Tổng tồn vật lý (đồng bộ Σ inventory.quantity theo lô) — Physical = Available + Reserved */
+    physicalQuantity: decimal('physical_quantity', {
+      precision: 12,
+      scale: 2,
+    })
+      .default('0')
+      .notNull(),
+    /** Tổng khả dụng / giữ chỗ cấp lô (đồng bộ từ inventory; nguồn chính vẫn là `inventory`) */
     availableQuantity: decimal('available_quantity', {
       precision: 12,
       scale: 2,
@@ -407,13 +430,46 @@ export const inventoryTransactions = pgTable(
     }).notNull(),
     referenceId: text('reference_id'),
     reason: text('reason'),
+    evidenceImage: text('evidence_image'),
+    createdBy: uuid('created_by').references(() => users.id),
     createdAt: timestamp('created_at').defaultNow(),
   },
   (t) => [
-    {
-      typeIdx: index('idx_inventory_tx_type').on(t.type), // <-- THÊM INDEX
-    },
+    index('idx_inventory_tx_type').on(t.type),
+    index('idx_inventory_tx_reference').on(t.referenceId),
   ],
+);
+
+export const inventoryAdjustmentTicketStatusEnum = pgEnum(
+  'inventory_adjustment_ticket_status',
+  ['pending', 'approved', 'rejected'],
+);
+
+/** Phiếu điều chỉnh tồn cần phê duyệt quản lý (bổ sung quy trình) */
+export const inventoryAdjustmentTickets = pgTable(
+  'inventory_adjustment_tickets',
+  {
+    id: serial('id').primaryKey(),
+    warehouseId: integer('warehouse_id')
+      .references(() => warehouses.id)
+      .notNull(),
+    batchId: integer('batch_id')
+      .references(() => batches.id)
+      .notNull(),
+    quantityChange: decimal('quantity_change', {
+      precision: 12,
+      scale: 2,
+    }).notNull(),
+    reason: text('reason'),
+    evidenceImage: text('evidence_image'),
+    status: inventoryAdjustmentTicketStatusEnum('status')
+      .default('pending')
+      .notNull(),
+    requestedBy: uuid('requested_by').references(() => users.id),
+    decidedBy: uuid('decided_by').references(() => users.id),
+    decidedAt: timestamp('decided_at'),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
 );
 
 export const orders = pgTable(
@@ -702,6 +758,32 @@ export const inventoryTransactionRelations = relations(
     batch: one(batches, {
       fields: [inventoryTransactions.batchId],
       references: [batches.id],
+    }),
+    creator: one(users, {
+      fields: [inventoryTransactions.createdBy],
+      references: [users.id],
+    }),
+  }),
+);
+
+export const inventoryAdjustmentTicketRelations = relations(
+  inventoryAdjustmentTickets,
+  ({ one }) => ({
+    warehouse: one(warehouses, {
+      fields: [inventoryAdjustmentTickets.warehouseId],
+      references: [warehouses.id],
+    }),
+    batch: one(batches, {
+      fields: [inventoryAdjustmentTickets.batchId],
+      references: [batches.id],
+    }),
+    requester: one(users, {
+      fields: [inventoryAdjustmentTickets.requestedBy],
+      references: [users.id],
+    }),
+    decider: one(users, {
+      fields: [inventoryAdjustmentTickets.decidedBy],
+      references: [users.id],
     }),
   }),
 );

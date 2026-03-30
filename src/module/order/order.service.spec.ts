@@ -11,6 +11,7 @@ import { ShipmentService } from '../shipment/shipment.service';
 import { SystemConfigService } from '../system-config/system-config.service';
 import { OrderStatus } from './constants/order-status.enum';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { InventoryService } from '../inventory/inventory.service';
 import { OrderRepository } from './order.repository';
 import { OrderService } from './order.service';
 
@@ -19,6 +20,7 @@ describe('OrderService', () => {
   let orderRepo: jest.Mocked<OrderRepository>;
   let shipmentService: jest.Mocked<ShipmentService>;
   let systemConfigService: jest.Mocked<SystemConfigService>;
+  let inventoryService: jest.Mocked<Pick<InventoryService, 'lockStockForOrder'>>;
   let mockTx: jest.Mocked<OrderRepository>;
 
   beforeEach(async () => {
@@ -67,6 +69,11 @@ describe('OrderService', () => {
       updateConfig: jest.fn(),
     };
 
+    const mockInventoryServiceObj = {
+      lockStockForOrder: jest.fn(),
+      releaseStockForShipment: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrderService,
@@ -82,6 +89,10 @@ describe('OrderService', () => {
           provide: SystemConfigService,
           useValue: mockSystemConfigServiceObj,
         },
+        {
+          provide: InventoryService,
+          useValue: mockInventoryServiceObj,
+        },
       ],
     }).compile();
 
@@ -89,6 +100,7 @@ describe('OrderService', () => {
     orderRepo = module.get(OrderRepository);
     shipmentService = module.get(ShipmentService);
     systemConfigService = module.get(SystemConfigService);
+    inventoryService = module.get(InventoryService);
   });
 
   afterEach(() => {
@@ -300,13 +312,22 @@ describe('OrderService', () => {
       orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
         { id: 1, unitPrice: '50000', prepTimeHours: 24 },
       ] as never[]);
-      mockTx.getBatchesForFEFO.mockResolvedValue([
-        { batchId: 5, inventoryId: 55, quantity: '20', reservedQuantity: '0' },
-      ] as never[]);
       mockTx.getStoreWarehouseId.mockResolvedValue(88 as never);
       mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
       mockTx.setOrderPendingPriceConfirm.mockResolvedValue(undefined as never);
       systemConfigService.getConfigValue.mockResolvedValue(null);
+      inventoryService.lockStockForOrder.mockResolvedValue({
+        shipmentItems: [{ batchId: 5, quantity: 10 }],
+        results: [
+          {
+            orderItemId: 10,
+            productId: 1,
+            requested: 10,
+            approved: 10,
+            missing: 0,
+          },
+        ],
+      });
 
       const result = await service.approveOrder(orderId);
 
@@ -344,13 +365,22 @@ describe('OrderService', () => {
       orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
         { id: 1, unitPrice: '50000', prepTimeHours: 24 },
       ] as never[]);
-      mockTx.getBatchesForFEFO.mockResolvedValue([
-        { batchId: 5, inventoryId: 55, quantity: '60', reservedQuantity: '0' },
-      ] as never[]);
       mockTx.getStoreWarehouseId.mockResolvedValue(88 as never);
       mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
       mockTx.setOrderPendingPriceConfirm.mockResolvedValue(undefined as never);
       systemConfigService.getConfigValue.mockResolvedValue(null);
+      inventoryService.lockStockForOrder.mockResolvedValue({
+        shipmentItems: [{ batchId: 5, quantity: 60 }],
+        results: [
+          {
+            orderItemId: 10,
+            productId: 1,
+            requested: 100,
+            approved: 60,
+            missing: 40,
+          },
+        ],
+      });
 
       const result = await service.approveOrder(orderId, true, {
         production_confirm: true,
@@ -715,11 +745,20 @@ describe('OrderService', () => {
       orderRepo.findProductsWithSnapshotByIds.mockResolvedValue([
         { id: 1, unitPrice: '100', prepTimeHours: 0 },
       ] as never[]);
-      mockTx.getBatchesForFEFO.mockResolvedValue([
-        { batchId: 1, inventoryId: 1, quantity: '3', reservedQuantity: '0' },
-      ] as never[]);
       mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
       systemConfigService.getConfigValue.mockResolvedValue('06:00');
+      inventoryService.lockStockForOrder.mockResolvedValue({
+        shipmentItems: [{ batchId: 1, quantity: 3 }],
+        results: [
+          {
+            orderItemId: 1,
+            productId: 1,
+            requested: 10,
+            approved: 3,
+            missing: 7,
+          },
+        ],
+      });
 
       await expect(service.approveOrder(orderId, false, {})).rejects.toMatchObject(
         {

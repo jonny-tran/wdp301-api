@@ -33,6 +33,7 @@ import {
 import { CreateOrderDto } from './dto/create-order.dto';
 import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
+import { InventoryService } from '../inventory/inventory.service';
 import { OrderRepository } from './order.repository';
 
 //interface
@@ -47,6 +48,7 @@ export class OrderService {
     private readonly orderRepository: OrderRepository,
     private readonly shipmentService: ShipmentService,
     private readonly systemConfigService: SystemConfigService,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   async getCatalog(query: GetCatalogDto) {
@@ -322,63 +324,31 @@ export class OrderService {
             }
           }
 
-          const shipmentItems: { batchId: number; quantity: number }[] = [];
-          const results: {
-            productId: number;
-            requested: number;
-            approved: number;
-            missing: number;
-          }[] = [];
-
-          for (const item of order.items) {
-            const requestedQty = parseFloat(String(item.quantityRequested));
-            let remainingNeeded = requestedQty;
-            let approvedQty = 0;
-
-            const batches = await this.orderRepository.getBatchesForFEFO(
-              item.productId,
-              centralWarehouseId,
-              tx,
-            );
-
-            for (const batch of batches) {
-              if (remainingNeeded <= 0) break;
-
-              const availableQty =
-                parseFloat(batch.quantity) -
-                parseFloat(batch.reservedQuantity);
-
-              if (availableQty <= 0) continue;
-
-              const takeQty = Math.min(remainingNeeded, availableQty);
-
-              await this.orderRepository.reserveInventory(
-                batch.inventoryId,
-                takeQty,
-                tx,
-              );
-
-              shipmentItems.push({
-                batchId: batch.batchId,
-                quantity: takeQty,
-              });
-
-              approvedQty += takeQty;
-              remainingNeeded -= takeQty;
-            }
-
-            await this.orderRepository.updateOrderItemApprovedQuantity(
-              item.id,
-              approvedQty.toString(),
-              tx,
-            );
-
-            results.push({
+          const lock = await this.inventoryService.lockStockForOrder(
+            order.id,
+            centralWarehouseId,
+            order.items.map((item) => ({
+              orderItemId: item.id,
               productId: item.productId,
-              requested: requestedQty,
-              approved: approvedQty,
-              missing: requestedQty - approvedQty,
-            });
+              quantityRequested: parseFloat(String(item.quantityRequested)),
+            })),
+            tx,
+          );
+
+          const shipmentItems = lock.shipmentItems;
+          const results = lock.results.map((r) => ({
+            productId: r.productId,
+            requested: r.requested,
+            approved: r.approved,
+            missing: r.missing,
+          }));
+
+          for (const r of lock.results) {
+            await this.orderRepository.updateOrderItemApprovedQuantity(
+              r.orderItemId,
+              r.approved.toString(),
+              tx,
+            );
           }
 
           const totalRequested = results.reduce(
@@ -641,7 +611,7 @@ export class OrderService {
         tx,
       );
       if (shipment) {
-        await this.orderRepository.releaseReservationsForShipment(
+        await this.inventoryService.releaseStockForShipment(
           shipment.id,
           centralWarehouseId,
           tx,

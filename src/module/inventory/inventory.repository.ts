@@ -8,6 +8,7 @@ import {
   gte,
   ilike,
   lte,
+  ne,
   or,
   SQL,
   sql,
@@ -19,6 +20,10 @@ import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
+import {
+  invFromDb,
+  invToDbString,
+} from './utils/inventory-decimal.util';
 
 @Injectable()
 export class InventoryRepository {
@@ -309,11 +314,19 @@ export class InventoryRepository {
       | 'waste'
       | 'adjustment'
       | 'production_consume'
-      | 'production_output',
+      | 'production_output'
+      | 'reservation'
+      | 'release'
+      | 'adjust_loss'
+      | 'adjust_surplus',
     quantityChange: number,
     referenceId?: string,
     reason?: string,
     tx?: NodePgDatabase<typeof schema>,
+    opts?: {
+      evidenceImage?: string | null;
+      createdBy?: string | null;
+    },
   ) {
     const database = tx || this.db;
     const [transaction] = await database
@@ -325,9 +338,171 @@ export class InventoryRepository {
         quantityChange: quantityChange.toString(),
         referenceId,
         reason,
+        evidenceImage: opts?.evidenceImage ?? undefined,
+        createdBy: opts?.createdBy ?? undefined,
       })
       .returning();
     return transaction;
+  }
+
+  /** Đồng bộ physical / available / reserved trên bảng batches từ Σ inventory (Golden Equation). */
+  async syncBatchTotalsFromInventory(
+    tx: NodePgDatabase<typeof schema>,
+    batchId: number,
+  ) {
+    const [agg] = await tx
+      .select({
+        p: sql<string>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)`,
+        r: sql<string>`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)`,
+      })
+      .from(schema.inventory)
+      .where(eq(schema.inventory.batchId, batchId));
+
+    const batchRow = await tx.query.batches.findFirst({
+      where: eq(schema.batches.id, batchId),
+    });
+
+    const pDec = invFromDb(agg?.p ?? 0);
+    const rDec = invFromDb(agg?.r ?? 0);
+    let avail = pDec - rDec;
+    if (batchRow?.status === 'expired') {
+      avail = 0;
+    }
+    if (avail < 0) {
+      avail = 0;
+    }
+
+    await tx
+      .update(schema.batches)
+      .set({
+        physicalQuantity: invToDbString(pDec),
+        reservedQuantity: invToDbString(rDec),
+        availableQuantity: invToDbString(avail),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.batches.id, batchId));
+  }
+
+  async findBatchesForFEFOWithShelfBuffer(
+    productId: number,
+    warehouseId: number,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    const base = database
+      .select({
+        inventoryId: schema.inventory.id,
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+        quantity: schema.inventory.quantity,
+        reservedQuantity: schema.inventory.reservedQuantity,
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.batches.productId, productId),
+          sql`${schema.inventory.quantity}::numeric > ${schema.inventory.reservedQuantity}::numeric`,
+          sql`${schema.batches.expiryDate}::date > CURRENT_DATE + (COALESCE(${schema.products.minShelfLife}, 0)::int * interval '1 day')`,
+          sql`${schema.batches.status}::text NOT IN ('expired', 'damaged', 'empty')`,
+        ),
+      )
+      .orderBy(asc(schema.batches.expiryDate));
+    return tx ? base.for('update') : base;
+  }
+
+  async reserveInventoryQuantity(
+    inventoryId: number,
+    quantityToReserve: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    await tx
+      .update(schema.inventory)
+      .set({
+        reservedQuantity: sql`${schema.inventory.reservedQuantity}::numeric + ${String(quantityToReserve)}::numeric`,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.inventory.id, inventoryId));
+  }
+
+  async findInventoryTransactionsByReferenceAndType(
+    referenceId: string,
+    type: 'reservation' | 'release',
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const database = tx || this.db;
+    return database.query.inventoryTransactions.findMany({
+      where: and(
+        eq(schema.inventoryTransactions.referenceId, referenceId),
+        eq(schema.inventoryTransactions.type, type),
+      ),
+    });
+  }
+
+  async listBatchesToExpire(tx?: NodePgDatabase<typeof schema>) {
+    const database = tx || this.db;
+    return database.query.batches.findMany({
+      where: and(
+        lte(schema.batches.expiryDate, sql<string>`CURRENT_DATE::date`),
+        ne(schema.batches.status, 'expired'),
+        ne(schema.batches.status, 'damaged'),
+      ),
+    });
+  }
+
+  async updateBatchStatus(
+    tx: NodePgDatabase<typeof schema>,
+    batchId: number,
+    status: (typeof schema.batches.$inferSelect)['status'],
+  ) {
+    await tx
+      .update(schema.batches)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(schema.batches.id, batchId));
+  }
+
+  async clearReservedForBatchInventory(
+    tx: NodePgDatabase<typeof schema>,
+    batchId: number,
+  ) {
+    await tx
+      .update(schema.inventory)
+      .set({
+        reservedQuantity: '0',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.inventory.batchId, batchId));
+  }
+
+  async decreasePhysicalAndReserved(
+    warehouseId: number,
+    batchId: number,
+    amount: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    if (amount <= 0) return;
+    await tx
+      .update(schema.inventory)
+      .set({
+        quantity: sql`${schema.inventory.quantity}::numeric - ${String(amount)}::numeric`,
+        reservedQuantity: sql`GREATEST(${schema.inventory.reservedQuantity}::numeric - ${String(amount)}::numeric, 0)`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      );
   }
   async getInventorySummary(
     filters: {
