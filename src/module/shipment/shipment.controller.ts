@@ -32,7 +32,9 @@ export class ShipmentController {
   @Get()
   @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'Lấy danh sách lô hàng [Manager, Coordinator, Admin]',
+    summary: 'Lấy danh sách lô hàng (phân trang & lọc) [Admin, Manager, Supply Coordinator]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator\n\n**Nghiệp vụ:** Danh sách shipment toàn hệ thống với bộ lọc (`GetShipmentsDto`) phục vụ giám sát và điều phối vận chuyển.',
   })
   @ResponseMessage('Lấy danh sách lô hàng thành công')
   async findAll(@Query() query: GetShipmentsDto) {
@@ -42,7 +44,9 @@ export class ShipmentController {
   @Get('store/my')
   @Roles(UserRole.FRANCHISE_STORE_STAFF)
   @ApiOperation({
-    summary: 'Lấy danh sách lô hàng của cửa hàng [Franchise Staff]',
+    summary: 'Lấy danh sách lô hàng của cửa hàng (JWT) [Franchise Staff]',
+    description:
+      '**Quyền truy cập (Roles):** Franchise Store Staff\n\n**Nghiệp vụ:** Tự gán `storeId` từ JWT (bắt buộc có); chỉ trả về các chuyến hàng liên quan cửa hàng đăng nhập.',
   })
   @ResponseMessage('Lấy danh sách lô hàng của cửa hàng thành công')
   async getMyStoreShipments(
@@ -64,7 +68,9 @@ export class ShipmentController {
     UserRole.ADMIN,
   )
   @ApiOperation({
-    summary: 'Lấy danh sách nhặt hàng (Picking List) [Coordinator, Kitchen]',
+    summary: 'Lấy picking list theo shipment [Admin, Supply Coordinator, Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Supply Coordinator, Central Kitchen Staff\n\n**Nghiệp vụ:** Trả về chi tiết dòng hàng và lô cần soạn cho một shipment đã tạo, phục vụ soạn hàng tại kho trung tâm.',
   })
   @ResponseMessage('Success')
   async getPickingList(@Param('id', new ParseUUIDPipe()) id: string) {
@@ -73,7 +79,10 @@ export class ShipmentController {
 
   @Get(':id')
   @ApiOperation({
-    summary: 'Chi tiết đơn hàng vận chuyển',
+    summary:
+      'Chi tiết shipment (phiếu giao hàng) [Admin, Manager, Supply Coordinator, Kitchen, Franchise Staff]',
+    description:
+      '**Quyền truy cập (Roles):** Mọi vai trò đã đăng nhập (Admin, Manager, Supply Coordinator, Central Kitchen Staff, Franchise Store Staff)\n\n**Nghiệp vụ:** Trả về thông tin chuyến giao và từng dòng hàng kèm batch; dòng được sắp xếp theo **FEFO** (hạn sử dụng tăng dần). Franchise Store Staff chỉ xem được chuyến đến đúng kho cửa hàng mình.',
   })
   @ResponseMessage('Lấy chi tiết đơn hàng vận chuyển thành công')
   async getShipmentDetail(
@@ -92,9 +101,9 @@ export class ShipmentController {
   @Patch(':id/receive-all')
   @Roles(UserRole.FRANCHISE_STORE_STAFF)
   @ApiOperation({
-    summary: 'Nhận hàng nhanh (Đủ hàng, không hỏng) [Franchise Staff]',
+    summary: 'Nhận hàng nhanh (đủ hàng, không hỏng) [Franchise Staff]',
     description:
-      'Xác nhận nhận toàn bộ hàng trong đơn, không có hàng thiếu hay hỏng.',
+      '**Quyền truy cập (Roles):** Franchise Store Staff\n\n**Nghiệp vụ:** Xác nhận nhận toàn bộ số lượng theo phiếu giao, không khai báo thiếu hay hỏng — cập nhật tồn kho cửa hàng và đóng luồng nhận một bước.',
   })
   @ResponseMessage('Nhận hàng nhanh thành công')
   async receiveAll(
@@ -118,9 +127,9 @@ export class ShipmentController {
   @Post(':id/receive')
   @Roles(UserRole.FRANCHISE_STORE_STAFF)
   @ApiOperation({
-    summary: 'Nhận hàng chi tiết (Báo cáo thiếu/hỏng) [Franchise Staff]',
+    summary: 'Nhận hàng chi tiết (thiếu / hỏng) [Franchise Staff]',
     description:
-      'Xác nhận nhận hàng, có thể báo cáo số lượng thực nhận và hàng hỏng cho từng lô.',
+      '**Quyền truy cập (Roles):** Franchise Store Staff\n\n**Nghiệp vụ:** Xác nhận nhận hàng với `ReceiveShipmentDto`: khai báo số lượng thực nhận và hàng hỏng theo từng dòng/lô để xử lý **discrepancy** và cập nhật tồn chính xác.',
   })
   @ResponseMessage('Success')
   async receiveShipment(

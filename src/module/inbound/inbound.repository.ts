@@ -1,5 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, gte, InferSelectModel, lte, SQL, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  eq,
+  gte,
+  ilike,
+  InferSelectModel,
+  lte,
+  or,
+  SQL,
+  sql,
+} from 'drizzle-orm';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
@@ -431,6 +442,45 @@ export class InboundRepository {
         updatedAt: new Date(),
       })
       .where(eq(schema.receipts.id, receiptId));
+  }
+
+  /** Danh sách sản phẩm active cho màn nhập inbound (id, tên, SKU). */
+  async listProductsForInbound(params: {
+    search?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ items: { id: number; name: string; sku: string }[]; total: number }> {
+    const active = eq(schema.products.isActive, true);
+    const term = params.search?.trim();
+    const whereClause =
+      term && term.length > 0
+        ? and(
+            active,
+            or(
+              ilike(schema.products.name, `%${term}%`),
+              ilike(schema.products.sku, `%${term}%`),
+            ),
+          )
+        : active;
+
+    const items = await this.db
+      .select({
+        id: schema.products.id,
+        name: schema.products.name,
+        sku: schema.products.sku,
+      })
+      .from(schema.products)
+      .where(whereClause)
+      .orderBy(asc(schema.products.name))
+      .limit(params.limit)
+      .offset(params.offset);
+
+    const [countRow] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.products)
+      .where(whereClause);
+
+    return { items, total: Number(countRow?.count ?? 0) };
   }
 
   /** Xóa dòng phiếu nháp; nếu đã có batch (legacy) thì xóa cả batch */

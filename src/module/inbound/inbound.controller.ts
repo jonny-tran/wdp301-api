@@ -20,6 +20,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { RequestWithUser } from '../auth/types/auth.types';
 import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
+import { GetInboundProductsDto } from './dto/get-inbound-products.dto';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
 import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import { InboundService } from './inbound.service';
@@ -31,11 +32,25 @@ import { InboundService } from './inbound.service';
 export class InboundController {
   constructor(private readonly inboundService: InboundService) {}
 
+  @Get('products')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary:
+      'Danh sách sản phẩm cho phiếu nhập (id, tên, SKU) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Trả về sản phẩm **đang active** có phân trang, lọc theo tên hoặc SKU — dùng khi khai báo dòng hàng trên phiếu nhập (chọn `productId`).',
+  })
+  @ResponseMessage('Lấy danh sách sản phẩm thành công')
+  async getProductsForInbound(@Query() query: GetInboundProductsDto) {
+    return this.inboundService.getProductsForInbound(query);
+  }
+
   @Post('receipts')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Khởi tạo phiếu nhập hàng mới từ nhà cung cấp [Kitchen]',
-    description: 'Tạo khung cho biên lai nhập kho trước khi quét hàng thực tế',
+    summary: 'Khởi tạo phiếu nhập hàng mới từ NCC [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Tạo phiếu nhập trạng thái nháp (`draft`) tại kho trung tâm, gắn nhà cung cấp trước khi khai báo hàng thực tế.',
   })
   @ResponseMessage('Tạo biên lai nhập kho thành công')
   async createReceipt(
@@ -48,8 +63,9 @@ export class InboundController {
   @Get('receipts')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Xem danh sách tất cả các phiếu nhập hàng [Kitchen]',
-    description: 'Dùng để theo dõi lịch sử và các phiếu đang chờ hoàn tất.',
+    summary: 'Danh sách phiếu nhập (lọc & phân trang) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Theo dõi lịch sử phiếu nhập và phiếu đang mở theo bộ lọc (`GetReceiptsDto`).',
   })
   @ResponseMessage('Lấy danh sách phiếu nhập thành công')
   async getAllReceipts(@Query() query: GetReceiptsDto) {
@@ -59,10 +75,9 @@ export class InboundController {
   @Get('receipts/:id')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Xem thông tin chi tiết và danh sách hàng hóa của một phiếu nhập [Kitchen]',
+    summary: 'Chi tiết phiếu nhập và các dòng hàng [Kitchen]',
     description:
-      'Hiển thị toàn bộ các sản phẩm và mã lô đã khai báo trong biên lai. omitExpected=true: ẩn số dự kiến (màn kiểm đếm).',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Xem toàn bộ dòng khai báo và lô (nếu có). `omitExpected=true`: ẩn số dự kiến phục vụ màn kiểm đếm.',
   })
   @ResponseMessage('Lấy thông tin phiếu nhập thành công')
   async getReceiptById(
@@ -78,9 +93,9 @@ export class InboundController {
   @Post('receipts/:id/items')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Khai báo hàng thực tế dỡ từ xe xuống vào phiếu nhập [Kitchen]',
+    summary: 'Thêm dòng hàng thực tế vào phiếu nhập [Kitchen]',
     description:
-      'Ghi nhận NSX, chấp nhận/từ chối, tách HSD. Mã lô (BAT-…) được tạo khi chốt phiếu.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Ghi nhận NSX/HSD, số lượng chấp nhận/từ chối; mã lô `BAT-…` được sinh khi **chốt phiếu** (`complete`).',
   })
   @ResponseMessage('Thêm hàng vào biên lai thành công')
   async addReceiptItem(
@@ -93,9 +108,9 @@ export class InboundController {
   @Get('batches/:id/label')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Lấy thông tin mã QR của lô hàng vừa nhập để in tem nhãn [Kitchen]',
-    description: 'Dùng để dán tem định danh lên từng thùng hàng vừa nhập kho',
+    summary: 'Dữ liệu in tem/QR cho lô vừa nhập [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Payload in tem định danh lô sau khi nhập kho.',
   })
   @ResponseMessage('Lấy data in QRCode thành công')
   async getBatchLabel(@Param('id') id: string) {
@@ -103,11 +118,11 @@ export class InboundController {
   }
 
   @Patch('receipts/:id/complete')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Xác nhận hoàn tất biên lai và chính thức nhập hàng vào kho [Kitchen]',
+    summary: 'Chốt phiếu nhập — tạo lô, cộng tồn, ghi IMPORT [Kitchen]',
     description:
-      'Tạo lô BAT-…, cộng tồn, ghi log IMPORT. Cần phê duyệt trước nếu nhập dư vượt ngưỡng.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Chỉ áp dụng phiếu `draft` còn dòng hàng: tạo lô `BAT-…`, tăng tồn, ghi log **IMPORT**; nếu nhập dư vượt ngưỡng sai số cần **phê duyệt variance** trước.',
   })
   @ResponseMessage('Chốt phiếu thành công')
   async completeReceipt(@Param('id') id: string) {
@@ -117,7 +132,10 @@ export class InboundController {
   @Patch('receipts/:id/variance-approval')
   @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR)
   @ApiOperation({
-    summary: 'Phê duyệt nhập vượt ngưỡng sai số (điều phối / quản lý)',
+    summary:
+      'Phê duyệt nhập vượt ngưỡng sai số [Manager, Supply Coordinator]',
+    description:
+      '**Quyền truy cập (Roles):** Manager, Supply Coordinator\n\n**Nghiệp vụ:** Ghi nhận phê duyệt chênh lệch so với dự kiến để phiếu có thể được chốt khi vượt ngưỡng cấu hình.',
   })
   @ResponseMessage('Phê duyệt thành công')
   async approveVariance(
@@ -130,7 +148,9 @@ export class InboundController {
   @Delete('receipts/:receiptId/items/:itemId')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Xóa một dòng khỏi phiếu nhập nháp [Kitchen]',
+    summary: 'Xóa một dòng khỏi phiếu nháp [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Chỉ cho phiếu `draft`; xóa dòng khai báo (và batch legacy nếu có).',
   })
   @ResponseMessage('Xóa dòng thành công')
   async deleteReceiptLine(
@@ -143,7 +163,9 @@ export class InboundController {
   @Delete('items/:batchId')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Xóa theo batchId (tương thích phiếu cũ)',
+    summary: 'Xóa dòng theo batchId (tương thích phiếu cũ) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Endpoint tương thích luồng cũ; xóa theo `batchId`.',
   })
   @ResponseMessage('Xóa lô hàng lỗi thành công')
   async deleteBatchItem(@Param('batchId') batchId: string) {
@@ -153,9 +175,9 @@ export class InboundController {
   @Post('batches/reprint')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Yêu cầu in lại tem cho lô hàng đã nhập [Kitchen]',
+    summary: 'Yêu cầu in lại tem lô đã nhập [Kitchen]',
     description:
-      'Hệ thống sẽ ghi log lại hành động in lại tem để đảm bảo tính minh bạch',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Ghi log in lại tem để truy vết; dùng khi tem hỏng hoặc mất.',
   })
   @ResponseMessage('Yêu cầu in lại tem thành công')
   async reprintBatchLabel(

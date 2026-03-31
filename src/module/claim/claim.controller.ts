@@ -31,9 +31,13 @@ export class ClaimController {
   constructor(private readonly claimService: ClaimService) {}
 
   @Post()
-  @ApiOperation({ summary: 'Tạo khiếu nại thủ công' })
-  @ResponseMessage('Tạo khiếu nại thành công. Tồn kho đã được điều chỉnh.')
   @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Tạo khiếu nại thủ công [Admin, Franchise Staff]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Franchise Store Staff\n\n**Nghiệp vụ:** Ghi nhận khiếu nại từ cửa hàng (thiếu/hỏng sau nhận hàng); hệ thống điều chỉnh tồn kho theo nghiệp vụ claim.',
+  })
+  @ResponseMessage('Tạo khiếu nại thành công. Tồn kho đã được điều chỉnh.')
   async createClaim(
     @Body() dto: CreateManualClaimDto,
     @CurrentUser() user: RequestWithUser['user'],
@@ -47,7 +51,9 @@ export class ClaimController {
   @Get()
   @Roles(UserRole.MANAGER, UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'Danh sách khiếu nại [Manager, Coordinator, Admin]',
+    summary: 'Danh sách khiếu nại (toàn hệ thống) [Admin, Manager, Supply Coordinator]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator\n\n**Nghiệp vụ:** Liệt kê và lọc khiếu nại (`GetClaimsDto`) phục vụ xử lý tập trung; quyền xem theo logic service.',
   })
   async findAll(
     @Query() query: GetClaimsDto,
@@ -59,7 +65,9 @@ export class ClaimController {
   @Get('my-store')
   @Roles(UserRole.FRANCHISE_STORE_STAFF)
   @ApiOperation({
-    summary: 'Danh sách khiếu nại của cửa hàng [Store Staff]',
+    summary: 'Danh sách khiếu nại của cửa hàng (JWT) [Franchise Staff]',
+    description:
+      '**Quyền truy cập (Roles):** Franchise Store Staff\n\n**Nghiệp vụ:** Tự gán `storeId` từ JWT; chỉ khiếu nại của cửa hàng đăng nhập.',
   })
   async getMyStoreClaims(
     @CurrentUser() user: RequestWithUser['user'],
@@ -72,14 +80,31 @@ export class ClaimController {
     return this.claimService.findAll(query);
   }
 
+  @Get('analytics/summary')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Thống kê sai lệch & hư hỏng giao hàng (Claims) [Admin, Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Damage rate, missing rate và bottleneck sản phẩm dễ hỏng/thiếu khi vận chuyển (`ClaimSummaryQueryDto`).',
+  })
+  async getClaimSummary(@Query() query: ClaimSummaryQueryDto) {
+    return this.claimService.getClaimSummary(query);
+  }
+
   @Get(':id')
-  @ApiOperation({ summary: 'Chi tiết khiếu nại' })
   @Roles(
     UserRole.FRANCHISE_STORE_STAFF,
     UserRole.SUPPLY_COORDINATOR,
     UserRole.MANAGER,
     UserRole.ADMIN,
   )
+  @ApiOperation({
+    summary:
+      'Chi tiết một khiếu nại [Admin, Manager, Supply Coordinator, Franchise Staff]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator, Franchise Store Staff\n\n**Nghiệp vụ:** Xem chi tiết claim; quyền xem cụ thể được kiểm soát trong service (cửa hàng chỉ claim của mình).',
+  })
   async getClaimDetail(
     @Param('id') id: string,
     @CurrentUser() user: IJwtPayload,
@@ -88,20 +113,13 @@ export class ClaimController {
   }
 
   @Patch(':id/resolve')
-  @ApiOperation({ summary: 'Xử lý khiếu nại [Coordinator, Manager]' })
   @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Xử lý / đóng khiếu nại [Admin, Manager, Supply Coordinator]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator\n\n**Nghiệp vụ:** Cập nhật trạng thái xử lý khiếu nại (`ResolveClaimDto`) — bồi thường, từ chối hoặc hướng xử lý theo quy trình.',
+  })
   async resolveClaim(@Param('id') id: string, @Body() dto: ResolveClaimDto) {
     return this.claimService.resolveClaim(id, dto);
-  }
-
-  @Get('analytics/summary')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
-  @ApiOperation({
-    summary: 'Tỷ lệ sai lệch & hư hỏng giao hàng (Manager)',
-    description:
-      '1. Damage Rate. 2. Missing Rate. 3. Bottleneck: Tìm sản phẩm dễ hỏng/thiếu nhất khi vận chuyển.',
-  })
-  async getClaimSummary(@Query() query: ClaimSummaryQueryDto) {
-    return this.claimService.getClaimSummary(query);
   }
 }

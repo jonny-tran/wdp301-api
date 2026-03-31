@@ -36,8 +36,9 @@ export class WarehouseController {
   @Get('picking-tasks')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Lấy danh sách tác vụ soạn hàng (Phân trang) [Kitchen]',
-    description: 'Trả về danh sách các đơn hàng đang ở trạng thái APPROVED',
+    summary: 'Lấy danh sách tác vụ soạn hàng (phân trang) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Liệt kê các đơn đã duyệt (`APPROVED`) tại kho trung tâm cần soạn hàng, có phân trang và lọc (`GetPickingTasksDto`).',
   })
   @ResponseMessage('Lấy danh sách tác vụ soạn hàng thành công')
   async getPickingTasks(@Query() query: GetPickingTasksDto) {
@@ -48,10 +49,9 @@ export class WarehouseController {
   @Get('picking-tasks/:id')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary:
-      'Xem chi tiết danh sách mặt hàng và lô hàng gợi ý cần soạn [Kitchen]',
+    summary: 'Chi tiết picking task — gợi ý lô theo FEFO [Kitchen]',
     description:
-      'Dựa trên quy tắc FEFO, hệ thống sẽ gợi ý các lô hàng (Batch) cần lấy cho đơn hàng này.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Với một đơn đã duyệt, trả về từng mặt hàng và các lô (batch) gợi ý cần lấy theo quy tắc **FEFO** (ưu tiên hạn sử dụng gần nhất).',
   })
   @ResponseMessage('Lấy chi tiết danh sách soạn hàng thành công')
   async getPickingList(@Param('id') id: string) {
@@ -61,9 +61,9 @@ export class WarehouseController {
   @Patch('picking-tasks/:orderId/reset')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Hủy kết quả soạn hàng hiện tại và làm lại từ đầu [Kitchen]',
+    summary: 'Reset tiến độ soạn hàng cho đơn [Kitchen]',
     description:
-      'Dùng khi nhân viên kho chọn nhầm lô quá nhiều hoặc muốn reset lại tiến độ soạn hàng.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Xóa trạng thái soạn hiện tại của đơn để làm lại từ đầu khi quét nhầm lô hoặc cần phân bổ lại batch.',
   })
   @ResponseMessage('Làm lại lượt soạn hàng thành công')
   async resetPickingTask(@Param('orderId') orderId: string) {
@@ -73,9 +73,9 @@ export class WarehouseController {
   @Patch('shipments/finalize-bulk')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Duyệt & Xuất kho đơn hàng [Kitchen]',
+    summary: 'Xuất kho gộp nhiều đơn (finalize bulk shipment) [Kitchen]',
     description:
-      'Có thể gom nhiều đơn hàng vào một chuyến xe, trừ kho và cập nhật trạng thái DELIVERING đồng loạt. Hỗ trợ Transaction an toàn.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Gom nhiều đơn vào một (hoặc nhiều) chuyến giao: trừ tồn/reserve, tạo/cập nhật shipment và chuyển trạng thái giao hàng — thực hiện trong **transaction** để đảm bảo nhất quán.',
   })
   @ResponseMessage('Duyệt & Xuất kho đơn hàng thành công')
   async finalizeBulkShipment(@Body() dto: FinalizeBulkShipmentDto) {
@@ -86,9 +86,9 @@ export class WarehouseController {
   @Get('shipments/:id/label')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Lấy dữ liệu in phiếu giao hàng [Kitchen]',
+    summary: 'Dữ liệu in phiếu giao hàng [Kitchen]',
     description:
-      'Trả về thông tin để Frontend hiển thị form in phiếu giao hàng trước khi xe lăn bánh.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Trả về payload hiển thị/in phiếu giao trước khi xe rời kho (địa chỉ, dòng hàng, khối lượng tóm tắt theo nghiệp vụ shipment).',
   })
   @ResponseMessage('Lấy dữ liệu in phiếu giao hàng thành công')
   async getShipmentLabel(@Param('id') id: string) {
@@ -98,9 +98,9 @@ export class WarehouseController {
   @Get('scan-check')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Kiểm tra nhanh thông tin lô hàng [Kitchen]',
+    summary: 'Quét kiểm tra nhanh một lô (batch) [Kitchen]',
     description:
-      'Quét mã lô để xem tên sản phẩm, hạn sử dụng và số lượng còn lại trong kho.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Theo `batchCode`, tra cứu sản phẩm, hạn dùng và số lượng khả dụng tại kho trung tâm khi soạn hàng.',
   })
   @ResponseMessage('Kiểm tra thông tin lô hàng thành công')
   async scanCheck(@Query() query: ScanCheckDto) {
@@ -111,9 +111,9 @@ export class WarehouseController {
   @Post('batch/report-issue')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Báo cáo sự cố mặt hàng (Thiếu/Hỏng) [Kitchen]',
+    summary: 'Báo cáo sự cố lô (hỏng / thiếu khi soạn) [Kitchen]',
     description:
-      'Khi phát hiện lô hàng bị hỏng, hệ thống sẽ tự động tìm lô khác cùng loại để bù vào đơn.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Ghi nhận lô không lấy được; hệ thống tìm lô thay thế cùng sản phẩm (theo **FEFO**) để bù vào đơn đang soạn.',
   })
   @ResponseMessage('Báo cáo sự cố thành công')
   async reportIssue(@Body() dto: ReportIssueDto) {
@@ -124,9 +124,9 @@ export class WarehouseController {
   @Post('manifests')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Tạo manifest từ nhiều đơn (wave picking)',
+    summary: 'Tạo manifest (wave picking nhiều đơn) [Kitchen]',
     description:
-      'Gom đơn vào một chuyến xe, sinh picking list gộp theo sản phẩm (WH-OPTIMIZE).',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Gom nhiều đơn vào một manifest một chuyến, sinh picking list **gộp theo sản phẩm** để giảm số lần đi lại trong kho (WH-OPTIMIZE).',
   })
   @ResponseMessage('Tạo manifest thành công')
   async createManifest(@Body() dto: CreateManifestDto) {
@@ -136,7 +136,9 @@ export class WarehouseController {
   @Get('manifests/:id/picking-list')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Lấy master list soạn hàng gộp theo manifest',
+    summary: 'Picking list gộp theo manifest [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Trả về danh sách soạn hàng master theo `manifestId`: tổng nhu cầu theo SKU/lô cho toàn wave, phục vụ soạn một lượt trước khi xuất xe.',
   })
   @ResponseMessage('Lấy picking list manifest thành công')
   async getManifestPickingList(@Param('id', ParseIntPipe) id: number) {
@@ -146,7 +148,9 @@ export class WarehouseController {
   @Patch('manifests/:id/verify-item')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Quét xác nhận lô hàng (FEFO cứng)',
+    summary: 'Quét xác nhận lô trên manifest (FEFO cứng) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Ghi nhận lô thực tế đã quét cho một dòng trên manifest; ràng buộc **FEFO cứng** — chỉ chấp nhận lô đúng thứ tự hạn dùng đã định.',
   })
   @ResponseMessage('Xác nhận quét lô thành công')
   async verifyManifestItem(
@@ -159,7 +163,9 @@ export class WarehouseController {
   @Post('manifests/:id/report-batch-issue')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Báo hỏng lô theo manifest (chỉ định lô tiếp theo)',
+    summary: 'Báo hỏng lô trên manifest (đổi sang lô tiếp theo) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Khi lô được gợi ý không dùng được trên manifest, báo sự cố và chỉ định/chuyển sang lô kế tiếp đúng quy tắc FEFO.',
   })
   @ResponseMessage('Đã xử lý báo hỏng lô')
   async reportManifestBatchIssue(
@@ -172,7 +178,9 @@ export class WarehouseController {
   @Post('manifests/:id/depart')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Xe rời kho — trừ tồn kho (EXPORT) theo toàn bộ manifest',
+    summary: 'Xe rời kho — xuất kho theo toàn bộ manifest [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Xác nhận manifest đã soạn đủ; thực hiện **EXPORT** — trừ tồn theo toàn bộ dòng đã quét và chuyển trạng thái vận chuyển tương ứng.',
   })
   @ResponseMessage('Đã xác nhận xuất kho theo manifest')
   async confirmManifestDeparture(@Param('id', ParseIntPipe) id: number) {
@@ -182,7 +190,9 @@ export class WarehouseController {
   @Post('manifests/:id/cancel')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
-    summary: 'Hủy manifest (hoàn reserved) trước khi xe rời kho',
+    summary: 'Hủy manifest trước khi xuất xe [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Hủy wave chưa xuất kho: **hoàn trả phần đã reserve** gắn với manifest và giải phóng đơn/lô khỏi trạng thái gom chuyến.',
   })
   @ResponseMessage('Đã hủy manifest')
   async cancelManifest(@Param('id', ParseIntPipe) id: number) {

@@ -20,7 +20,6 @@ import { InventoryDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
 import {
   AgingReportQueryDto,
-  //InventorySummaryQueryDto,
   WasteReportQueryDto,
   FinancialLossQueryDto,
 } from './dto/analytics-query.dto';
@@ -33,15 +32,17 @@ export class InventoryController {
   constructor(private readonly inventoryService: InventoryService) {}
 
   @Get('store')
+  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'Tồn kho tại cửa hàng (staff)',
+    summary: 'Tồn kho theo cửa hàng (JWT) [Admin, Franchise Staff]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Franchise Store Staff\n\n**Nghiệp vụ:** Trả về tồn tại kho nội bộ của cửa hàng đăng nhập (`storeId` từ JWT); hỗ trợ lọc/tìm qua `GetStoreInventoryDto`.',
   })
   @ApiResponse({
     status: 200,
     description: 'Danh sách tồn kho tại cửa hàng',
     type: [InventoryDto],
   })
-  @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
   async getStoreInventory(
     @CurrentUser() user: IJwtPayload,
     @Query() query: GetStoreInventoryDto,
@@ -54,10 +55,12 @@ export class InventoryController {
   }
 
   @Get('store/transactions')
-  @ApiOperation({
-    summary: 'Lịch sử kho Store',
-  })
   @Roles(UserRole.FRANCHISE_STORE_STAFF, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Lịch sử giao dịch kho cửa hàng [Admin, Franchise Staff]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Franchise Store Staff\n\n**Nghiệp vụ:** Audit trail nhập/xuất/điều chỉnh tại kho cửa hàng của user.',
+  })
   async getStoreTransactions(
     @CurrentUser() user: IJwtPayload,
     @Query() query: GetInventoryTransactionsDto,
@@ -70,15 +73,18 @@ export class InventoryController {
   }
 
   @Get('summary')
-  @ApiOperation({
-    summary: 'Tổng hợp tồn kho (Manager)',
-  })
   @Roles(
     UserRole.MANAGER,
     UserRole.ADMIN,
     UserRole.CENTRAL_KITCHEN_STAFF,
     UserRole.SUPPLY_COORDINATOR,
   )
+  @ApiOperation({
+    summary:
+      'Tổng hợp tồn kho (theo kho / tìm kiếm) [Admin, Manager, Kitchen, Supply Coordinator]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Bảng tồn tổng quan theo `warehouseId` và từ khóa tìm kiếm, có phân trang.',
+  })
   async getInventorySummary(@Query() query: GetInventorySummaryDto) {
     return this.inventoryService.getInventorySummary(
       {
@@ -93,10 +99,12 @@ export class InventoryController {
   }
 
   @Get('low-stock')
-  @ApiOperation({
-    summary: 'Cảnh báo tồn kho thấp (Manager)',
-  })
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Cảnh báo tồn kho thấp [Admin, Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Liệt kê SKU dưới ngưỡng tối thiểu (`min_stock_level`), có thể lọc theo `warehouseId`.',
+  })
   async getLowStockReport(@Query('warehouseId') warehouseId?: number) {
     return this.inventoryService.getLowStockItems(
       warehouseId ? Number(warehouseId) : undefined,
@@ -104,10 +112,12 @@ export class InventoryController {
   }
 
   @Post('adjust')
-  @ApiOperation({
-    summary: 'Điều chỉnh tồn kho (Manager)',
-  })
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Điều chỉnh tồn kho (hiệu chỉnh thủ công) [Admin, Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Ghi nhận điều chỉnh tăng/giảm tồn có kiểm soát (`InventoryAdjustmentDto`) — dùng cho kiểm kê, hỏng không qua claim, v.v.',
+  })
   async adjustInventory(@Body() body: InventoryAdjustmentDto) {
     return this.inventoryService.adjustInventory(body);
   }
@@ -121,15 +131,14 @@ export class InventoryController {
   )
   @ApiOperation({
     summary:
-      'API inbound: Xem tổng tồn kho Bếp (Group by Product), (Manager, Kitchen, Coordinator)',
+      'Tồn kho bếp gom theo sản phẩm [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      'API dành cho Bếp trưởng/Quản lý để xem tổng quan tồn kho các món',
+      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Tổng quan tồn kho trung tâm **group theo product** phục vụ bếp và điều phối (`GetKitchenInventoryDto`).',
   })
   async getKitchenSummary(@Query() query: GetKitchenInventoryDto) {
     return this.inventoryService.getKitchenSummary(query);
   }
 
-  // API 7: Xem chi tiết lô hàng của một món (Drill-down)
   @Get('kitchen/details')
   @Roles(
     UserRole.MANAGER,
@@ -138,16 +147,14 @@ export class InventoryController {
     UserRole.SUPPLY_COORDINATOR,
   )
   @ApiOperation({
-    summary: 'API 7: Xem chi tiết lô hàng của một món (Drill-down)',
+    summary:
+      'Chi tiết lô theo một sản phẩm (drill-down) [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      'Xem chi tiết các lô (Hạn sử dụng, SL thực, SL giữ chỗ) của 1 sản phẩm cụ thể',
+      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Drill-down từng **batch** của một `product_id`: HSD, số lượng thực, số lượng **reserve**.',
   })
   async getKitchenDetails(@Query('product_id') productId: number) {
-    // productId từ @Query mặc định là string, cần ép kiểu
     return this.inventoryService.getKitchenDetails(Number(productId));
   }
-
-  // --- ANALYTICS DASHBOARD APIS ---
 
   @Get('analytics/summary')
   @Roles(
@@ -157,16 +164,22 @@ export class InventoryController {
     UserRole.SUPPLY_COORDINATOR,
   )
   @ApiOperation({
-    summary: 'Tổng quan sức khỏe kho Bếp (Manager, Kitchen, Coordinator)',
+    summary:
+      'Dashboard sức khỏe kho bếp [Admin, Manager, Kitchen, Supply Coordinator]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Chỉ số tổng quan tồn/rủi ro phục vụ vận hành kho trung tâm.',
   })
   async getAnalyticsSummary() {
     return this.inventoryService.getAnalyticsSummary();
   }
 
-  // API 2
   @Get('analytics/aging')
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
-  @ApiOperation({ summary: 'Báo cáo tuổi hàng - Aging Report (Manager)' })
+  @ApiOperation({
+    summary: 'Báo cáo tuổi hàng (Aging) [Admin, Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Phân tích tồn theo độ “già” của hàng (HSD / thời gian lưu kho) qua `AgingReportQueryDto`.',
+  })
   async getAgingReport(@Query() query: AgingReportQueryDto) {
     return this.inventoryService.getAgingReport(query);
   }
@@ -180,17 +193,20 @@ export class InventoryController {
   )
   @ApiOperation({
     summary:
-      'Thống kê hao hụt & hủy hàng - Waste Report (Manager, Kitchen, Coordinator)',
+      'Báo cáo hao hụt & hủy (Waste) [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      'Thống kê số lượng hàng đã bị hủy (WASTE). Tính toán KPI tổng khối lượng bị hủy trong kỳ.',
+      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Thống kê khối lượng **WASTE** trong kỳ và KPI hủy hàng (`WasteReportQueryDto`).',
   })
   async getWasteReport(@Query() query: WasteReportQueryDto) {
     return this.inventoryService.getWasteReport(query);
   }
+
   @Get('analytics/financial/loss-impact')
   @Roles(UserRole.MANAGER, UserRole.ADMIN)
   @ApiOperation({
-    summary: 'API 9: Ước tính giá trị thiệt hại tài chính (Manager)',
+    summary: 'Ước tính thiệt hại tài chính (loss impact) [Admin, Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Ước tính giá trị tổn thất tài chính từ hao hụt/hủy theo `FinancialLossQueryDto`.',
   })
   async getFinancialLoss(@Query() query: FinancialLossQueryDto) {
     return this.inventoryService.getFinancialLoss(query);

@@ -15,6 +15,7 @@ import { SystemConfigService } from '../system-config/system-config.service';
 import { WarehouseRepository } from './../warehouse/warehouse.repository';
 import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
+import { GetInboundProductsDto } from './dto/get-inbound-products.dto';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
 import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import { generateQrData } from './helpers/inbound.util';
@@ -453,6 +454,28 @@ export class InboundService {
         }
         return base;
       }),
+    };
+  }
+
+  async getProductsForInbound(query: GetInboundProductsDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 50;
+    const offset = (page - 1) * limit;
+    const { items, total } = await this.inboundRepo.listProductsForInbound({
+      search: query.search,
+      limit,
+      offset,
+    });
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    return {
+      items,
+      meta: {
+        totalItems: total,
+        itemCount: items.length,
+        itemsPerPage: limit,
+        totalPages,
+        currentPage: page,
+      },
     };
   }
 }

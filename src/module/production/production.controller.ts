@@ -33,7 +33,11 @@ export class ProductionController {
 
   @Post('recipes')
   @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: 'Tạo BOM / công thức sản xuất' })
+  @ApiOperation({
+    summary: 'Tạo BOM / công thức sản xuất [Manager, Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Manager, Central Kitchen Staff\n\n**Nghiệp vụ:** Định nghĩa thành phẩm, sản lượng chuẩn và danh mục nguyên liệu (BOM) phục vụ lệnh sản xuất.',
+  })
   @ResponseMessage('Đã tạo công thức')
   async createRecipe(@Body() dto: CreateRecipeDto) {
     return this.productionService.createRecipe({
@@ -49,7 +53,11 @@ export class ProductionController {
 
   @Post('orders')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF, UserRole.MANAGER)
-  @ApiOperation({ summary: 'Tạo lệnh sản xuất (draft)' })
+  @ApiOperation({
+    summary: 'Tạo lệnh sản xuất (draft) [Kitchen, Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff, Manager\n\n**Nghiệp vụ:** Khởi tạo lệnh theo `recipeId` và khối lượng kế hoạch tại **kho trung tâm**, ghi nhận người tạo.',
+  })
   @ResponseMessage('Tạo lệnh sản xuất')
   async createOrder(
     @Body() dto: CreateProductionOrderDto,
@@ -69,7 +77,12 @@ export class ProductionController {
 
   @Post('orders/:id/start')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: 'Bắt đầu: kiểm tra BOM/tồn/HSD và tạm giữ nguyên liệu (FEFO)' })
+  @ApiOperation({
+    summary:
+      'Bắt đầu sản xuất — kiểm BOM/tồn/HSD, tạm giữ NL (FEFO) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Kiểm tra đủ nguyên liệu và HSD; **tạm giữ (reserve)** nguyên liệu theo **FEFO** trước khi vào ca sản xuất.',
+  })
   @ResponseMessage('Đã tạm giữ nguyên liệu')
   async start(@Param('id', ParseUUIDPipe) id: string) {
     return this.productionService.startProduction(id);
@@ -77,7 +90,12 @@ export class ProductionController {
 
   @Post('orders/:id/complete')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
-  @ApiOperation({ summary: 'Hoàn tất: nhập sản lượng thực tế, trừ NL, tạo lô TP, lineage' })
+  @ApiOperation({
+    summary:
+      'Hoàn tất sản xuất — nhập TP, trừ NL, lô thành phẩm & lineage [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Ghi nhận sản lượng thực tế, trừ nguyên liệu đã giữ, tạo lô thành phẩm và **lineage**; Manager có thể có quyền bổ sung trong service khi xử lý chênh lệch (theo `callerRole`).',
+  })
   @ResponseMessage('Hoàn tất sản xuất')
   async complete(
     @Param('id', ParseUUIDPipe) id: string,

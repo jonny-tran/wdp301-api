@@ -30,21 +30,33 @@ export class SupplierController {
   @Post()
   @UseGuards(RolesGuard)
   @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Tạo mới đối tác' })
+  @ApiOperation({
+    summary: 'Tạo nhà cung cấp mới [Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Manager\n\n**Nghiệp vụ:** Khởi tạo đối tác cung ứng (thông tin liên hệ, phục vụ phiếu nhập inbound và mua hàng).',
+  })
   @ResponseMessage('Tạo nhà cung cấp thành công')
   create(@Body() createSupplierDto: CreateSupplierDto) {
     return this.supplierService.create(createSupplierDto);
   }
 
   @Get()
-  @ApiOperation({ summary: 'Lấy danh sách nhà cung cấp' })
+  @ApiOperation({
+    summary: 'Danh sách nhà cung cấp (lọc & phân trang) [Authenticated]',
+    description:
+      '**Quyền truy cập (Roles):** Mọi người dùng đã đăng nhập (không giới hạn `@Roles` trên endpoint)\n\n**Nghiệp vụ:** Tra cứu NCC theo `GetSuppliersDto` — thường dùng khi lập phiếu nhập hoặc tham chiếu master data.',
+  })
   @ResponseMessage('Lấy danh sách nhà cung cấp thành công')
   findAll(@Query() query: GetSuppliersDto) {
     return this.supplierService.findAll(query);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Chi tiết nhà cung cấp' })
+  @ApiOperation({
+    summary: 'Chi tiết một nhà cung cấp [Authenticated]',
+    description:
+      '**Quyền truy cập (Roles):** Mọi người dùng đã đăng nhập\n\n**Nghiệp vụ:** Xem thông tin chi tiết một NCC theo ID.',
+  })
   @ResponseMessage('Lấy thông tin nhà cung cấp thành công')
   findOne(@Param('id') id: string) {
     return this.supplierService.findOne(+id);
@@ -53,7 +65,11 @@ export class SupplierController {
   @Patch(':id')
   @UseGuards(RolesGuard)
   @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Cập nhật nhà cung cấp' })
+  @ApiOperation({
+    summary: 'Cập nhật nhà cung cấp [Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Manager\n\n**Nghiệp vụ:** Sửa thông tin đối tác (`UpdateSupplierDto`).',
+  })
   @ResponseMessage('Cập nhật nhà cung cấp thành công')
   update(
     @Param('id') id: string,
@@ -65,7 +81,11 @@ export class SupplierController {
   @Delete(':id')
   @UseGuards(RolesGuard)
   @Roles(UserRole.MANAGER)
-  @ApiOperation({ summary: 'Xóa nhà cung cấp' })
+  @ApiOperation({
+    summary: 'Xóa nhà cung cấp [Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Manager\n\n**Nghiệp vụ:** Xóa bản ghi NCC (cần đảm bảo không vi phạm ràng buộc dữ liệu — theo logic service/repository).',
+  })
   @ResponseMessage('Xóa nhà cung cấp thành công')
   remove(@Param('id') id: string) {
     return this.supplierService.remove(+id);
