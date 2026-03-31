@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -15,6 +16,8 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { DemandPatternQueryDto } from './dto/analytics-query.dto';
+import { CreateStaffRequestsDto } from './dto/create-staff-request.dto';
+import { RejectStaffDto } from './dto/reject-staff.dto';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { GetStoresFilterDto } from './dto/get-stores-filter.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
@@ -43,6 +46,62 @@ export class FranchiseStoreController {
     return this.franchiseStoreService.findAll(filter);
   }
 
+  @Post('staff')
+  @Roles(UserRole.MANAGER)
+  @ApiOperation({
+    summary:
+      'Manager gửi yêu cầu tạo nhân viên (PENDING) — staff[] có thể nhiều cửa hàng; mỗi dòng: storeId + fullName + phone; tối đa 50/request [Manager]',
+  })
+  createStaffRequests(@Body() dto: CreateStaffRequestsDto) {
+    return this.franchiseStoreService.createStaffRequestsBatch(dto);
+  }
+
+  @Get('staff/pending')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({ summary: 'Admin xem danh sách nhân viên chờ duyệt [Admin]' })
+  listPendingStaff() {
+    return this.franchiseStoreService.findPendingStaffRequests();
+  }
+
+  @Patch('staff/:id/approve')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Admin duyệt — sinh email & mật khẩu mặc định, kích hoạt tài khoản [Admin]',
+  })
+  approveStaff(@Param('id', ParseUUIDPipe) id: string) {
+    return this.franchiseStoreService.approveStaff(id);
+  }
+
+  @Patch('staff/:id/reject')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Admin từ chối yêu cầu — chuyển status rejected, có thể kèm lý do [Admin]',
+  })
+  rejectStaff(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RejectStaffDto,
+  ) {
+    return this.franchiseStoreService.rejectStaff(id, dto);
+  }
+
+  @Get('analytics/reliability')
+  @Roles(UserRole.MANAGER)
+  @ApiOperation({
+    summary: 'Đánh giá độ tin cậy của Cửa hàng & Phát hiện gian lận [Manager]',
+  })
+  async getStoreReliability() {
+    return this.franchiseStoreService.getStoreReliability();
+  }
+
+  @Get('analytics/demand-pattern')
+  @Roles(UserRole.MANAGER)
+  @ApiOperation({
+    summary: 'Phân tích xu hướng đặt hàng theo Thứ trong tuần [Manager]',
+  })
+  async getDemandPattern(@Query() query: DemandPatternQueryDto) {
+    return this.franchiseStoreService.getDemandPattern(query);
+  }
+
   @Get(':id')
   @Roles(UserRole.MANAGER)
   @ApiOperation({ summary: 'Lấy chi tiết store [Manager]' })
@@ -62,23 +121,5 @@ export class FranchiseStoreController {
   @ApiOperation({ summary: 'Xóa Store [Manager]' })
   async remove(@Param('id') id: string) {
     return this.franchiseStoreService.remove(id);
-  }
-
-  @Get('analytics/reliability')
-  @Roles(UserRole.MANAGER)
-  @ApiOperation({
-    summary: 'Đánh giá độ tin cậy của Cửa hàng & Phát hiện gian lận (Manager)',
-  })
-  async getStoreReliability() {
-    return this.franchiseStoreService.getStoreReliability();
-  }
-
-  @Get('analytics/demand-pattern')
-  @Roles(UserRole.MANAGER)
-  @ApiOperation({
-    summary: 'Phân tích xu hướng đặt hàng theo Thứ trong tuần (Manager)',
-  })
-  async getDemandPattern(@Query() query: DemandPatternQueryDto) {
-    return this.franchiseStoreService.getDemandPattern(query);
   }
 }

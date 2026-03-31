@@ -3,7 +3,7 @@ import {
   boolean,
   date,
   decimal,
-  index, // <-- ĐÃ THÊM IMPORT NÀY
+  index,
   integer,
   pgEnum,
   pgTable,
@@ -24,7 +24,14 @@ export const roleEnum = pgEnum('role', [
   'franchise_store_staff',
 ]);
 
-export const userStatusEnum = pgEnum('user_status', ['active', 'banned']);
+/** Trạng thái tài khoản — dùng chung cho cột users.status */
+export const userStatusEnum = pgEnum('user_status', [
+  'active',
+  'banned',
+  'pending',
+  'rejected',
+  'inactive',
+]);
 export const warehouseTypeEnum = pgEnum('warehouse_type', [
   'central',
   'store_internal',
@@ -118,9 +125,13 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash').notNull(),
   phone: text('phone'),
   avatarUrl: text('avatar_url'),
+  /** Ghi chú kèm yêu cầu tạo staff (Manager → Admin), optional */
+  staffRequestNote: text('staff_request_note'),
+  /** Lý do từ chối khi Admin reject yêu cầu tạo staff */
+  staffRejectionReason: text('staff_rejection_reason'),
   role: roleEnum('role').notNull(),
   storeId: uuid('store_id'),
-  status: varchar('status', { length: 20 }).default('ACTIVE').notNull(),
+  status: userStatusEnum('status').default('active').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

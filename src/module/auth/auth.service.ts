@@ -42,8 +42,20 @@ export class AuthService {
       throw new BadRequestException('Email không chính xác');
     }
 
-    if (user.status === 'banned') {
+    if (user.status === 'banned' || user.status === 'inactive') {
       throw new ForbiddenException('Tài khoản của bạn đã bị khóa');
+    }
+
+    if (user.status === 'pending') {
+      throw new ForbiddenException(
+        'Tài khoản đang chờ Admin duyệt. Vui lòng liên hệ quản trị viên.',
+      );
+    }
+
+    if (user.status === 'rejected') {
+      throw new ForbiddenException(
+        'Yêu cầu tạo tài khoản đã bị từ chối. Vui lòng liên hệ quản trị viên.',
+      );
     }
 
     const isPasswordValid = await argon2.verify(
@@ -171,14 +183,16 @@ export class AuthService {
       throw new ForbiddenException('Không thể tạo tài khoản với Role Admin');
     }
 
+    if (dto.role === UserRole.FRANCHISE_STORE_STAFF) {
+      throw new BadRequestException(
+        'Nhân viên cửa hàng được tạo qua luồng Manager: POST /stores/staff, sau đó Admin duyệt tại PATCH /stores/staff/:id/approve',
+      );
+    }
+
     const existingUser = await this.authRepository.findUserByEmail(dto.email);
     if (existingUser) {
       throw new ConflictException('Email hoặc tên đăng nhập đã được sử dụng');
     }
-    if (dto.role === UserRole.FRANCHISE_STORE_STAFF && !dto.storeId) {
-      throw new BadRequestException('Nhân viên cửa hàng cần Store ID');
-    }
-
     if (dto.storeId) {
       const store = await this.authRepository.findStoreById(dto.storeId);
       if (!store) {
@@ -320,8 +334,20 @@ export class AuthService {
       throw new UnauthorizedException('Thông tin đăng nhập không chính xác');
     }
 
-    if (user.status === 'banned') {
+    if (user.status === 'banned' || user.status === 'inactive') {
       throw new ForbiddenException('Tài khoản của bạn đã bị khóa');
+    }
+
+    if (user.status === 'pending') {
+      throw new ForbiddenException(
+        'Tài khoản đang chờ Admin duyệt. Vui lòng liên hệ quản trị viên.',
+      );
+    }
+
+    if (user.status === 'rejected') {
+      throw new ForbiddenException(
+        'Yêu cầu tạo tài khoản đã bị từ chối. Vui lòng liên hệ quản trị viên.',
+      );
     }
 
     const isPasswordValid = await argon2.verify(user.passwordHash, pass);

@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq, and, sql, SQL } from 'drizzle-orm';
+import { and, eq, ne, sql, SQL } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from 'src/database/database.constants';
 import * as schema from 'src/database/schema';
@@ -8,6 +8,7 @@ import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { GetStoresFilterDto } from './dto/get-stores-filter.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
+import { USER_STATUS_PENDING } from './constants/franchise-staff.constants';
 
 @Injectable()
 export class FranchiseStoreRepository {
@@ -41,7 +42,7 @@ export class FranchiseStoreRepository {
 
   async create(dto: CreateStoreDto, tx?: NodePgDatabase<typeof schema>) {
     const db = tx ?? this.db;
-    const [store] = await db
+    const inserted = await db
       .insert(schema.stores)
       .values({
         name: dto.name,
@@ -50,7 +51,7 @@ export class FranchiseStoreRepository {
         managerName: dto.managerName,
       })
       .returning();
-    return store;
+    return inserted[0];
   }
 
   async update(id: string, dto: UpdateStoreDto) {
@@ -136,5 +137,68 @@ export class FranchiseStoreRepository {
       )
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .groupBy(sql`EXTRACT(DOW FROM ${schema.orders.createdAt})`);
+  }
+
+  async isEmailTaken(
+    email: string,
+    excludeUserId?: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<boolean> {
+    const db = tx ?? this.db;
+    const row = await db.query.users.findFirst({
+      where: excludeUserId
+        ? and(eq(schema.users.email, email), ne(schema.users.id, excludeUserId))
+        : eq(schema.users.email, email),
+    });
+    return !!row;
+  }
+
+  async insertStaffUser(
+    values: typeof schema.users.$inferInsert,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const db = tx ?? this.db;
+    const inserted = await db.insert(schema.users).values(values).returning();
+    return inserted[0]!;
+  }
+
+  async findUserById(
+    id: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<typeof schema.users.$inferSelect | undefined> {
+    const db = tx ?? this.db;
+    return db.query.users.findFirst({
+      where: eq(schema.users.id, id),
+    });
+  }
+
+  async updateStaffUser(
+    id: string,
+    data: Partial<typeof schema.users.$inferInsert>,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const db = tx ?? this.db;
+    const out = await db
+      .update(schema.users)
+      .set({
+        ...data,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.users.id, id))
+      .returning();
+    return out[0];
+  }
+
+  async findPendingFranchiseStaff() {
+    return this.db.query.users.findMany({
+      where: and(
+        eq(schema.users.role, 'franchise_store_staff'),
+        eq(schema.users.status, USER_STATUS_PENDING),
+      ),
+      orderBy: (users, { desc }) => [desc(users.createdAt)],
+      with: {
+        store: true,
+      },
+    });
   }
 }

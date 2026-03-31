@@ -44,7 +44,7 @@ export class AuthRepository {
         passwordHash: data.passwordHash,
         role: data.role,
         storeId: data.storeId || null,
-        status: 'ACTIVE',
+        status: 'active',
       })
       .returning();
 

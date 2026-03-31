@@ -1,5 +1,9 @@
+import { randomUUID } from 'crypto';
+
+import * as argon2 from 'argon2';
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -9,11 +13,20 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from 'src/database/database.constants';
 import * as schema from 'src/database/schema';
 import { WarehouseService } from '../warehouse/warehouse.service';
+import {
+  FRANCHISE_STAFF_DEFAULT_PASSWORD,
+  USER_STATUS_ACTIVE,
+  USER_STATUS_PENDING,
+  USER_STATUS_REJECTED,
+} from './constants/franchise-staff.constants';
 import { DemandPatternQueryDto } from './dto/analytics-query.dto';
+import { CreateStaffRequestsDto } from './dto/create-staff-request.dto';
+import { RejectStaffDto } from './dto/reject-staff.dto';
 import { CreateStoreDto } from './dto/create-store.dto';
 import { GetStoresFilterDto } from './dto/get-stores-filter.dto';
 import { UpdateStoreDto } from './dto/update-store.dto';
 import { FranchiseStoreRepository } from './franchise-store.repository';
+import { pickUniqueStaffEmail } from './utils/name-generator.util';
 
 @Injectable()
 export class FranchiseStoreService {
@@ -164,5 +177,165 @@ export class FranchiseStoreService {
         totalRequestedQuantity: pattern[index],
       })),
     };
+  }
+
+  async createStaffRequestsBatch(dto: CreateStaffRequestsDto) {
+    const uniqueStoreIds = [...new Set(dto.staff.map((s) => s.storeId))];
+    for (const storeId of uniqueStoreIds) {
+      const store = await this.franchiseStoreRepository.findById(storeId);
+      if (!store) {
+        throw new BadRequestException(`Cửa hàng không tồn tại (${storeId})`);
+      }
+      if (!store.isActive) {
+        throw new BadRequestException(
+          `Cửa hàng "${store.name}" không còn hoạt động`,
+        );
+      }
+    }
+
+    return this.db.transaction(async (tx) => {
+      const created: Array<{
+        id: string;
+        username: string;
+        phone: string | null;
+        storeId: string | null;
+        status: string;
+        role: string;
+        staffRequestNote: string | null;
+        createdAt: Date | null;
+      }> = [];
+
+      for (const item of dto.staff) {
+        let passwordHash: string;
+        try {
+          passwordHash = await argon2.hash(randomUUID());
+        } catch {
+          throw new InternalServerErrorException('Lỗi mã hóa mật khẩu tạm');
+        }
+
+        const user = await this.franchiseStoreRepository.insertStaffUser(
+          {
+            username: item.fullName,
+            email: `pending.${randomUUID()}@pending.staff.wdp`,
+            passwordHash,
+            phone: item.phone,
+            staffRequestNote: item.note?.length ? item.note : null,
+            role: 'franchise_store_staff',
+            storeId: item.storeId,
+            status: USER_STATUS_PENDING,
+          },
+          tx,
+        );
+
+        created.push({
+          id: user.id,
+          username: user.username,
+          phone: user.phone,
+          storeId: user.storeId,
+          status: user.status,
+          role: user.role,
+          staffRequestNote: user.staffRequestNote ?? null,
+          createdAt: user.createdAt ?? null,
+        });
+      }
+
+      return { created, count: created.length };
+    });
+  }
+
+  findPendingStaffRequests() {
+    return this.franchiseStoreRepository.findPendingFranchiseStaff();
+  }
+
+  async rejectStaff(staffId: string, dto: RejectStaffDto) {
+    const user = await this.franchiseStoreRepository.findUserById(staffId);
+    if (!user) {
+      throw new NotFoundException('Không tìm thấy nhân viên');
+    }
+    if (user.role !== 'franchise_store_staff') {
+      throw new BadRequestException('Người dùng không phải nhân viên cửa hàng');
+    }
+    if (user.status !== USER_STATUS_PENDING) {
+      throw new ConflictException('Nhân viên không ở trạng thái chờ duyệt');
+    }
+
+    const reason = dto.reason?.trim();
+    const updated = await this.franchiseStoreRepository.updateStaffUser(staffId, {
+      status: USER_STATUS_REJECTED,
+      staffRejectionReason: reason?.length ? reason : null,
+    });
+
+    if (!updated) {
+      throw new InternalServerErrorException('Cập nhật nhân viên thất bại');
+    }
+
+    return {
+      id: updated.id,
+      username: updated.username,
+      status: updated.status,
+      staffRejectionReason: updated.staffRejectionReason,
+    };
+  }
+
+  async approveStaff(staffId: string) {
+    return this.db.transaction(async (tx) => {
+      const user = await this.franchiseStoreRepository.findUserById(
+        staffId,
+        tx,
+      );
+      if (!user) {
+        throw new NotFoundException('Không tìm thấy nhân viên');
+      }
+      if (user.role !== 'franchise_store_staff') {
+        throw new BadRequestException('Người dùng không phải nhân viên cửa hàng');
+      }
+      if (user.status !== USER_STATUS_PENDING) {
+        throw new ConflictException('Nhân viên không ở trạng thái chờ duyệt');
+      }
+
+      let picked: { email: string };
+      try {
+        picked = await pickUniqueStaffEmail(
+          user.username,
+          (email) => this.franchiseStoreRepository.isEmailTaken(email, staffId, tx),
+        );
+      } catch {
+        throw new ConflictException(
+          'Không thể sinh email duy nhất (đã thử hết hậu tố 1–100)',
+        );
+      }
+
+      let passwordHash: string;
+      try {
+        passwordHash = await argon2.hash(FRANCHISE_STAFF_DEFAULT_PASSWORD);
+      } catch {
+        throw new InternalServerErrorException('Lỗi mã hóa mật khẩu');
+      }
+
+      const updated = await this.franchiseStoreRepository.updateStaffUser(
+        staffId,
+        {
+          email: picked.email,
+          passwordHash,
+          status: USER_STATUS_ACTIVE,
+        },
+        tx,
+      );
+
+      if (!updated) {
+        throw new InternalServerErrorException('Cập nhật nhân viên thất bại');
+      }
+
+      return {
+        id: updated.id,
+        email: updated.email,
+        username: updated.username,
+        phone: updated.phone,
+        storeId: updated.storeId,
+        role: updated.role,
+        status: updated.status,
+        temporaryPassword: FRANCHISE_STAFF_DEFAULT_PASSWORD,
+      };
+    });
   }
 }

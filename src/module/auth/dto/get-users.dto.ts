@@ -3,9 +3,13 @@ import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { UserRole } from './create-user.dto';
 
+/** Giá trị khớp cột users.status (enum user_status trong DB) */
 export enum UserStatusFilter {
-  ACTIVE = 'ACTIVE',
-  INACTIVE = 'INACTIVE',
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
+  BANNED = 'banned',
+  PENDING = 'pending',
+  REJECTED = 'rejected',
 }
 
 export class GetUsersDto extends PaginationParamsDto {

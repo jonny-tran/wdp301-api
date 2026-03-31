@@ -41,6 +41,11 @@ describe('FranchiseStoreService', () => {
       update: jest.fn(),
       getStoreReliability: jest.fn(),
       getDemandPattern: jest.fn(),
+      insertStaffUser: jest.fn(),
+      findUserById: jest.fn(),
+      isEmailTaken: jest.fn(),
+      updateStaffUser: jest.fn(),
+      findPendingFranchiseStaff: jest.fn(),
     };
 
     const mockWarehouseServiceObj = {

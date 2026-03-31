@@ -104,13 +104,31 @@ describe('AuthService', () => {
       );
     });
 
+    it('should reject createUser for franchise_store_staff (use stores/staff flow)', async () => {
+      const dto: CreateUserDto = {
+        email: 'staff@example.com',
+        username: 'staff',
+        password: 'password123',
+        role: UserRole.FRANCHISE_STORE_STAFF,
+        storeId: 'store-id',
+      };
+
+      await expect(authService.createUser(dto)).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(authService.createUser(dto)).rejects.toThrow(
+        /\/stores\/staff/,
+      );
+      expect(authRepository.findUserByEmail).not.toHaveBeenCalled();
+    });
+
     it('should throw BadRequestException if storeId is provided but store does not exist in the system', async () => {
       // Arrange
       const dto: CreateUserDto = {
         email: 'test@example.com',
         username: 'testuser',
         password: 'password123',
-        role: UserRole.FRANCHISE_STORE_STAFF,
+        role: UserRole.MANAGER,
         storeId: 'invalid-store-id',
       };
 
@@ -182,7 +200,7 @@ describe('AuthService', () => {
         email: 'test@example.com',
         username: 'testuser',
         password: 'password123',
-        role: UserRole.FRANCHISE_STORE_STAFF,
+        role: UserRole.MANAGER,
         storeId: 'valid-store-id',
       } as CreateUserDto;
 
@@ -336,20 +354,20 @@ describe('AuthService', () => {
   });
 
   describe('updateUserByAdmin', () => {
-    it('should change user status to INACTIVE', async () => {
+    it('should change user status to inactive', async () => {
       const mockUser = { id: '1', email: 'test@example.com' };
       (authRepository.findUserById as jest.Mock).mockResolvedValue(mockUser);
       (authRepository.updateUser as jest.Mock).mockResolvedValue({
         ...mockUser,
-        status: 'INACTIVE',
+        status: 'inactive',
       });
 
-      const dto = { status: 'INACTIVE' } as unknown as UpdateUserByAdminDto;
+      const dto = { status: 'inactive' } as unknown as UpdateUserByAdminDto;
       const result = await authService.updateUserByAdmin('1', dto);
 
       expect(authRepository.findUserById).toHaveBeenCalledWith('1');
       expect(authRepository.updateUser).toHaveBeenCalledWith('1', dto);
-      expect(result.status).toBe('INACTIVE');
+      expect(result.status).toBe('inactive');
     });
   });
 
