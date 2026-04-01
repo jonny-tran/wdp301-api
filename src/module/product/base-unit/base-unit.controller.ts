@@ -11,13 +11,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
 import { Roles } from 'src/module/auth/decorators/roles.decorator';
 import { UserRole } from 'src/module/auth/dto/create-user.dto';
 import { AtGuard } from 'src/module/auth/guards/auth.guard';
 import { RolesGuard } from 'src/module/auth/guards/roles.guard';
 import { BaseUnitService } from './base-unit.service';
 import { CreateBaseUnitDto } from './dto/create-base-unit.dto';
+import { GetBaseUnitsDto } from './dto/get-base-units.dto';
 import { UpdateBaseUnitDto } from './dto/update-base-unit.dto';
 
 @ApiTags('Base Units')
@@ -38,8 +38,10 @@ export class BaseUnitController {
   @Roles(UserRole.MANAGER)
   @ApiOperation({
     summary: 'Lấy danh sách đơn vị tính [Manager]',
+    description:
+      'Phân trang mặc định page=1, limit=10. Trả về { items, meta } (totalItems, totalPages, currentPage, …). Hỗ trợ search, isActive, sortBy/sortOrder.',
   })
-  findAll(@Query() query: PaginationParamsDto) {
+  findAll(@Query() query: GetBaseUnitsDto) {
     return this.baseUnitService.findAll(query);
   }
 

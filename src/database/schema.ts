@@ -36,6 +36,13 @@ export const warehouseTypeEnum = pgEnum('warehouse_type', [
   'central',
   'store_internal',
 ]);
+
+/** Phân loại sản phẩm: NL thô / TP bếp / hàng bán lại (Coca…) */
+export const productTypeEnum = pgEnum('product_type', [
+  'raw_material',
+  'finished_good',
+  'resell_product',
+]);
 export const orderStatusEnum = pgEnum('order_status', [
   'pending',
   'approved',
@@ -226,6 +233,7 @@ export const products = pgTable('products', {
    * Đệm an toàn (ngày): chỉ bán khi HSD > CURRENT_DATE + min_shelf_life (mô hình KFC).
    */
   minShelfLife: integer('min_shelf_life').default(0).notNull(),
+  type: productTypeEnum('type').default('raw_material').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -296,14 +304,8 @@ export const recipes = pgTable('recipes', {
   outputProductId: integer('output_product_id')
     .references(() => products.id)
     .notNull(),
+  /** Đồng bộ với tên sản phẩm thành phẩm (không nhập tay qua API) */
   name: text('name').notNull(),
-  /** Định mức đầu ra chuẩn của công thức (ví dụ 10 kg / mẻ); định mức nguyên liệu tính theo đơn vị này */
-  standardOutput: decimal('standard_output', {
-    precision: 12,
-    scale: 4,
-  })
-    .default('1')
-    .notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 });
@@ -316,7 +318,7 @@ export const recipeItems = pgTable('recipe_items', {
   ingredientProductId: integer('ingredient_product_id')
     .references(() => products.id)
     .notNull(),
-  /** Số lượng nguyên liệu cho 1 đơn vị thành phẩm đầu ra */
+  /** Số lượng nguyên liệu cho 1 đơn vị thành phẩm đầu ra (1 đơn vị TP = quantityPerOutput đơn vị NL) */
   quantityPerOutput: decimal('quantity_per_output', {
     precision: 12,
     scale: 4,

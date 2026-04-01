@@ -142,11 +142,28 @@ Each table below lists: **Enum name** (PostgreSQL type), **Value**, and **Busine
 | `approved` | Posted to inventory / transactions. |
 | `rejected` | No stock change. |
 
+### 1.14 `product_type`
+
+| Value | Business meaning |
+|-------|------------------|
+| `raw_material` | Nguyên liệu thô / bán thành phẩm nội bộ bếp — **không** hiển thị trên catalog đặt hàng franchise. |
+| `finished_good` | Thành phẩm do bếp sản xuất — **được** đặt qua đơn cửa hàng. |
+| `resell_product` | Hàng có sẵn từ NCC/brand khác (Coca, Pepsi…) — **được** đặt qua đơn cửa hàng. |
+
+> **Rule**  
+> API catalog đặt hàng (`GET /orders/catalog`) luôn lọc `type IN ('finished_good','resell_product')`. Quản trị dùng `GET /products` với lọc `type` tùy chọn.
+
 ---
 
 ## 2. Core Entities (Tables)
 
 Focus: **batches**, **orders**, **shipments**, **inventory_transactions**, **claims**, **production_orders**. Related child tables (**order_items**, **shipment_items**, **claim_items**) are included where they carry the business logic.
+
+### 2.0 `products` (SKU master)
+
+| Field | Logic |
+|-------|--------|
+| `type` | `product_type` enum; default `raw_material`. Quyết định hiển thị trên catalog franchise và hợp lệ khi tạo `order_items`. |
 
 ### 2.1 `batches`
 
@@ -258,16 +275,29 @@ Post-delivery **discrepancy** workflow tied to a **shipment**, not abstractly to
 | `quantity_damaged` | Quality loss in transit or at handover. |
 | `reason`, `image_url` | Evidence for approval/rejection. |
 
-### 2.6 `production_orders`
+### 2.6 `recipes` & `recipe_items` (BOM)
+
+| Table / field | Logic |
+|---------------|--------|
+| `recipes.output_product_id` | Thành phẩm (`products.type` = `finished_good` trong luồng API hiện tại). |
+| `recipes.name` | Mirror tên sản phẩm đầu ra khi tạo BOM (không nhập tay qua API). |
+| `recipes.is_active` | Chỉ một recipe active cho cùng thành phẩm được khuyến nghị — API tạo lệnh từ chối nếu có **nhiều hơn một** active. |
+| `recipe_items.ingredient_product_id` | Nguyên liệu — API chỉ chấp nhận `raw_material`. |
+| `recipe_items.quantity_per_output` | Số lượng nguyên liệu cho **1 đơn vị** thành phẩm (nhân với `planned_quantity` trên lệnh để có nhu cầu tổng). |
+
+> **Lưu ý**  
+> Cột `standard_output` đã **gỡ** khỏi `recipes` (migration `0028_recipe_drop_standard_output`).
+
+### 2.7 `production_orders`
 
 Internal **manufacturing run** at a central warehouse from a **recipe (BOM)**.
 
 | Field | Logic |
 |-------|--------|
 | `code` | Unique human reference for kitchen and audits. |
-| `recipe_id` | BOM defining ingredient mix per `standard_output`. |
+| `recipe_id` | BOM: định mức NL trên **1 đơn vị** thành phẩm (`recipe_items.quantity_per_output`). |
 | `warehouse_id` | Where production occurs (typically central). |
-| `planned_quantity` | Target output (in recipe output units). |
+| `planned_quantity` | Số lượng thành phẩm dự kiến (cùng đơn vị với sản phẩm đầu ra). |
 | `actual_quantity` | As-produced quantity; may differ—drives true batch output. |
 | `status` | Lifecycle (§1.12). |
 | `kitchen_staff_id` | Executor attribution. |

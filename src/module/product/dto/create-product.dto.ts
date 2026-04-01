@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsInt, IsNotEmpty, IsString, IsUrl, Min } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUrl, Min } from 'class-validator';
+import { ProductType } from '../constants/product-type.enum';
 
 export class CreateProductDto {
   @ApiProperty({ description: 'Tên sản phẩm', example: 'Gà rán KFC Original' })
@@ -25,4 +26,14 @@ export class CreateProductDto {
   @IsNotEmpty()
   @IsUrl()
   imageUrl: string;
+
+  @ApiPropertyOptional({
+    enum: ProductType,
+    description:
+      'Mặc định raw_material. finished_good / resell_product cho hàng đặt từ cửa hàng.',
+    default: ProductType.RAW_MATERIAL,
+  })
+  @IsOptional()
+  @IsEnum(ProductType)
+  type?: ProductType;
 }

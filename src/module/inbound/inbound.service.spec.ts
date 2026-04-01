@@ -13,6 +13,13 @@ import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import * as inboundUtils from './helpers/inbound.util';
 import { InboundRepository } from './inbound.repository';
 import { InboundService } from './inbound.service';
+import * as vnTime from '../../common/time/vn-time';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 jest.mock('./helpers/inbound.util', () => ({
   generateQrData: jest.fn(),
@@ -47,11 +54,12 @@ describe('InboundService', () => {
       findReceiptDetail: jest.fn(),
       findReceiptItemById: jest.fn(),
       deleteReceiptLine: jest.fn(),
-      nextBatchCode: jest.fn(),
       insertBatch: jest.fn(),
       updateReceiptItemBatchLink: jest.fn(),
       lockWarehouseStock: jest.fn(),
       approveVariance: jest.fn(),
+      lockBatchCodeGeneration: jest.fn(),
+      isBatchCodeTaken: jest.fn().mockResolvedValue(false),
     };
 
     mockDb = {
@@ -295,7 +303,6 @@ describe('InboundService', () => {
         },
       ] as never);
       inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
-      inboundRepo.nextBatchCode.mockResolvedValue('BAT-20260301-EGGX-0001');
       inboundRepo.insertBatch.mockResolvedValue({ id: 501 } as never);
       inboundRepo.updateReceiptItemBatchLink.mockResolvedValue(undefined as never);
       inboundRepo.updateReceiptStatus.mockResolvedValue(undefined as never);
@@ -331,7 +338,6 @@ describe('InboundService', () => {
         },
       ] as never);
       inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
-      inboundRepo.nextBatchCode.mockResolvedValue('BAT-20260310-TRUNG-0001');
       inboundRepo.insertBatch.mockResolvedValue({ id: 600 } as never);
       inboundRepo.updateReceiptItemBatchLink.mockResolvedValue(undefined as never);
       inboundRepo.updateReceiptStatus.mockResolvedValue(undefined as never);
@@ -350,8 +356,11 @@ describe('InboundService', () => {
       );
     });
 
-    it('should calculate expiry as manufacturedDate + shelfLifeDays when statedExpiryDate omitted', async () => {
+    it('should calculate expiry as receivingDate + shelfLifeDays when statedExpiryDate omitted', async () => {
       const receiptId = 'r-calc';
+      const nowSpy = jest
+        .spyOn(vnTime, 'nowVn')
+        .mockReturnValue(dayjs.tz('2026-03-15', vnTime.VN_TZ));
       inboundRepo.findReceiptWithLock.mockResolvedValue({
         warehouseId: 1,
         status: 'draft',
@@ -366,13 +375,12 @@ describe('InboundService', () => {
           quantityRejected: '0',
           expectedQuantity: null,
           storageLocationCode: 'A',
-          manufacturedDate: '2026-03-15',
+          manufacturedDate: '2026-03-10',
           statedExpiryDate: null,
           product: { id: 4, sku: 'MEAT', shelfLifeDays: 2 },
         },
       ] as never);
       inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
-      inboundRepo.nextBatchCode.mockResolvedValue('BAT-20260315-MEAT-0001');
       inboundRepo.insertBatch.mockResolvedValue({ id: 700 } as never);
       inboundRepo.updateReceiptItemBatchLink.mockResolvedValue(undefined as never);
       inboundRepo.updateReceiptStatus.mockResolvedValue(undefined as never);
@@ -385,10 +393,11 @@ describe('InboundService', () => {
       expect(inboundRepo.insertBatch).toHaveBeenCalledWith(
         mockTx,
         expect.objectContaining({
-          manufacturedDate: '2026-03-15',
+          manufacturedDate: '2026-03-10',
           expiryDate: '2026-03-17',
         }),
       );
+      nowSpy.mockRestore();
     });
 
     it('should call lockWarehouseStock (pg_advisory) before updateReceiptStatus and before inventory writes', async () => {
@@ -434,7 +443,7 @@ describe('InboundService', () => {
       expect(inboundRepo.lockWarehouseStock).toHaveBeenCalledWith(mockTx, 99);
     });
 
-    it('should call nextBatchCode before insertBatch for new lines (batch code lock inside repository)', async () => {
+    it('should call lockBatchCodeGeneration and isBatchCodeTaken before insertBatch for new lines', async () => {
       const receiptId = 'r-seq';
       const seq: string[] = [];
       inboundRepo.findReceiptWithLock.mockResolvedValue({
@@ -457,9 +466,12 @@ describe('InboundService', () => {
         },
       ] as never);
       inboundRepo.lockWarehouseStock.mockResolvedValue(undefined as never);
-      inboundRepo.nextBatchCode.mockImplementation(async () => {
-        seq.push('nextBatchCode');
-        return 'BAT-X';
+      inboundRepo.lockBatchCodeGeneration.mockImplementation(async () => {
+        seq.push('lockBatchCodeGeneration');
+      });
+      inboundRepo.isBatchCodeTaken.mockImplementation(async () => {
+        seq.push('isBatchCodeTaken');
+        return false;
       });
       inboundRepo.insertBatch.mockImplementation(async () => {
         seq.push('insertBatch');
@@ -473,7 +485,11 @@ describe('InboundService', () => {
 
       await service.completeReceipt(receiptId);
 
-      expect(seq).toEqual(['nextBatchCode', 'insertBatch']);
+      expect(seq).toEqual([
+        'lockBatchCodeGeneration',
+        'isBatchCodeTaken',
+        'insertBatch',
+      ]);
     });
   });
 

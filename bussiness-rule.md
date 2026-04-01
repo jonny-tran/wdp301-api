@@ -64,9 +64,12 @@ Dành cho App của nhân viên Bếp Trung Tâm (Kitchen Staff):
 
 ## 5. PHÂN HỆ SẢN XUẤT (PRODUCTION)
 
-Kiểm soát việc biến đổi Nguyên liệu -> Thành phẩm:
+Kiểm soát việc biến đổi Nguyên liệu -> Thành phẩm (đồng bộ với `products.type`):
 
-* **Tạm giữ nguyên liệu (Reserve):** * Khi ấn "Bắt đầu sản xuất", hệ thống khóa (Reserve) nguyên liệu theo công thức (BOM).
+* **Master sản phẩm:** Thành phẩm sản xuất là SKU **`finished_good`**; nguyên liệu trong BOM là **`raw_material`** (API từ chối loại khác).
+* **Tạo BOM (`POST /production/recipes`):** Body có `productId` (TP) + `items[].productId` (NL) + `quantity` (định mức cho **1 đơn vị** TP). Không nhập tên công thức / không còn `standardOutput` — xem `PROD-LOGIC-FINAL.md`.
+* **Tạo lệnh (`POST /production/orders`):** Gửi **`productId`** (TP) + `plannedQuantity`; backend tìm **một** recipe active — không gửi `recipeId`.
+* **Tạm giữ nguyên liệu (Reserve):** * Khi ấn "Bắt đầu sản xuất", hệ thống khóa (Reserve) nguyên liệu theo công thức (BOM) và FEFO.
 * **Công thức tính Hạn sử dụng Thành phẩm:**
     * Hạn dùng của lô Gà Rán (Thành phẩm) = Min(Hạn lý thuyết, Hạn của lô thịt gà sống, Hạn của lô bột). Thành phẩm không được có hạn dùng vượt quá hạn nguyên liệu tạo ra nó.
 * **Hao hụt & Dư thừa (Loss & Surplus):**

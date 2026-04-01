@@ -9,13 +9,15 @@
 
 ### 1.1 Product
 
-- Master record: `sku`, `name`, `baseUnitId`, `shelfLifeDays`, `minStockLevel`, `minShelfLife` (safety buffer vs expiry), pricing, packaging, weight/volume, `prepTimeHours`, flags (`isActive`, `isHighValue`).
+- Master record: `sku`, `name`, **`type`** (`product_type`: `raw_material` | `finished_good` | `resell_product`), `baseUnitId`, `shelfLifeDays`, `minStockLevel`, `minShelfLife` (safety buffer vs expiry), pricing, packaging, weight/volume, `prepTimeHours`, flags (`isActive`, `isHighValue`).
+- **`type` (nghiệp vụ):** `raw_material` — chỉ dùng trong bếp / BOM / tồn NL; **không** xuất hiện trên catalog đặt hàng franchise. `finished_good` / `resell_product` — được đặt qua đơn cửa hàng (và hiển thị trên `GET /orders/catalog`).
 - **No on-hand quantity** on the product row — quantities are aggregated from batches/inventory.
 
 ### 1.2 Base unit
 
 - Normalized UoM table (`base_units`) referenced by `products.base_unit_id`.
 - Managed under `product/base-unit` routes (`BaseUnitController`).
+- **Danh sách:** `GET /base-units` dùng query `GetBaseUnitsDto` (phân trang `page` / `limit` **mặc định** trong repository nếu client không gửi — tránh tải full bảng), tùy chọn `search`, `isActive`, `sortBy`, `sortOrder`.
 
 ### 1.3 Batch
 
@@ -59,14 +61,14 @@ Global guards: `AtGuard`, `RolesGuard`.
 
 | Method & path | Roles | Description |
 |---------------|-------|-------------|
-| `POST /products` | `manager` | Create product; SKU auto-generated. |
+| `POST /products` | `manager` | Create product; SKU auto-generated. Body có thể gửi **`type`** (mặc định server thường là `raw_material` nếu không gửi — đối chiếu DTO/Swagger). |
 | `GET /products` | `manager`, `franchise_store_staff`, `central_kitchen_staff`, `supply_coordinator` | List + pagination. |
 | `GET /products/:id` | same read roles | Detail (includes batch relation per repository). |
 | `PATCH /products/:id` | `manager` | Update. |
 | `DELETE /products/:id` | `manager` | Soft delete. |
 | `PATCH /products/:id/restore` | `manager` | Restore. |
 
-**Query (`GetProductsDto`):** `page`, `limit`, `sortBy`, `sortOrder`, optional `isActive`, `search` (name/SKU).
+**Query (`GetProductsDto` / `ProductFilterDto`):** `page`, `limit`, `sortBy`, `sortOrder`, optional `isActive`, `search` (name/SKU), **`type`** (lọc theo `product_type`).
 
 > **Note**  
 > There is **no** `category` or `supplier` filter on products in `GetProductsDto` today — the schema links suppliers via **receipts**, not a direct `product.supplier_id`. Add filters if the domain requires them.
@@ -123,6 +125,7 @@ When answering questions about **“how much stock”** or **“what expires fir
 | `product.controller.ts` | HTTP routes |
 | `product.service.ts` | SKU generation, batch helper `createBatch`, CRUD |
 | `product.repository.ts` | DB access |
-| `dto/get-products.dto.ts`, `get-batches.dto.ts` | Filters |
+| `dto/get-products.dto.ts`, `product-filter.dto.ts`, `get-batches.dto.ts` | Filters + phân trang |
+| `base-unit/dto/get-base-units.dto.ts` | Query danh sách đơn vị + phân trang |
 | `src/common/utils/generate-product-sku.util.ts` | SKU algorithm |
 | `src/common/utils/generate-batch-code.util.ts` | Batch code algorithm |

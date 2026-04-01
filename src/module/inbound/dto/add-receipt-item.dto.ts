@@ -53,7 +53,7 @@ export class AddReceiptItemDto {
 
   @ApiPropertyOptional({
     description:
-      'Hạn sử dụng thực tế của lô (tách lô khác HSD, ví dụ trứng). Nếu bỏ trống: NSX + shelf life',
+      'HSD do NCC khai báo (Coca/Pepsi, tách lô…). Khi chốt phiếu: dùng giá trị này làm HSD lô; nếu trống: ngày nhận (chốt phiếu, VN) + shelfLifeDays sản phẩm',
     example: '2026-03-25',
   })
   @IsOptional()
@@ -70,7 +70,8 @@ export class AddReceiptItemDto {
   expectedQuantity?: number;
 
   @ApiPropertyOptional({
-    description: 'Mã vị trí kệ (có thể bổ sung khi chốt phiếu nếu chưa quét)',
+    description:
+      'Tùy chọn — lưu legacy; tồn kho theo warehouse + batch, không bắt buộc mã kệ',
   })
   @IsOptional()
   @IsString()

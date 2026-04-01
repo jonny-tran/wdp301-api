@@ -4,7 +4,7 @@
  * và được parse bằng `fromDbDecimal` trước khi so sánh.
  */
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
@@ -32,11 +32,22 @@ export class ProductionRepository {
     });
   }
 
+  /** Mọi công thức active cho cùng một thành phẩm (service chỉ chấp nhận đúng 1 bản ghi). */
+  async findActiveRecipesByOutputProductId(outputProductId: number) {
+    return this.db.query.recipes.findMany({
+      where: and(
+        eq(schema.recipes.outputProductId, outputProductId),
+        eq(schema.recipes.isActive, true),
+      ),
+      with: { items: true, outputProduct: true },
+      orderBy: desc(schema.recipes.id),
+    });
+  }
+
   async createRecipe(data: {
     name: string;
     productId: number;
-    standardOutput: string;
-    items: { materialId: number; quantity: string }[];
+    items: { productId: number; quantity: string }[];
   }) {
     return this.db.transaction(async (tx) => {
       const [recipe] = await tx
@@ -44,7 +55,6 @@ export class ProductionRepository {
         .values({
           outputProductId: data.productId,
           name: data.name,
-          standardOutput: data.standardOutput,
           isActive: true,
         })
         .returning();
@@ -53,7 +63,7 @@ export class ProductionRepository {
         await tx.insert(schema.recipeItems).values(
           data.items.map((i) => ({
             recipeId: recipe.id,
-            ingredientProductId: i.materialId,
+            ingredientProductId: i.productId,
             quantityPerOutput: i.quantity,
           })),
         );

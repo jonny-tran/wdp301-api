@@ -6,6 +6,7 @@ import { FilterMap, paginate } from '../../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../../database/database.constants';
 import * as schema from '../../../database/schema';
 import { CreateBaseUnitDto } from './dto/create-base-unit.dto';
+import { GetBaseUnitsDto } from './dto/get-base-units.dto';
 import { UpdateBaseUnitDto } from './dto/update-base-unit.dto';
 
 @Injectable()
@@ -28,18 +29,15 @@ export class BaseUnitRepository {
     return result[0];
   }
 
-  async findAll(query: {
-    page?: number;
-    limit?: number;
-    search?: string;
-    isActive?: boolean;
-  }) {
-    return paginate(
-      this.db,
-      schema.baseUnits,
-      query as PaginationParamsDto & Record<string, any>,
-      this.baseUnitFilterMap,
-    );
+  async findAll(query: GetBaseUnitsDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const dto: PaginationParamsDto & Record<string, unknown> = {
+      ...query,
+      page,
+      limit,
+    };
+    return paginate(this.db, schema.baseUnits, dto, this.baseUnitFilterMap);
   }
 
   async findById(id: number) {

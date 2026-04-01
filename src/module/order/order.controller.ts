@@ -77,7 +77,7 @@ export class OrderController {
     summary:
       'Lấy danh sách sản phẩm (catalog đặt hàng) [Admin, Manager, Supply Coordinator, Kitchen, Franchise Staff]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator, Central Kitchen Staff, Franchise Store Staff\n\n**Nghiệp vụ:** Trả về danh mục sản phẩm đang active để đặt hàng và tham chiếu giá; controller luôn ép `isActive = true`.',
+      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator, Central Kitchen Staff, Franchise Store Staff\n\n**Nghiệp vụ:** Chỉ `finished_good` và `resell_product` (ẩn `raw_material`). Luôn `isActive = true`. Phân trang: `page`, `limit` (mặc định limit=20). Response: `items` + `meta` (totalItems, totalPages, currentPage, …).',
   })
   async getCatalog(@Query() query: GetCatalogDto) {
     query.isActive = true;

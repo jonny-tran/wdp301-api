@@ -39,6 +39,7 @@ export class ProductRepository {
       operator: 'ilike',
     },
     isActive: { column: schema.products.isActive, operator: 'eq' },
+    type: { column: schema.products.type, operator: 'eq' },
   };
 
   private readonly batchFilterMap: FilterMap<typeof schema.batches> = {
@@ -50,7 +51,10 @@ export class ProductRepository {
   async create(data: CreateProductDto & { sku: string }) {
     const [inserted] = await this.db
       .insert(schema.products)
-      .values(data)
+      .values({
+        ...data,
+        type: data.type ?? 'raw_material',
+      })
       .returning();
 
     // Return with baseUnitName
@@ -88,6 +92,7 @@ export class ProductRepository {
         minStockLevel: schema.products.minStockLevel,
         imageUrl: schema.products.imageUrl,
         isActive: schema.products.isActive,
+        type: schema.products.type,
         createdAt: schema.products.createdAt,
         updatedAt: schema.products.updatedAt,
       })
@@ -146,6 +151,7 @@ export class ProductRepository {
         minStockLevel: schema.products.minStockLevel,
         imageUrl: schema.products.imageUrl,
         isActive: schema.products.isActive,
+        type: schema.products.type,
         createdAt: schema.products.createdAt,
         updatedAt: schema.products.updatedAt,
       })

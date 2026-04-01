@@ -1,7 +1,7 @@
 # FRONTEND API INTEGRATION GUIDE
 
 > **Dự án:** Central Kitchen & Franchise Supply Chain (KFC Model) — **SP26SWP07**  
-> **Phiên bản tài liệu:** v3.0 — Cập nhật **2026-03-31**  
+> **Phiên bản tài liệu:** v3.1 — Cập nhật **2026-04-01**  
 > **Nguồn đối chiếu:** Controllers/DTOs trong `src/module`, `src/database/schema.ts`, và các file hướng dẫn nội bộ (xem §0.2).
 
 ---
@@ -21,14 +21,17 @@
 
 > Luôn mở Swagger để xác nhận path thực tế sau khi deploy (port, proxy nginx, v.v.).
 
-### 0.2 Tài liệu chi tiết theo module (đã đồng bộ nội dung v3.0)
+### 0.2 Tài liệu chi tiết theo module (đồng bộ v3.1)
 
 | Chủ đề | File |
 |--------|------|
 | Auth, JWT, refresh, RBAC, store isolation, `@CurrentUser()` | `src/module/auth/AUTH_GUIDE.md` |
 | Claim / sai lệch / traceability | `src/module/claim/CLAIM_LOGIC.md` |
 | Store + warehouse nội bộ | `src/module/franchise-store/STORE_MANAGEMENT.md` |
-| Product, SKU, batch code, API sản phẩm & lô | `src/module/product/PRODUCT_MASTER_DATA.md` |
+| Product, SKU, batch code, `product_type`, API sản phẩm & lô | `src/module/product/PRODUCT_MASTER_DATA.md` |
+| Inbound / phiếu nhập | `src/module/inbound/INB-OPTIMIZE.md` |
+| Order, catalog franchise, partial approve | `src/module/order/ORD-OPTIMIZE.md` |
+| Production / BOM | `src/module/production/PROD-LOGIC-FINAL.md` |
 | Shipment, receive, claim tự động | `src/module/shipment/SHIPMENT_GUIDE.md` |
 | Supplier | `src/module/supplier/SUPPLIER_MANAGEMENT.md` |
 | Enum & field logic DB | `src/database/SCHEMA_DEFINITION.md` |
@@ -41,6 +44,7 @@
   - **Batch-centric:** mọi xuất/nhận gắn **`batchId`**; FEFO dựa trên **`expiryDate`** của lô.
   - **Store isolation:** `franchise_store_staff` phải dùng **`storeId` từ JWT**; không tin `storeId` gửi từ client nếu đã có endpoint “my-store” / filter ép từ server.
   - **Partial fulfillment:** `quantity_requested` vs `quantity_approved` trên order line — không backorder (xem `ORD-OPTIMIZE.md` / service order).
+  - **`products.type`:** catalog đặt hàng và dòng đơn chỉ dùng `finished_good` / `resell_product`; `raw_material` dành cho bếp/BOM (xem `PRODUCT_MASTER_DATA.md`, `ORD-OPTIMIZE.md`).
 
 ---
 
@@ -240,9 +244,9 @@ Query list: `search`, `isActive`, pagination. Schema **không** có cột `code`
 | `GET /products/:id` | Cùng nhóm đọc |
 | `PATCH /products/:id`, `DELETE`, `PATCH .../restore` | `manager` |
 
-**CreateProductDto (bắt buộc chính):** `name`, `baseUnitId`, `shelfLifeDays`, `imageUrl` — **SKU auto** (`P-{abbrev}-{random}`), không gửi SKU từ FE.
+**CreateProductDto (bắt buộc chính):** `name`, `baseUnitId`, `shelfLifeDays`, `imageUrl` — **SKU auto** (`P-{abbrev}-{random}`), không gửi SKU từ FE. Có thể gửi **`type`** (`raw_material` | `finished_good` | `resell_product`) — đối chiếu Swagger.
 
-**Query `GetProductsDto`:** `search`, `isActive`, pagination — **chưa** có filter category/supplier trên DTO hiện tại.
+**Query `GetProductsDto`:** `search`, `isActive`, **`type`**, pagination (`page`, `limit`, `sortBy`, `sortOrder`).
 
 ### Lô (batches) — **thứ tự route**
 
@@ -261,6 +265,8 @@ Query list: `search`, `isActive`, pagination. Schema **không** có cột `code`
 ## 9. Module: Base units
 
 **Base path:** `/base-units` — CRUD chủ yếu **`manager`** (xem `base-unit/base-unit.controller.ts`).
+
+**Query `GET /base-units`:** `GetBaseUnitsDto` — phân trang (`page`, `limit` có **mặc định** phía server nếu thiếu), `search`, `isActive`, `sortBy`, `sortOrder`. Response: `items` + `meta`.
 
 ---
 
@@ -290,7 +296,7 @@ Các nhóm endpoint (store inventory, transactions, summary, low-stock, kitchen 
 | ------------- | ----- | ---------- |
 | `GET /orders` | Manager, coordinator, **admin**, **franchise_store_staff** | Lọc phân trang; staff thường bị giới hạn theo store ở tầng service — ưu tiên dùng `my-store` |
 | `POST /orders` | `franchise_store_staff`, `admin` | Tạo đơn |
-| `GET /orders/catalog` | Nhiều role (xem controller) | Catalog; có thể set `isActive=true` server-side |
+| `GET /orders/catalog` | Nhiều role (xem controller) | Catalog đặt hàng: **chỉ** `finished_good` + `resell_product`; **phân trang** (`page`, `limit`, …) + `meta` |
 | `GET /orders/my-store` | `franchise_store_staff`, `admin` | **storeId** gán từ JWT |
 | `PATCH /orders/franchise/:id/cancel` | Franchise staff, admin | Hủy khi còn `pending` |
 | `GET /orders/coordinator/:id/review` | Coordinator, admin | So sánh tồn |
@@ -311,7 +317,9 @@ Các nhóm endpoint (store inventory, transactions, summary, low-stock, kitchen 
 | `price_acknowledged` | Đã xử lý cảnh báo giá catalog vs snapshot |
 | `production_confirm` | Đã phối hợp bếp khi thiếu hàng / chờ sản xuất |
 
-Chi tiết **partial fulfillment**, **waiting_for_production**: `ORD-OPTIMIZE.md` + `order.service.ts`.
+**Tạo đơn:** mỗi `productId` trong `items` phải là SKU **được phép đặt** (cùng tập với catalog — không `raw_material`).
+
+Chi tiết **partial fulfillment**, **waiting_for_production**, **catalog**: `ORD-OPTIMIZE.md` + `order.service.ts`.
 
 ---
 
@@ -326,7 +334,11 @@ Chi tiết **partial fulfillment**, **waiting_for_production**: `ORD-OPTIMIZE.md
 | `POST /production/orders/:id/start` | `central_kitchen_staff` |
 | `POST /production/orders/:id/complete` | `central_kitchen_staff` |
 
-Luồng: tạo lệnh draft → **start** (reserve nguyên liệu FEFO) → **complete** (nhập lô thành phẩm, lineage). Xem `PROD-LOGIC-FINAL.md`.
+**`CreateRecipeDto`:** `productId` (thành phẩm **`finished_good`**), `items[]` với **`productId`** + **`quantity`** (nguyên liệu chỉ **`raw_material`** trên server). Không gửi `name` / `standardOutput`.
+
+**`CreateProductionOrderDto`:** **`productId`** (finished_good) + **`plannedQuantity`** — server chọn **đúng một** recipe active; không gửi `recipeId`.
+
+Luồng: tạo BOM (nếu chưa có) → tạo lệnh draft → **start** (reserve NL FEFO) → **complete** (nhập lô TP, lineage). Chi tiết: `PROD-LOGIC-FINAL.md`.
 
 ---
 

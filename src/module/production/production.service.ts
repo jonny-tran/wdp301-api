@@ -3,13 +3,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { generateBatchCode } from '../../common/utils/generate-batch-code.util';
+import { generateInboundBatchCode } from '../../common/utils/generate-batch-code.util';
 import { InsufficientStockException } from '../../common/exceptions/insufficient-stock.exception';
 import { nowVn, parseToStartOfDayVn } from '../../common/time/vn-time';
 import { UnitOfWork } from '../../database/unit-of-work';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
+import { ProductType } from '../product/constants/product-type.enum';
 import { ProductRepository } from '../product/product.repository';
 import { PRODUCTION_SURPLUS_APPROVAL_RATIO } from './production.constants';
 import { ProductionRepository } from './production.repository';
@@ -32,40 +33,48 @@ export class ProductionService {
   ) {}
 
   async createRecipe(input: {
-    name: string;
     productId: number;
-    standardOutput?: number;
-    items: { materialId: number; quantity: number }[];
+    items: { productId: number; quantity: number }[];
   }) {
     const output = await this.productRepo.findById(input.productId);
     if (!output || !output.isActive) {
       throw new NotFoundException('Thành phẩm (product) không tồn tại hoặc đã ngừng');
     }
+    if (output.type !== ProductType.FINISHED_GOOD) {
+      throw new BadRequestException(
+        'Thành phẩm đầu ra phải có loại finished_good',
+      );
+    }
     for (const line of input.items) {
-      const m = await this.productRepo.findById(line.materialId);
+      if (line.productId === input.productId) {
+        throw new BadRequestException(
+          'Nguyên liệu không được trùng với thành phẩm đầu ra',
+        );
+      }
+      const m = await this.productRepo.findById(line.productId);
       if (!m || !m.isActive) {
         throw new BadRequestException(
-          `Nguyên liệu #${line.materialId} không tồn tại hoặc không còn hiệu lực`,
+          `Nguyên liệu #${line.productId} không tồn tại hoặc không còn hiệu lực`,
+        );
+      }
+      if (m.type !== ProductType.RAW_MATERIAL) {
+        throw new BadRequestException(
+          `Nguyên liệu #${line.productId} phải là raw_material`,
         );
       }
     }
-    const std = input.standardOutput ?? 1;
-    if (std <= 0) {
-      throw new BadRequestException('standardOutput phải > 0');
-    }
     return this.repo.createRecipe({
-      name: input.name,
+      name: output.name,
       productId: input.productId,
-      standardOutput: String(std),
       items: input.items.map((i) => ({
-        materialId: i.materialId,
+        productId: i.productId,
         quantity: String(i.quantity),
       })),
     });
   }
 
   async createOrder(input: {
-    recipeId: number;
+    productId: number;
     plannedQuantity: number;
     warehouseId: number;
     createdBy: string;
@@ -76,14 +85,30 @@ export class ProductionService {
       );
     }
 
-    const recipe = await this.repo.findRecipeWithItems(input.recipeId);
-    if (!recipe?.isActive) {
-      throw new NotFoundException('Không tìm thấy công thức (recipe)');
+    const outputProduct = await this.productRepo.findById(input.productId);
+    if (!outputProduct?.isActive) {
+      throw new NotFoundException('Thành phẩm không tồn tại hoặc đã ngừng');
     }
-    const outputProduct = await this.productRepo.findById(recipe.outputProductId);
-    if (!outputProduct || !outputProduct.isActive) {
-      throw new BadRequestException('Thành phẩm theo công thức không còn hiệu lực');
+    if (outputProduct.type !== ProductType.FINISHED_GOOD) {
+      throw new BadRequestException(
+        'Chỉ được tạo lệnh sản xuất cho sản phẩm loại finished_good.',
+      );
     }
+
+    const recipes = await this.repo.findActiveRecipesByOutputProductId(
+      input.productId,
+    );
+    if (recipes.length === 0) {
+      throw new NotFoundException(
+        'Chưa có công thức đang hoạt động cho thành phẩm này',
+      );
+    }
+    if (recipes.length > 1) {
+      throw new BadRequestException(
+        'Có nhiều công thức active cho cùng một thành phẩm; vui lòng chỉ giữ một BOM active.',
+      );
+    }
+    const recipe = recipes[0];
     if (!recipe.items?.length) {
       throw new BadRequestException('Công thức chưa có định mức nguyên liệu');
     }
@@ -93,7 +118,7 @@ export class ProductionService {
       return this.repo.createProductionOrder(
         {
           code,
-          recipeId: input.recipeId,
+          recipeId: recipe.id,
           warehouseId: input.warehouseId,
           plannedQuantity: String(input.plannedQuantity),
           status: 'draft',
@@ -121,10 +146,10 @@ export class ProductionService {
       if (!outputProduct || !outputProduct.isActive) {
         throw new BadRequestException('Thành phẩm không còn hiệu lực');
       }
-
-      const std = fromDbDecimal(recipe.standardOutput ?? '1');
-      if (std <= 0) {
-        throw new BadRequestException('standardOutput của công thức không hợp lệ');
+      if (outputProduct.type !== ProductType.FINISHED_GOOD) {
+        throw new BadRequestException(
+          'Thành phẩm theo công thức phải là finished_good',
+        );
       }
 
       const outQty = fromDbDecimal(order.plannedQuantity);
@@ -137,8 +162,7 @@ export class ProductionService {
       const todayStr = nowVn().format('YYYY-MM-DD');
 
       for (const line of recipe.items) {
-        const need =
-          (fromDbDecimal(line.quantityPerOutput) * outQty) / std;
+        const need = fromDbDecimal(line.quantityPerOutput) * outQty;
         let remaining = need;
         const rows = await this.repo.listAvailableInventoryFefo(
           tx,
@@ -267,6 +291,11 @@ export class ProductionService {
       if (!product) {
         throw new NotFoundException('Thành phẩm không tồn tại');
       }
+      if (product.type !== ProductType.FINISHED_GOOD) {
+        throw new BadRequestException(
+          'Thành phẩm sản xuất phải là finished_good',
+        );
+      }
 
       const loss = Math.max(0, planned - actual);
       const surplus = Math.max(0, actual - planned);
@@ -288,14 +317,18 @@ export class ProductionService {
           'Tiêu hao nguyên liệu sản xuất',
           tx,
         );
+        await this.inventoryRepo.syncBatchTotalsFromInventory(
+          tx,
+          res.batchId,
+        );
       }
 
       await this.inboundRepo.lockBatchCodeGeneration(tx);
-      let batchCode = generateBatchCode(product.sku);
-      for (let i = 0; i < 12; i++) {
+      let batchCode = generateInboundBatchCode(product.sku);
+      for (let i = 0; i < 24; i++) {
         const exists = await this.repo.findBatchByCode(tx, batchCode);
         if (!exists) break;
-        batchCode = generateBatchCode(product.sku);
+        batchCode = generateInboundBatchCode(product.sku);
       }
 
       const mfg = nowVn().format('YYYY-MM-DD');
@@ -337,13 +370,15 @@ export class ProductionService {
         actual.toString(),
       );
 
+      await this.inventoryRepo.syncBatchTotalsFromInventory(tx, batch.id);
+
       await this.inventoryRepo.createInventoryTransaction(
         order.warehouseId,
         batch.id,
         'production_output',
-        planned,
+        actual,
         `PRODUCTION:${orderId}`,
-        'Thành phẩm theo định mức đầy đủ (planned) — nền cho đối soát hao hụt/dư',
+        'Nhập kho nội bộ thành phẩm (production output)',
         tx,
       );
 
@@ -351,7 +386,7 @@ export class ProductionService {
         await this.inventoryRepo.createInventoryTransaction(
           order.warehouseId,
           batch.id,
-          'adjustment',
+          'waste',
           -loss,
           `PRODUCTION:${orderId}`,
           'PRODUCTION_LOSS',

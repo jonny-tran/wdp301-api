@@ -25,7 +25,7 @@ describe('OrderService', () => {
 
   beforeEach(async () => {
     const mockOrderRepoObj = {
-      getActiveProducts: jest.fn(),
+      getOrderCatalogProducts: jest.fn(),
       findAll: jest.fn(),
       findActiveProductsByIds: jest.fn(),
       findProductsWithSnapshotByIds: jest.fn(),
@@ -155,7 +155,9 @@ describe('OrderService', () => {
 
       const result = await service.createOrder(user, dto);
       expect(result.id).toBe('o-1');
-      expect(orderRepo.findActiveProductsByIds).toHaveBeenCalledWith([1]);
+      expect(orderRepo.findActiveProductsByIds).toHaveBeenCalledWith([1], {
+        orderableOnly: true,
+      });
       expect(orderRepo.insertOrderWithItems).toHaveBeenCalled();
     });
 

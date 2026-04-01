@@ -1,48 +1,31 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  ArrayMinSize,
-  IsArray,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  Min,
-  ValidateNested,
-} from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { ArrayMinSize, IsArray, IsNumber, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class RecipeItemDto {
-  @ApiProperty({ description: 'ID sản phẩm nguyên liệu' })
+  @ApiProperty({
+    description:
+      'ID sản phẩm nguyên liệu (chỉ chấp nhận loại raw_material trên server)',
+  })
   @IsNumber()
   @Min(1)
-  materialId: number;
+  productId: number;
 
-  @ApiProperty({ description: 'Định mức nguyên liệu theo standardOutput' })
+  @ApiProperty({
+    description: 'Định mức nguyên liệu cho 1 đơn vị thành phẩm đầu ra',
+  })
   @IsNumber()
   @Min(0.0001)
   quantity: number;
 }
 
 export class CreateRecipeDto {
-  @ApiProperty({ description: 'ID thành phẩm đầu ra (product)' })
+  @ApiProperty({
+    description: 'ID thành phẩm đầu ra (finished_good)',
+  })
   @IsNumber()
   @Min(1)
   productId: number;
-
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
-  name: string;
-
-  @ApiPropertyOptional({
-    description:
-      'Định mức đầu ra chuẩn của công thức (ví dụ 10). Định mức nguyên liệu tính trên đơn vị này.',
-    default: 1,
-  })
-  @IsOptional()
-  @IsNumber()
-  @Min(0.0001)
-  standardOutput?: number;
 
   @ApiProperty({ type: [RecipeItemDto] })
   @IsArray()

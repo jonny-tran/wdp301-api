@@ -1,24 +1,36 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsBoolean, IsEnum, IsOptional, IsString } from 'class-validator';
+import { PaginationParamsDto } from '../../../common/dto/pagination-params.dto';
+import { ProductType } from '../constants/product-type.enum';
 
-export class ProductFilterDto {
-  @ApiPropertyOptional({ description: 'Số trang hiện tại', default: 1 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number = 1;
-
-  @ApiPropertyOptional({ description: 'Số lượng mỗi trang', default: 10 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  limit?: number = 10;
-
-  @ApiPropertyOptional({ description: 'Từ khóa tìm kiếm', required: false })
+/** Query chung: phân trang + lọc danh sách sản phẩm (Admin / Manager / …) */
+export class ProductFilterDto extends PaginationParamsDto {
+  @ApiPropertyOptional({
+    description: 'Tìm kiếm theo tên hoặc mã SKU',
+  })
   @IsOptional()
   @IsString()
   search?: string;
+
+  @ApiPropertyOptional({
+    description: 'Lọc theo trạng thái hoạt động',
+  })
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }: { value: string }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  isActive?: boolean;
+
+  @ApiPropertyOptional({
+    enum: ProductType,
+    description:
+      'raw_material (bếp), finished_good (TP đặt hàng), resell_product (Coca/Pepsi…)',
+  })
+  @IsOptional()
+  @IsEnum(ProductType)
+  type?: ProductType;
 }

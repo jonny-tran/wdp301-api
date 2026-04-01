@@ -7,6 +7,7 @@ import { UnitOfWork } from '../../database/unit-of-work';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
+import { ProductType } from '../product/constants/product-type.enum';
 import { ProductRepository } from '../product/product.repository';
 import { ProductionRepository } from './production.repository';
 import { ProductionService } from './production.service';
@@ -24,6 +25,7 @@ describe('ProductionService', () => {
 
     const mockRepo = {
       findRecipeWithItems: jest.fn(),
+      findActiveRecipesByOutputProductId: jest.fn(),
       createRecipe: jest.fn(),
       createProductionOrder: jest.fn(),
       generateNextProductionOrderCode: jest.fn(),
@@ -41,7 +43,6 @@ describe('ProductionService', () => {
 
     const mockInbound = {
       lockBatchCodeGeneration: jest.fn().mockResolvedValue(undefined),
-      nextBatchCode: jest.fn(),
       insertBatch: jest.fn(),
       updateBatchStatus: jest.fn(),
       upsertInventory: jest.fn(),
@@ -53,6 +54,7 @@ describe('ProductionService', () => {
 
     const mockInventory = {
       createInventoryTransaction: jest.fn(),
+      syncBatchTotalsFromInventory: jest.fn().mockResolvedValue(undefined),
     };
 
     const mockUow = {
@@ -85,15 +87,18 @@ describe('ProductionService', () => {
 
   describe('createOrder', () => {
     it('should create draft production order when recipe exists and active', async () => {
-      repo.findRecipeWithItems.mockResolvedValue({
-        id: 1,
-        isActive: true,
-        outputProductId: 9,
-        items: [{ ingredientProductId: 1, quantityPerOutput: '1' }],
-      } as never);
+      repo.findActiveRecipesByOutputProductId.mockResolvedValue([
+        {
+          id: 1,
+          isActive: true,
+          outputProductId: 9,
+          items: [{ ingredientProductId: 1, quantityPerOutput: '1' }],
+        },
+      ] as never);
       productRepo.findById.mockResolvedValue({
         id: 9,
         isActive: true,
+        type: ProductType.FINISHED_GOOD,
       } as never);
       repo.generateNextProductionOrderCode.mockResolvedValue('PO-20260330-0001');
       repo.createProductionOrder.mockResolvedValue({
@@ -103,13 +108,13 @@ describe('ProductionService', () => {
       } as never);
 
       const result = await service.createOrder({
-        recipeId: 1,
+        productId: 9,
         plannedQuantity: 10,
         warehouseId: 2,
         createdBy: 'user-1',
       });
 
-      expect(repo.findRecipeWithItems).toHaveBeenCalledWith(1);
+      expect(repo.findActiveRecipesByOutputProductId).toHaveBeenCalledWith(9);
       expect(repo.generateNextProductionOrderCode).toHaveBeenCalledWith(mockTx);
       expect(repo.createProductionOrder).toHaveBeenCalledWith(
         {
@@ -131,13 +136,13 @@ describe('ProductionService', () => {
     it('should reject plannedQuantity <= 0', async () => {
       await expect(
         service.createOrder({
-          recipeId: 1,
+          productId: 1,
           plannedQuantity: 0,
           warehouseId: 1,
           createdBy: 'u',
         }),
       ).rejects.toThrow(BadRequestException);
-      expect(repo.findRecipeWithItems).not.toHaveBeenCalled();
+      expect(repo.findActiveRecipesByOutputProductId).not.toHaveBeenCalled();
     });
   });
 
@@ -152,11 +157,14 @@ describe('ProductionService', () => {
         plannedQuantity: '0',
         recipe: {
           outputProductId: 99,
-          standardOutput: '1',
           items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
         },
       } as never);
-      productRepo.findById.mockResolvedValue({ id: 99, isActive: true } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 99,
+        isActive: true,
+        type: ProductType.FINISHED_GOOD,
+      } as never);
 
       await expect(service.startProduction(orderId)).rejects.toThrow(
         BadRequestException,
@@ -172,11 +180,14 @@ describe('ProductionService', () => {
         plannedQuantity: '10',
         recipe: {
           outputProductId: 99,
-          standardOutput: '1',
           items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
         },
       } as never);
-      productRepo.findById.mockResolvedValue({ id: 99, isActive: true } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 99,
+        isActive: true,
+        type: ProductType.FINISHED_GOOD,
+      } as never);
       repo.listAvailableInventoryFefo.mockResolvedValue([
         {
           inventory: {
@@ -206,11 +217,14 @@ describe('ProductionService', () => {
         plannedQuantity: '10',
         recipe: {
           outputProductId: 99,
-          standardOutput: '1',
           items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
         },
       } as never);
-      productRepo.findById.mockResolvedValue({ id: 99, isActive: true } as never);
+      productRepo.findById.mockResolvedValue({
+        id: 99,
+        isActive: true,
+        type: ProductType.FINISHED_GOOD,
+      } as never);
       repo.listAvailableInventoryFefo.mockResolvedValue([
         {
           inventory: {
@@ -262,6 +276,7 @@ describe('ProductionService', () => {
         id: 100,
         sku: 'TP-SKU',
         shelfLifeDays: 3,
+        type: ProductType.FINISHED_GOOD,
       } as never);
       inboundRepo.insertBatch.mockResolvedValue({
         id: 200,
@@ -277,7 +292,7 @@ describe('ProductionService', () => {
         7,
         200,
         'production_output',
-        4,
+        3.5,
         `PRODUCTION:${orderId}`,
         expect.any(String),
         mockTx,
@@ -286,7 +301,7 @@ describe('ProductionService', () => {
       expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
         7,
         200,
-        'adjustment',
+        'waste',
         -0.5,
         `PRODUCTION:${orderId}`,
         'PRODUCTION_LOSS',
@@ -317,6 +332,7 @@ describe('ProductionService', () => {
         id: 100,
         sku: 'TP-SKU',
         shelfLifeDays: 3,
+        type: ProductType.FINISHED_GOOD,
       } as never);
       inboundRepo.insertBatch.mockResolvedValue({
         id: 200,
@@ -356,6 +372,7 @@ describe('ProductionService', () => {
         id: 100,
         sku: 'TP-SKU',
         shelfLifeDays: 3,
+        type: ProductType.FINISHED_GOOD,
       } as never);
       inboundRepo.insertBatch.mockResolvedValue({
         id: 200,
@@ -396,6 +413,7 @@ describe('ProductionService', () => {
         id: 100,
         sku: 'TP-SKU',
         shelfLifeDays: 3,
+        type: ProductType.FINISHED_GOOD,
       } as never);
 
       await expect(
@@ -423,6 +441,7 @@ describe('ProductionService', () => {
         id: 100,
         sku: 'TP-SKU',
         shelfLifeDays: 3,
+        type: ProductType.FINISHED_GOOD,
       } as never);
       inboundRepo.insertBatch.mockResolvedValue({
         id: 200,

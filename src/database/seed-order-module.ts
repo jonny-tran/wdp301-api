@@ -65,6 +65,7 @@ async function main() {
         baseUnitId: baseUnit.id,
         shelfLifeDays: 7,
         isActive: true,
+        type: 'raw_material',
       })
       .returning();
   }

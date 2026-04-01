@@ -52,7 +52,7 @@ export class OrderService {
   ) {}
 
   async getCatalog(query: GetCatalogDto) {
-    return this.orderRepository.getActiveProducts(query);
+    return this.orderRepository.getOrderCatalogProducts(query);
   }
 
   async findAll(query: GetOrdersDto) {
@@ -92,9 +92,13 @@ export class OrderService {
     const uniqueProductIds = [...new Set(productIds)];
 
     const activeProducts =
-      await this.orderRepository.findActiveProductsByIds(uniqueProductIds);
+      await this.orderRepository.findActiveProductsByIds(uniqueProductIds, {
+        orderableOnly: true,
+      });
     const snapshots =
-      await this.orderRepository.findProductsWithSnapshotByIds(uniqueProductIds);
+      await this.orderRepository.findProductsWithSnapshotByIds(uniqueProductIds, {
+        orderableOnly: true,
+      });
 
     const validProductIds = new Set(activeProducts.map((p) => p.id));
     const invalidProductIds = uniqueProductIds.filter(
@@ -103,7 +107,7 @@ export class OrderService {
 
     if (invalidProductIds.length > 0) {
       throw new BadRequestException(
-        `Danh sách sản phẩm không hợp lệ hoặc không hoạt động: ${invalidProductIds.join(', ')}`,
+        `Sản phẩm không hợp lệ, không hoạt động hoặc không được phép đặt (chỉ thành phẩm / hàng bán lại): ${invalidProductIds.join(', ')}`,
       );
     }
 

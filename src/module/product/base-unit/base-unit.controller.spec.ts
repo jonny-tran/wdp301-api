@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/unbound-method */
 import { Test, TestingModule } from '@nestjs/testing';
-import { PaginationParamsDto } from 'src/common/dto/pagination-params.dto';
+import { GetBaseUnitsDto } from './dto/get-base-units.dto';
 import { BaseUnitController } from './base-unit.controller';
 import { BaseUnitService } from './base-unit.service';
 import { CreateBaseUnitDto } from './dto/create-base-unit.dto';
@@ -52,7 +52,7 @@ describe('BaseUnitController', () => {
 
   describe('findAll', () => {
     it('should return a list of base units with pagination metadata', async () => {
-      const query: PaginationParamsDto = { page: 1, limit: 10 };
+      const query: GetBaseUnitsDto = { page: 1, limit: 10 };
       const expectedResult = {
         items: [{ id: 1, name: 'Thùng', isActive: true }],
         meta: {

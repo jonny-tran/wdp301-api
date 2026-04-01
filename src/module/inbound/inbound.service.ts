@@ -9,7 +9,8 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { UnitOfWork } from '../../database/unit-of-work';
-import { parseToStartOfDayVn } from '../../common/time/vn-time';
+import { generateInboundBatchCode } from '../../common/utils/generate-batch-code.util';
+import { nowVn, parseToStartOfDayVn } from '../../common/time/vn-time';
 import { RequestWithUser } from '../auth/types/auth.types';
 import { SystemConfigService } from '../system-config/system-config.service';
 import { WarehouseRepository } from './../warehouse/warehouse.repository';
@@ -54,7 +55,8 @@ export class InboundService {
   }
 
   /**
-   * Chốt phiếu: tạo lô (BAT-YYYYMMDD-SKU-XXXX), tăng tồn, ghi log IMPORT trong transaction.
+   * Chốt phiếu: tạo lô ([SKU]-YYYYMMDD-RANDOM), tăng tồn, ghi log import trong transaction.
+   * HSD: statedExpiryDate (NCC) hoặc ngày nhận (chốt phiếu, VN) + shelfLifeDays.
    * Dòng đã có batch (legacy) chỉ kích hoạt lô + nhập kho.
    */
   async completeReceipt(receiptId: string) {
@@ -83,6 +85,9 @@ export class InboundService {
 
       await this.inboundRepo.updateReceiptStatus(tx, receiptId, 'completed');
 
+      await this.inboundRepo.lockBatchCodeGeneration(tx);
+      const receivingYmd = nowVn().format('YYYY-MM-DD');
+
       for (const item of items) {
         const acceptedStr =
           item.quantityAccepted != null
@@ -91,15 +96,6 @@ export class InboundService {
         const accepted = parseFloat(acceptedStr);
         if (accepted <= 0) {
           continue;
-        }
-
-        if (
-          !item.batchId &&
-          !item.storageLocationCode?.trim()
-        ) {
-          throw new BadRequestException(
-            `Thiếu mã vị trí kệ (storageLocationCode) cho dòng sản phẩm #${item.id}`,
-          );
         }
 
         if (item.batchId) {
@@ -131,12 +127,25 @@ export class InboundService {
             'YYYY-MM-DD',
           );
         } else {
-          expiryStr = parseToStartOfDayVn(item.manufacturedDate)
+          expiryStr = parseToStartOfDayVn(receivingYmd)
             .add(product.shelfLifeDays, 'day')
             .format('YYYY-MM-DD');
         }
 
-        const batchCode = await this.inboundRepo.nextBatchCode(tx, product.sku);
+        let batchCode = generateInboundBatchCode(product.sku);
+        let batchCodeOk = false;
+        for (let attempt = 0; attempt < 32; attempt++) {
+          if (!(await this.inboundRepo.isBatchCodeTaken(tx, batchCode))) {
+            batchCodeOk = true;
+            break;
+          }
+          batchCode = generateInboundBatchCode(product.sku);
+        }
+        if (!batchCodeOk) {
+          throw new BadRequestException(
+            'Không sinh được mã lô duy nhất, vui lòng thử lại',
+          );
+        }
         const batch = await this.inboundRepo.insertBatch(tx, {
           productId: product.id,
           batchCode,

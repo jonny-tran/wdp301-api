@@ -36,16 +36,14 @@ export class ProductionController {
   @ApiOperation({
     summary: 'Tạo BOM / công thức sản xuất [Manager, Kitchen]',
     description:
-      '**Quyền truy cập (Roles):** Manager, Central Kitchen Staff\n\n**Nghiệp vụ:** Định nghĩa thành phẩm, sản lượng chuẩn và danh mục nguyên liệu (BOM) phục vụ lệnh sản xuất.',
+      '**Quyền truy cập (Roles):** Manager, Central Kitchen Staff\n\n**Nghiệp vụ:** Thành phẩm (`productId`) phải là **finished_good**; mỗi dòng nguyên liệu dùng **productId** loại **raw_material**. Định mức `quantity` = số lượng NL cho **1 đơn vị** thành phẩm. Tên công thức lấy theo tên sản phẩm thành phẩm.',
   })
   @ResponseMessage('Đã tạo công thức')
   async createRecipe(@Body() dto: CreateRecipeDto) {
     return this.productionService.createRecipe({
-      name: dto.name,
       productId: dto.productId,
-      standardOutput: dto.standardOutput,
       items: dto.items.map((i) => ({
-        materialId: i.materialId,
+        productId: i.productId,
         quantity: i.quantity,
       })),
     });
@@ -56,7 +54,7 @@ export class ProductionController {
   @ApiOperation({
     summary: 'Tạo lệnh sản xuất (draft) [Kitchen, Manager]',
     description:
-      '**Quyền truy cập (Roles):** Central Kitchen Staff, Manager\n\n**Nghiệp vụ:** Khởi tạo lệnh theo `recipeId` và khối lượng kế hoạch tại **kho trung tâm**, ghi nhận người tạo.',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff, Manager\n\n**Nghiệp vụ:** `productId` = thành phẩm **finished_good**; hệ thống gắn đúng **một** công thức active. Khối lượng kế hoạch tại **kho trung tâm**.',
   })
   @ResponseMessage('Tạo lệnh sản xuất')
   async createOrder(
@@ -68,7 +66,7 @@ export class ProductionController {
       throw new NotFoundException('Không tìm thấy kho trung tâm');
     }
     return this.productionService.createOrder({
-      recipeId: dto.recipeId,
+      productId: dto.productId,
       plannedQuantity: dto.plannedQuantity,
       warehouseId: wh.id,
       createdBy: user.userId,

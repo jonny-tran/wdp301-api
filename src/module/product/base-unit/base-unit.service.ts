@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { BaseUnitRepository } from './base-unit.repository';
 import { CreateBaseUnitDto } from './dto/create-base-unit.dto';
+import { GetBaseUnitsDto } from './dto/get-base-units.dto';
 import { UpdateBaseUnitDto } from './dto/update-base-unit.dto';
 
 @Injectable()
@@ -19,7 +20,7 @@ export class BaseUnitService {
     return await this.baseUnitRepository.create(dto);
   }
 
-  async findAll(query: { page?: number; limit?: number; search?: string }) {
+  async findAll(query: GetBaseUnitsDto) {
     return await this.baseUnitRepository.findAll(query);
   }
 

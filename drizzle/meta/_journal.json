@@ -176,6 +176,27 @@
       "when": 1774934865340,
       "tag": "0025_white_sheva_callister",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1775000000006,
+      "tag": "0026_product_type_enum",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1775049576409,
+      "tag": "0027_colorful_master_mold",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1775050000000,
+      "tag": "0028_recipe_drop_standard_output",
+      "breakpoints": true
     }
   ]
 }

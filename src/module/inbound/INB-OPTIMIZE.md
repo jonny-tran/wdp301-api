@@ -35,18 +35,27 @@ Tài liệu này mô tả **hợp đồng nghiệp vụ và kỹ thuật** sau r
 - Định dạng: **`BAT-{YYYYMMDD}-{SKU_SANITIZED}-{SEQ4}`** (SEQ đếm theo prefix ngày + SKU trong DB, transaction-safe).
 - Hàm: `InboundRepository.nextBatchCode(tx, sku)`.
 
+## Liên quan `products.type` (nhập kho)
+
+- Dòng phiếu gắn `receipt_items.product_id` — SKU đó thuộc master `products` có cột **`type`** (`raw_material` | `finished_good` | `resell_product`).
+- **Nhập từ NCC** thường là nguyên liệu / hàng bán lại; **thành phẩm nội bộ** chủ yếu sinh từ **production** (xuất hiện lô mới), không bắt buộc qua inbound trừ khi nghiệp vụ có nhập TP từ ngoài.
+- Catalog đặt hàng franchise **không** liên quan trực tiếp inbound — xem `ORD-OPTIMIZE.md` / `product_type`.
+
 ## Module Production (tóm tắt)
 
 - Bảng: `recipes`, `recipe_items`, `production_orders`, `production_reservations`.
-- Enum `inventory_transactions`: thêm `production_consume`, `production_output`.
-- `POST /production/orders` → draft; `POST /production/orders/:id/start` → reserve FEFO; `POST /production/orders/:id/finish` → trừ NL, tạo lô TP, log.
+- Enum `inventory_transactions`: `production_consume`, `production_output`.
+- `POST /production/recipes` — BOM: thành phẩm `finished_good`, dòng nguyên liệu `raw_material`, định mức trên **1 đơn vị TP** (xem `PROD-LOGIC-FINAL.md`).
+- `POST /production/orders` — body **`productId`** (finished_good), hệ thống chọn đúng một recipe active; `POST .../start` → reserve FEFO; `POST .../complete` → trừ NL, tạo lô TP, lineage.
 
 ## Migration
 
-Chạy lần lượt SQL trong repo:
+Chạy lần lượt SQL trong repo (theo journal); tối thiểu liên quan inbound/production:
 
 - `drizzle/0012_inbound_optimize.sql`
 - `drizzle/0013_production_module.sql`
+- `drizzle/0026_product_type_enum.sql` — enum & cột `products.type`
+- `drizzle/0028_recipe_drop_standard_output.sql` — bỏ `recipes.standard_output`
 
 ## Cấu hình gợi ý
 

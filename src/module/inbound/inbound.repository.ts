@@ -11,13 +11,6 @@ import {
   SQL,
   sql,
 } from 'drizzle-orm';
-import dayjs from 'dayjs';
-import timezone from 'dayjs/plugin/timezone';
-import utc from 'dayjs/plugin/utc';
-import { VN_TZ } from '../../common/time/vn-time';
-
-dayjs.extend(utc);
-dayjs.extend(timezone);
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -137,24 +130,11 @@ export class InboundRepository {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(90210, ${warehouseId})`);
   }
 
-  sanitizeSkuForBatchCode(sku: string): string {
-    const s = sku.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-    return s.length > 0 ? s.slice(0, 32) : 'X';
-  }
-
-  /** Định dạng BAT-YYYYMMDD-SKU-XXXX (XXXX tăng trong ngày + SKU, múi giờ VN) */
-  async nextBatchCode(tx: DbOrTx, sku: string): Promise<string> {
-    await this.lockBatchCodeGeneration(tx);
-    const dayStr = dayjs().tz(VN_TZ).format('YYYYMMDD');
-    const skuPart = this.sanitizeSkuForBatchCode(sku);
-    const prefix = `BAT-${dayStr}-${skuPart}-`;
-    const likePattern = `${prefix}%`;
-    const [row] = await tx
-      .select({ n: sql<number>`count(*)::int` })
-      .from(schema.batches)
-      .where(sql`${schema.batches.batchCode} like ${likePattern}`);
-    const next = (row?.n ?? 0) + 1;
-    return `${prefix}${String(next).padStart(4, '0')}`;
+  async isBatchCodeTaken(tx: DbOrTx, batchCode: string): Promise<boolean> {
+    const row = await tx.query.batches.findFirst({
+      where: eq(schema.batches.batchCode, batchCode),
+    });
+    return row != null;
   }
 
   async insertBatch(

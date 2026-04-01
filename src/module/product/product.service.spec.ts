@@ -83,6 +83,7 @@ describe('ProductService', () => {
         id: 1,
         sku: 'GA-RAN-KFC',
         baseUnitName: 'Cái',
+        type: 'raw_material',
         isActive: true,
         minStockLevel: 0,
         createdAt: new Date(),

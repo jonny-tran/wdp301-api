@@ -23,7 +23,7 @@ Tất cả route dưới prefix global (ví dụ `/api`) — xem `main.ts` / `FR
 |--------|------|------|--------|
 | GET | `/orders` | Manager, Coordinator, Admin | Danh sách có filter/pagination (`GetOrdersDto`) |
 | POST | `/orders` | Franchise Staff, Admin | Tạo đơn (`CreateOrderDto`) |
-| GET | `/orders/catalog` | Franchise Staff, Admin | Catalog sản phẩm |
+| GET | `/orders/catalog` | Franchise Staff, Admin | Catalog đặt hàng: **chỉ** `finished_good` + `resell_product`; có **phân trang** (`GetCatalogDto` / `PaginationParamsDto`: `page`, `limit`, …); response `items` + `meta` |
 | GET | `/orders/my-store` | Franchise Staff, Admin | Đơn cửa hàng (gán `storeId` từ JWT) |
 | PATCH | `/orders/franchise/:id/cancel` | Franchise Staff, Admin | Hủy — **chỉ `pending`** |
 | PATCH | `/orders/franchise/:id/confirm-price` | Franchise Staff, Admin | Gỡ khóa xác nhận giá sau khi lệch >20% |
@@ -39,12 +39,17 @@ Tất cả route dưới prefix global (ví dụ `/api`) — xem `main.ts` / `FR
 
 Kế thừa `PaginationParamsDto`: `page`, `limit`, `sortBy`, `sortOrder`. Response list: `items` + `meta` (totalItems, currentPage, …).
 
+## GET `/orders/catalog` — ghi chú FE
+
+- Luôn lọc server-side **`type IN ('finished_good','resell_product')`** — **không** trả nguyên liệu thô cho màn đặt hàng.
+- Query: `page`, `limit`, (và các tham số phân trang/lọc khác trên `GetCatalogDto` nếu có) + `meta` trong response cho infinite scroll / phân trang.
+
 ## POST `/orders` — `CreateOrderDto`
 
 | Field | Bắt buộc | Mô tả |
 |-------|----------|--------|
 | `deliveryDate` | Có | ISO date; phải ≥ ngày sớm nhất theo lead time |
-| `items[]` | Có | `{ productId, quantity }` |
+| `items[]` | Có | `{ productId, quantity }` — `productId` phải là **`finished_good`** hoặc **`resell_product`** (cùng quy tắc catalog); **`raw_material`** bị từ chối. |
 | `lastInventoryCheckTimestamp` | Có nếu có SP `is_high_value` | ISO 8601, trong vòng 24h |
 
 **Logic nội bộ (tóm tắt):**
@@ -71,7 +76,7 @@ Kế thừa `PaginationParamsDto`: `page`, `limit`, `sortBy`, `sortOrder`. Respo
 
 ## Database (Drizzle) — cột / bảng mới
 
-- `products`: `unit_price`, `prep_time_hours`, `packaging_info`, `weight_kg`, `volume_m3`, `is_high_value`
+- `products`: `type` (`product_type` enum), `unit_price`, `prep_time_hours`, `packaging_info`, `weight_kg`, `volume_m3`, `is_high_value`
 - `stores`: `max_storage_capacity`, `transit_time_hours`
 - `order_items`: `unit_snapshot`, `price_snapshot`, `packaging_info_snapshot`
 - `orders`: `consolidation_group_id`, `requires_production_confirm`, `pending_price_confirm`
@@ -79,7 +84,7 @@ Kế thừa `PaginationParamsDto`: `page`, `limit`, `sortBy`, `sortOrder`. Respo
 - `shipment_orders` (shipment_id, order_id): gộp nhiều đơn một chuyến
 - `restock_tasks`: nhiệm vụ hoàn kho sau force cancel
 
-**Migration:** `drizzle/0010_ord_optimize.sql` (+ journal `0010_ord_optimize`).
+**Migration:** `drizzle/0010_ord_optimize.sql` (+ journal `0010_ord_optimize`); `drizzle/0026_product_type_enum.sql` cho `product_type` / cột `products.type`.
 
 ## Config hệ thống (liên quan)
 

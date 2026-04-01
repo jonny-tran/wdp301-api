@@ -18,6 +18,7 @@ import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
 import { FilterMap, paginate } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
+import { ORDERABLE_PRODUCT_TYPE_VALUES } from '../product/constants/product-type.enum';
 import { OrderStatus } from './constants/order-status.enum';
 import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
@@ -32,6 +33,11 @@ export class OrderRepository {
   private readonly catalogFilterMap: FilterMap<typeof schema.products> = {
     search: { column: schema.products.name, operator: 'ilike' },
     isActive: { column: schema.products.isActive, operator: 'eq' },
+    /** Luôn set từ server — không nhận từ client (catalog đặt hàng) */
+    catalogSellableTypes: {
+      column: schema.products.type,
+      operator: 'in',
+    },
   };
 
   async findAll(query: GetOrdersDto) {
@@ -130,30 +136,58 @@ export class OrderRepository {
     };
   }
 
-  async getActiveProducts(query: GetCatalogDto) {
+  /**
+   * Catalog đặt hàng: chỉ `finished_good` + `resell_product`, phân trang chuẩn paginate.
+   */
+  async getOrderCatalogProducts(query: GetCatalogDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 20;
+    const merged = {
+      ...query,
+      page,
+      limit,
+      isActive: query.isActive !== false,
+      catalogSellableTypes: ORDERABLE_PRODUCT_TYPE_VALUES.join(','),
+    } as PaginationParamsDto & Record<string, unknown>;
     return paginate(
       this.db,
       schema.products,
-      query as PaginationParamsDto & Record<string, unknown>,
+      merged,
       this.catalogFilterMap,
     );
   }
 
-  async findActiveProductsByIds(productIds: number[]) {
+  async findActiveProductsByIds(
+    productIds: number[],
+    options?: { orderableOnly?: boolean },
+  ) {
+    if (productIds.length === 0) return [];
+    const conditions: SQL[] = [
+      inArray(schema.products.id, productIds),
+      eq(schema.products.isActive, true),
+    ];
+    if (options?.orderableOnly) {
+      conditions.push(inArray(schema.products.type, ORDERABLE_PRODUCT_TYPE_VALUES));
+    }
     return this.db
       .select({ id: schema.products.id })
       .from(schema.products)
-      .where(
-        and(
-          inArray(schema.products.id, productIds),
-          eq(schema.products.isActive, true),
-        ),
-      );
+      .where(and(...conditions));
   }
 
   /** Catalog fields để snapshot + lead time */
-  async findProductsWithSnapshotByIds(productIds: number[]) {
+  async findProductsWithSnapshotByIds(
+    productIds: number[],
+    options?: { orderableOnly?: boolean },
+  ) {
     if (productIds.length === 0) return [];
+    const conditions: SQL[] = [
+      inArray(schema.products.id, productIds),
+      eq(schema.products.isActive, true),
+    ];
+    if (options?.orderableOnly) {
+      conditions.push(inArray(schema.products.type, ORDERABLE_PRODUCT_TYPE_VALUES));
+    }
     return this.db
       .select({
         id: schema.products.id,
@@ -170,12 +204,7 @@ export class OrderRepository {
         schema.baseUnits,
         eq(schema.products.baseUnitId, schema.baseUnits.id),
       )
-      .where(
-        and(
-          inArray(schema.products.id, productIds),
-          eq(schema.products.isActive, true),
-        ),
-      );
+      .where(and(...conditions));
   }
 
   async getStoreById(storeId: string, tx?: NodePgDatabase<typeof schema>) {
