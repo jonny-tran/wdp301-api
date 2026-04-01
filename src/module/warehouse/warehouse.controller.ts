@@ -11,10 +11,13 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ResponseMessage } from 'src/common/decorators/response-message.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import type { IJwtPayload } from '../auth/types/auth.types';
+import { CancelPickingTaskDto } from './dto/cancel-picking-task.dto';
 import { CreateManifestDto } from './dto/create-manifest.dto';
 import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
 
@@ -38,7 +41,7 @@ export class WarehouseController {
   @ApiOperation({
     summary: 'Lấy danh sách tác vụ soạn hàng (phân trang) [Kitchen]',
     description:
-      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Liệt kê các đơn đã duyệt (`APPROVED`) tại kho trung tâm cần soạn hàng, có phân trang và lọc (`GetPickingTasksDto`).',
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Liệt kê đơn cần soạn (`APPROVED` hoặc `PICKING`), phân trang/lọc (`GetPickingTasksDto`).',
   })
   @ResponseMessage('Lấy danh sách tác vụ soạn hàng thành công')
   async getPickingTasks(@Query() query: GetPickingTasksDto) {
@@ -56,6 +59,26 @@ export class WarehouseController {
   @ResponseMessage('Lấy chi tiết danh sách soạn hàng thành công')
   async getPickingList(@Param('id') id: string) {
     return this.warehouseService.getPickingList(id);
+  }
+
+  @Post('tasks/:orderId/cancel')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Hủy task soạn hàng (approved / picking) [Kitchen]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff\n\n**Nghiệp vụ:** Hoàn chỗ reserve đã gắn đơn, hủy shipment preparing, đặt đơn `cancelled` và lưu `cancel_reason`. Không áp dụng khi đơn đang trong manifest `preparing` (cần hủy manifest trước).',
+  })
+  @ResponseMessage('Đã hủy task soạn hàng')
+  async cancelPickingTask(
+    @Param('orderId') orderId: string,
+    @Body() dto: CancelPickingTaskDto,
+    @CurrentUser() user: IJwtPayload,
+  ) {
+    return this.warehouseService.cancelPickingTask(
+      orderId,
+      user.sub,
+      dto.reason,
+    );
   }
 
   @Patch('picking-tasks/:orderId/reset')

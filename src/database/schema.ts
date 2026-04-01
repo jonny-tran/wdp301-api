@@ -527,6 +527,8 @@ export const orders = pgTable(
     deliveryDate: timestamp('delivery_date').notNull(),
     priority: text('priority').default('standard'),
     note: text('note'),
+    /** Lý do hủy đơn (bếp / cửa hàng / điều phối) — tách khỏi `note` ghi chú đơn */
+    cancelReason: text('cancel_reason'),
     /** Cùng group → gộp shipment (cùng store, cùng ngày giao hàng trong cửa sổ chưa chốt) */
     consolidationGroupId: uuid('consolidation_group_id'),
     requiresProductionConfirm: boolean('requires_production_confirm')

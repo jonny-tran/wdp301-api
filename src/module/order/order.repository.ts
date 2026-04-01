@@ -553,11 +553,33 @@ export class OrderRepository {
     tx?: NodePgDatabase<typeof schema>,
   ) {
     const database = tx || this.db;
+    if (status === OrderStatus.CANCELLED) {
+      await database
+        .update(schema.orders)
+        .set({
+          status,
+          cancelReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.orders.id, id));
+      return;
+    }
+    if (status === OrderStatus.REJECTED) {
+      await database
+        .update(schema.orders)
+        .set({
+          status,
+          note: reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.orders.id, id));
+      return;
+    }
     await database
       .update(schema.orders)
       .set({
-        status: status,
-        note: reason, // Using 'note' to store rejection/cancellation reason
+        status,
+        updatedAt: new Date(),
       })
       .where(eq(schema.orders.id, id));
   }

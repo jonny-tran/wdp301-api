@@ -1,11 +1,17 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import { UnitOfWork } from '../../database/unit-of-work';
 import * as schema from '../../database/schema';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { InventoryService } from '../inventory/inventory.service';
+import { OrderRepository } from '../order/order.repository';
 import { SystemConfigService } from '../system-config/system-config.service';
+import { OrderStatus } from '../order/constants/order-status.enum';
 import { WarehouseRepository } from './warehouse.repository';
 import { WarehouseService } from './warehouse.service';
 
@@ -15,6 +21,7 @@ describe('WarehouseService', () => {
   let uow: { runInTransaction: jest.Mock };
   let inventoryRepository: jest.Mocked<Partial<InventoryRepository>>;
   let inventoryService: jest.Mocked<Partial<InventoryService>>;
+  let orderRepository: jest.Mocked<Partial<OrderRepository>>;
 
   beforeEach(async () => {
     uow = { runInTransaction: jest.fn() };
@@ -26,6 +33,13 @@ describe('WarehouseService', () => {
     };
     inventoryService = {
       releaseStockForShipment: jest.fn().mockResolvedValue(undefined),
+      releaseStock: jest.fn().mockResolvedValue(undefined),
+    };
+
+    orderRepository = {
+      getOrderById: jest.fn(),
+      findShipmentByOrderId: jest.fn(),
+      updateStatusWithReason: jest.fn().mockResolvedValue(undefined),
     };
 
     warehouseRepo = {
@@ -72,6 +86,7 @@ describe('WarehouseService', () => {
         { provide: UnitOfWork, useValue: uow },
         { provide: InventoryRepository, useValue: inventoryRepository },
         { provide: InventoryService, useValue: inventoryService },
+        { provide: OrderRepository, useValue: orderRepository },
       ],
     }).compile();
 
@@ -80,6 +95,80 @@ describe('WarehouseService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('cancelPickingTask', () => {
+    const orderId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+    const mockTx = () =>
+      ({
+        query: {
+          manifests: {
+            findFirst: jest.fn().mockResolvedValue(null),
+          },
+        },
+        update: jest.fn(() => ({
+          set: () => ({ where: () => Promise.resolve() }),
+        })),
+      }) as never;
+
+    beforeEach(() => {
+      (warehouseRepo.findCentralWarehouseId as jest.Mock).mockResolvedValue({
+        id: 1,
+      });
+      (uow.runInTransaction as jest.Mock).mockImplementation(async (fn) =>
+        fn(mockTx()),
+      );
+      (orderRepository.getOrderById as jest.Mock).mockResolvedValue({
+        id: orderId,
+        status: OrderStatus.APPROVED,
+      });
+      (orderRepository.findShipmentByOrderId as jest.Mock).mockResolvedValue({
+        id: 'ship-1',
+        status: 'preparing',
+        manifestId: null,
+      });
+    });
+
+    it('releases stock, cancels shipment and order with cancel_reason path', async () => {
+      const result = await service.cancelPickingTask(
+        orderId,
+        'staff-uuid',
+        'Thiếu hàng thực tế tại kệ',
+      );
+
+      expect(result).toEqual({
+        orderId,
+        status: OrderStatus.CANCELLED,
+      });
+      expect(inventoryService.releaseStock).toHaveBeenCalledWith(
+        orderId,
+        expect.anything(),
+      );
+      expect(orderRepository.updateStatusWithReason).toHaveBeenCalledWith(
+        orderId,
+        OrderStatus.CANCELLED,
+        'Thiếu hàng thực tế tại kệ',
+        expect.anything(),
+      );
+    });
+
+    it('throws BadRequest when reason too short', async () => {
+      await expect(
+        service.cancelPickingTask(orderId, 'staff-uuid', 'ab'),
+      ).rejects.toThrow(BadRequestException);
+      expect(uow.runInTransaction).not.toHaveBeenCalled();
+    });
+
+    it('throws when order not approved/picking', async () => {
+      (orderRepository.getOrderById as jest.Mock).mockResolvedValue({
+        id: orderId,
+        status: OrderStatus.DELIVERING,
+      });
+      await expect(
+        service.cancelPickingTask(orderId, 'staff-uuid', 'Lý do đủ dài'),
+      ).rejects.toThrow(BadRequestException);
+    });
   });
 
   describe('getCentralWarehouseId', () => {

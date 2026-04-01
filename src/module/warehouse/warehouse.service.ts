@@ -18,6 +18,7 @@ import {
   invToDbString,
 } from '../inventory/utils/inventory-decimal.util';
 import { OrderStatus } from '../order/constants/order-status.enum';
+import { OrderRepository } from '../order/order.repository';
 import { SystemConfigService } from '../system-config/system-config.service';
 import { CreateManifestDto } from './dto/create-manifest.dto';
 import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
@@ -41,6 +42,7 @@ export class WarehouseService {
     private readonly uow: UnitOfWork,
     private readonly inventoryRepository: InventoryRepository,
     private readonly inventoryService: InventoryService,
+    private readonly orderRepository: OrderRepository,
   ) {}
 
   async getCentralWarehouseId(): Promise<number> {
@@ -122,6 +124,84 @@ export class WarehouseService {
       shipmentId: shipment.id,
       items: Array.from(groupedItems.values()),
     };
+  }
+
+  /**
+   * Hủy task soạn bếp: chỉ `approved` / `picking`; hoàn chỗ reserve; shipment → cancelled;
+   * đơn → `cancelled` + `cancel_reason`. Transaction ACID.
+   */
+  async cancelPickingTask(
+    orderId: string,
+    staffId: string,
+    reason: string,
+  ): Promise<{ orderId: string; status: OrderStatus }> {
+    const trimmed = reason.trim();
+    if (trimmed.length < 3) {
+      throw new BadRequestException('Lý do hủy cần ít nhất 3 ký tự');
+    }
+
+    await this.getCentralWarehouseId();
+
+    return this.uow.runInTransaction(async (tx) => {
+      const order = await this.orderRepository.getOrderById(orderId, tx);
+      if (!order) {
+        throw new NotFoundException('Không tìm thấy đơn hàng');
+      }
+
+      const st = order.status as OrderStatus;
+      if (st !== OrderStatus.APPROVED && st !== OrderStatus.PICKING) {
+        throw new BadRequestException(
+          'Chỉ hủy được task soạn khi đơn ở trạng thái approved hoặc picking.',
+        );
+      }
+
+      const shipment = await this.orderRepository.findShipmentByOrderId(
+        orderId,
+        tx,
+      );
+
+      if (shipment?.manifestId != null) {
+        const manifest = await tx.query.manifests.findFirst({
+          where: eq(schema.manifests.id, shipment.manifestId),
+        });
+        if (manifest?.status === 'preparing') {
+          throw new BadRequestException(
+            'Đơn đang trong manifest đang chuẩn bị. Hãy hủy manifest hoặc liên hệ điều phối trước khi hủy task đơn lẻ.',
+          );
+        }
+      }
+
+      if (shipment && shipment.status !== 'preparing') {
+        throw new BadRequestException(
+          'Chuyến hàng không còn ở trạng thái preparing — không thể hủy task soạn từ bếp.',
+        );
+      }
+
+      await this.inventoryService.releaseStock(orderId, tx);
+
+      if (shipment) {
+        await tx
+          .update(schema.shipments)
+          .set({
+            status: 'cancelled',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.shipments.id, shipment.id));
+      }
+
+      await this.orderRepository.updateStatusWithReason(
+        orderId,
+        OrderStatus.CANCELLED,
+        trimmed,
+        tx,
+      );
+
+      this.logger.log(
+        `[cancelPickingTask] orderId=${orderId} staffId=${staffId} reasonPreview=${trimmed.slice(0, 80)}`,
+      );
+
+      return { orderId, status: OrderStatus.CANCELLED };
+    });
   }
 
   // --- 5. RESET TASK ---

@@ -50,7 +50,10 @@ export class WarehouseRepository {
     const offset = (page - 1) * limit;
 
     const whereConditions: SQL[] = [
-      eq(schema.orders.status, OrderStatus.APPROVED),
+      inArray(schema.orders.status, [
+        OrderStatus.APPROVED,
+        OrderStatus.PICKING,
+      ]),
     ];
 
     if (date) {

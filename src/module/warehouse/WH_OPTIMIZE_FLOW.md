@@ -1,34 +1,139 @@
-# WH-OPTIMIZE: Vận hành kho theo manifest và FEFO cứng
+# Warehouse (WH-OPTIMIZE): Luồng vận hành kho & manifest
 
-Tài liệu này mô tả luồng **wave picking** (gom lấy hàng), **manifest** (chuyến xe), và **quét lô bắt buộc theo FEFO** trong API `warehouse`.
+Tài liệu mô tả **luồng nghiệp vụ** và **API** module `warehouse` dành cho **Central Kitchen Staff**: soạn đơn lẻ, xuất kho gộp, **wave picking / manifest**, **FEFO cứng**, và **hủy task** trước khi giao.
 
-## 1. Soạn hàng hai bước: Bulk pick → Sort
+> Tiền tố đường dẫn: toàn bộ route nằm dưới global prefix ứng dụng (ví dụ `/api`) + `warehouse/...` — ví dụ đầy đủ: `{PREFIX}/warehouse/manifests`.
+
+---
+
+## 1. Tổng quan hai chế độ
+
+| Chế độ | Mục đích | Xuất kho (trừ physical) |
+|--------|----------|-------------------------|
+| **Đơn / shipment (legacy & bulk)** | Soạn và chốt qua `finalize-bulk` | Theo logic `PATCH .../shipments/finalize-bulk` |
+| **Manifest (WH-OPTIMIZE)** | Gom nhiều đơn một chuyến xe, picking list gộp SKU | Chỉ khi **`POST .../manifests/:id/depart`** (xe rời kho) |
+
+- Khi đơn đã gắn **manifest** đang `preparing`, không dùng `finalize-bulk` cho đơn đó — API sẽ báo lỗi và hướng dẫn dùng luồng manifest / `depart`.
+
+---
+
+## 2. Task soạn hàng (đơn lẻ)
+
+### 2.1 Danh sách & chi tiết
+
+- **`GET /warehouse/picking-tasks`** — Phân trang/lọc (`GetPickingTasksDto`: `page`, `limit`, `search`, `date`).  
+  Trạng thái đơn hiển thị: **`approved`** hoặc **`picking`**.
+- **`GET /warehouse/picking-tasks/:id`** — `id` = **orderId**. Trả về nhóm theo sản phẩm và các lô gợi ý (FEFO) từ `shipment_items` / shipment liên quan.
+
+### 2.2 Hủy task soạn (mới)
+
+- **`POST /warehouse/tasks/:orderId/cancel`**  
+  Body: `{ "reason": string }` (tối thiểu 3 ký tự, tối đa 2000).
+
+**Điều kiện & hậu quả (một transaction):**
+
+1. Đơn phải **`approved`** hoặc **`picking`**.
+2. Nếu shipment của đơn gắn **manifest** và manifest đang **`preparing`** → **400**: phải xử lý manifest trước (ví dụ `POST .../manifests/:id/cancel`), không cho hủy lẻ để tránh lệch wave.
+3. Nếu có shipment nhưng **không** còn `preparing` → **400** (đã vượt giai đoạn soạn chuẩn).
+4. **`releaseStock(orderId)`** — hoàn **reserved** theo log `reservation` (hoặc fallback theo dòng shipment).
+5. Shipment → **`cancelled`**.
+6. Đơn → **`cancelled`**, lý do ghi vào cột **`orders.cancel_reason`** (không ghi đè `note` của đơn).
+
+**Không** tạo giao dịch `waste`: chỉ **release** (physical không đổi; chỉ giảm chỗ giữ hàng).
+
+### 2.3 Reset tiến độ soạn
+
+- **`PATCH /warehouse/picking-tasks/:orderId/reset`** — Reset trạng thái soạn khi quét nhầm / cần phân bổ lại (shipment vẫn `preparing`).
+
+### 2.4 Xuất kho gộp nhiều đơn (không manifest)
+
+- **`PATCH /warehouse/shipments/finalize-bulk`** — Body `FinalizeBulkShipmentDto`. Trừ tồn / reserve, cập nhật shipment & trạng thái đơn trong **transaction**.
+
+### 2.5 Tiện ích soạn
+
+- **`GET /warehouse/shipments/:id/label`** — Payload in phiếu giao.
+- **`GET /warehouse/scan-check?batchCode=...`** — Tra cứu nhanh lô tại kho trung tâm.
+- **`POST /warehouse/batch/report-issue`** — Báo hỏng/thiếu lô khi soạn **đơn**; hệ thống tìm lô thay FEFO (`ReportIssueDto`).
+
+---
+
+## 3. WH-OPTIMIZE: Wave picking & manifest
+
+### 3.1 Hai bước: Bulk pick → Sort
 
 1. **Bulk pick (Master list)**  
-   Khi tạo manifest từ nhiều đơn (`POST /warehouse/manifests`), hệ thống gom tất cả dòng `shipment_items` thuộc các shipment đã gán vào manifest và **cộng dồn theo `product_id`**. Nhân viên nhận một danh sách tổng (ví dụ 10 cửa hàng × 2 kg gà → **một dòng 20 kg** đi một lần tới khu lạnh).
+   `POST /warehouse/manifests` (`CreateManifestDto`: danh sách `orderIds`). Hệ thống gom `shipment_items` của các shipment eligible và **cộng dồn theo `product_id`** (ví dụ nhiều cửa hàng × 2 kg → một dòng tổng).
 
-2. **Sort (chia thùng / crate)**  
-   Sau khi đưa tổng lượng ra khu đệm, việc chia nhỏ theo từng đơn vẫn dựa trên từng `shipment` và từng `shipment_item` (chi tiết trong `GET /warehouse/manifests/:id/picking-list`).
+2. **Sort (chia theo đơn)**  
+   Chi tiết theo từng shipment vẫn lấy qua **`GET /warehouse/manifests/:id/picking-list`**.
 
-## 2. Manifest so với đơn: Khi nào trừ tồn?
+### 3.2 Khi nào trừ tồn?
 
-- **Đơn từng lẻ (legacy)** có thể xuất qua `PATCH /warehouse/shipments/finalize-bulk` — trừ kho ngay khi xác nhận soạn (mô hình cũ).
-- **Manifest (WH-OPTIMIZE)**  
-  Tồn **đã được giữ chỗ (reserved)** khi duyệt đơn; **physical + reserved chỉ giảm đồng bộ khi xe rời kho** (`POST /warehouse/manifests/:id/depart`).  
-  Như vậy nếu xe đầy, xe trễ hoặc hủy chuyến, dữ liệu vẫn khớp thực tế kệ: chưa `depart` thì hàng vẫn thuộc trách nhiệm kho.
+- **Manifest:** Tồn đã **reserve** khi duyệt đơn; **physical + reserved** giảm đồng bộ khi **`POST /warehouse/manifests/:id/depart`**.  
+  Trước `depart`, hàng vẫn coi như trên kệ (chưa xuất xe).
 
-Nếu đơn đã nằm trong manifest, không dùng `finalize-bulk` cho đơn đó — API sẽ trả lỗi hướng dẫn dùng `depart` theo manifest.
+### 3.3 Quét lô nghiêm (FEFO cứng)
 
-## 3. Quét lô nghiêm (Strict scan)
+- Mỗi `shipment_items` có `suggested_batch_id`.
+- **`PATCH /warehouse/manifests/:id/verify-item`** — So `scannedBatchId` với lô chỉ định; **sai → 403** (tiếng Việt).
+- **`POST /warehouse/manifests/:id/report-batch-issue`** — Lô hỏng trên manifest: đổi lô, cập nhật gợi ý, rồi quét tiếp (`ReportManifestBatchIssueDto`).
 
-- Mỗi dòng `shipment_items` có `suggested_batch_id` (FEFO sau khi tạo manifest / sau khi báo hỏng lô).  
-- `PATCH /warehouse/manifests/:id/verify-item` so sánh `scannedBatchId` với lô chỉ định. **Không khớp → 403** với thông báo tiếng Việt; không ghi nhận lô “tiện tay” gần cửa hơn.
-- Nếu lô chỉ định hỏng thật: `POST /warehouse/manifests/:id/report-batch-issue` (kèm `shipmentItemId`, `batchId`, `reason`). Hệ thống đổi lô, cập nhật `suggested_batch_id`, rồi mới quét tiếp.
+### 3.4 Xe rời kho
 
-## 4. Hủy chuyến trước khi xe chạy
+- **`POST /warehouse/manifests/:id/depart`** — Kiểm tra đã quét đủ; **EXPORT** theo từng dòng; shipment → vận chuyển; đơn → `delivering`; manifest `departed`; picking list `completed`.
+- Trong transaction có **`pg_advisory_xact_lock`** theo `manifest_id` để tránh double depart.
 
-`POST /warehouse/manifests/:id/cancel` (trạng thái `preparing`): hoàn **reserved** về **available** theo từng shipment, gỡ `manifest_id`, manifest chuyển `cancelled`.
+### 3.5 Hủy manifest (chưa xuất xe)
 
-## 5. An toàn đồng thời khi xe rời
+- **`POST /warehouse/manifests/:id/cancel`** — Manifest `preparing` only: **`releaseStockForShipment`** từng shipment, gỡ `manifest_id`, manifest → `cancelled`.
 
-Trong transaction `depart`, gọi `pg_advisory_xact_lock(manifest_id)` để tránh xác nhận trùng hai lần cùng một manifest.
+---
+
+## 4. Quan hệ: Hủy task đơn ↔ Manifest
+
+```text
+Đơn approved/picking, shipment preparing, KHÔNG manifest preparing
+  → POST /warehouse/tasks/:orderId/cancel  ✅
+
+Đơn đang trong manifest preparing
+  → POST /warehouse/tasks/:orderId/cancel  ❌ (400)
+  → POST /warehouse/manifests/:id/cancel   ✅ (hoàn reserve cả wave, gỡ manifest)
+```
+
+Sau khi hủy manifest, shipment không còn `manifest_id`; khi đó có thể xử lý từng đơn (hủy task / soạn lại) theo quy trình riêng.
+
+---
+
+## 5. Bảng tham chiếu API (Kitchen)
+
+| Phương thức | Đường dẫn | Ghi chú |
+|-------------|-----------|---------|
+| GET | `/warehouse/picking-tasks` | Danh sách task (`approved` \| `picking`) |
+| GET | `/warehouse/picking-tasks/:id` | Chi tiết theo `orderId` |
+| POST | `/warehouse/tasks/:orderId/cancel` | Body `{ reason }` — hủy soạn + `cancel_reason` |
+| PATCH | `/warehouse/picking-tasks/:orderId/reset` | Làm lại lượt soạn |
+| PATCH | `/warehouse/shipments/finalize-bulk` | Xuất kho gộp (không dùng khi đơn đã manifest) |
+| GET | `/warehouse/shipments/:id/label` | In phiếu |
+| GET | `/warehouse/scan-check` | Query `batchCode` |
+| POST | `/warehouse/batch/report-issue` | Sự cố lô khi soạn đơn |
+| POST | `/warehouse/manifests` | Tạo wave |
+| GET | `/warehouse/manifests/:id/picking-list` | Master list theo manifest |
+| PATCH | `/warehouse/manifests/:id/verify-item` | Quét đúng FEFO |
+| POST | `/warehouse/manifests/:id/report-batch-issue` | Đổi lô trên manifest |
+| POST | `/warehouse/manifests/:id/depart` | Xuất kho + xe đi |
+| POST | `/warehouse/manifests/:id/cancel` | Hủy wave, hoàn reserve |
+
+---
+
+## 6. File code liên quan
+
+- `warehouse.controller.ts` — Định nghĩa route & Swagger.
+- `warehouse.service.ts` — `cancelPickingTask`, manifest, finalize, FEFO strict, v.v.
+- `warehouse.repository.ts` — Truy vấn shipment/manifest/picking list.
+- `dto/` — `CancelPickingTaskDto`, `CreateManifestDto`, `FinalizeBulkShipmentDto`, `VerifyManifestItemDto`, …
+- Hủy đơn & `cancel_reason`: `order.repository.ts` (`updateStatusWithReason` khi `cancelled`).
+- Hoàn reserve: `inventory.service.ts` — `releaseStock`, `releaseStockForShipment`.
+
+---
+
+*Tài liệu đồng bộ với code tại nhánh hiện tại; khi thêm endpoint, cập nhật mục 5 và luồng tương ứng.*
