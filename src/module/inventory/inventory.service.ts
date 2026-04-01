@@ -73,7 +73,7 @@ export class InventoryService {
         batchCode: item.batch.batchCode,
         quantity: parseFloat(item.quantity),
         expiryDate: new Date(item.batch.expiryDate),
-        unit: item.batch.product.baseUnit.name,
+        unit: item.batch.product.baseUnit?.name ?? '',
         imageUrl: item.batch.product.imageUrl || null,
       })),
       meta,
@@ -223,7 +223,7 @@ export class InventoryService {
       );
     if (id == null) {
       throw new NotFoundException(
-        'Không tìm thấy kho bếp trung tâm (warehouses.type = central; liên kết store_id)',
+        'Không tìm thấy kho bếp trung tâm (central theo store_id JWT, hoặc kho central hub store_id null)',
       );
     }
     this.logger.debug(
@@ -249,6 +249,10 @@ export class InventoryService {
         limit,
         offset,
       },
+    );
+
+    this.logger.debug(
+      `[getKitchenInventorySummary] warehouseId=${warehouseId} rawRows=${items.length} first=${JSON.stringify(items[0] ?? null)}`,
     );
 
     const productIds = items.map((i) => i.productId);
@@ -308,6 +312,10 @@ export class InventoryService {
         warehouseId,
         productId,
       );
+
+    this.logger.debug(
+      `[getKitchenProductBatches] warehouseId=${warehouseId} productId=${productId} dbLines=${rows.length} first=${JSON.stringify(rows[0] ?? null)}`,
+    );
 
     let assignedFefo = false;
     const batches = rows.map((r) => {

@@ -439,6 +439,7 @@ export const inventory = pgTable(
     batchId: integer('batch_id')
       .references(() => batches.id)
       .notNull(),
+    /** node-pg trả numeric dạng string; aggregate/SUM trong repo nên cast + mapWith(Number). */
     quantity: decimal('quantity', { precision: 10, scale: 2 })
       .default('0')
       .notNull(),

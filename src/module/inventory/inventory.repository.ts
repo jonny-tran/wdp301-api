@@ -8,6 +8,7 @@ import {
   gte,
   ilike,
   inArray,
+  isNull,
   lte,
   ne,
   or,
@@ -39,19 +40,25 @@ export class InventoryRepository {
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
   async findWarehouseByStoreId(storeId: string) {
+    const sid = String(storeId).trim();
+    if (!sid) return undefined;
     return this.db.query.warehouses.findFirst({
-      where: (warehouses) =>
-        and(
-          eq(warehouses.storeId, storeId),
-          eq(warehouses.type, 'store_internal'),
-        ),
+      where: and(
+        eq(schema.warehouses.storeId, sid),
+        eq(schema.warehouses.type, 'store_internal'),
+      ),
     });
   }
 
   /** Kho `central` gắn với `store_id` trong JWT (bếp trung tâm). */
   async findCentralWarehouseByStoreId(storeId: string) {
+    const sid = String(storeId).trim();
+    if (!sid) return undefined;
     return this.db.query.warehouses.findFirst({
-      where: (w) => and(eq(w.storeId, storeId), eq(w.type, 'central')),
+      where: and(
+        eq(schema.warehouses.storeId, sid),
+        eq(schema.warehouses.type, 'central'),
+      ),
     });
   }
 
@@ -138,7 +145,7 @@ export class InventoryRepository {
         schema.products,
         eq(schema.batches.productId, schema.products.id),
       )
-      .innerJoin(
+      .leftJoin(
         schema.baseUnits,
         eq(schema.products.baseUnitId, schema.baseUnits.id),
       )
@@ -148,7 +155,7 @@ export class InventoryRepository {
       .orderBy(asc(schema.batches.expiryDate));
 
     const totalRaw = await this.db
-      .select({ count: sql<number>`count(*)` })
+      .select({ count: sql<number>`count(*)::int`.mapWith(Number) })
       .from(schema.inventory)
       .innerJoin(
         schema.batches,
@@ -366,8 +373,12 @@ export class InventoryRepository {
   ) {
     const [agg] = await tx
       .select({
-        p: sql<string>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)`,
-        r: sql<string>`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)`,
+        p: sql<number>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.mapWith(
+          Number,
+        ),
+        r: sql<number>`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)::float8`.mapWith(
+          Number,
+        ),
       })
       .from(schema.inventory)
       .where(eq(schema.inventory.batchId, batchId));
@@ -536,9 +547,7 @@ export class InventoryRepository {
     },
     options: { limit?: number; offset?: number },
   ) {
-    const conditions = [
-      gt(schema.batches.expiryDate, new Date().toISOString()),
-    ];
+    const conditions: SQL[] = [];
 
     if (filters.warehouseId) {
       conditions.push(eq(schema.inventory.warehouseId, filters.warehouseId));
@@ -547,17 +556,21 @@ export class InventoryRepository {
     if (filters.searchTerm) {
       conditions.push(ilike(schema.products.name, `%${filters.searchTerm}%`));
     }
-    return this.db
+
+    const whereClause =
+      conditions.length > 0 ? and(...conditions)! : undefined;
+
+    const summaryBase = this.db
       .select({
         productId: schema.products.id,
         productName: schema.products.name,
         sku: schema.products.sku,
         warehouseId: schema.inventory.warehouseId,
         warehouseName: schema.warehouses.name,
-        totalQuantity: sql<number>`sum(${schema.inventory.quantity})`.mapWith(
+        totalQuantity: sql<number>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.mapWith(
           Number,
         ),
-        unit: schema.baseUnits.name,
+        unit: sql<string>`coalesce(${schema.baseUnits.name}, '')`,
         minStockLevel: schema.products.minStockLevel,
       })
       .from(schema.inventory)
@@ -573,15 +586,19 @@ export class InventoryRepository {
         schema.warehouses,
         eq(schema.inventory.warehouseId, schema.warehouses.id),
       )
-      .innerJoin(
+      .leftJoin(
         schema.baseUnits,
         eq(schema.products.baseUnitId, schema.baseUnits.id),
-      )
-      .where(and(...conditions))
+      );
+
+    const summaryFiltered = whereClause
+      ? summaryBase.where(whereClause)
+      : summaryBase;
+
+    return summaryFiltered
       .groupBy(
         schema.products.id,
         schema.products.name,
-        schema.products.sku,
         schema.products.sku,
         schema.baseUnits.name,
         schema.products.minStockLevel,
@@ -593,10 +610,10 @@ export class InventoryRepository {
   }
 
   async getLowStockItems(warehouseId?: number) {
-    const sq = this.db
+    const sqBase = this.db
       .select({
         productId: schema.batches.productId,
-        totalQuantity: sql<number>`sum(${schema.inventory.quantity})`.as(
+        totalQuantity: sql<number>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
           'total_quantity',
         ),
       })
@@ -604,17 +621,14 @@ export class InventoryRepository {
       .innerJoin(
         schema.batches,
         eq(schema.inventory.batchId, schema.batches.id),
-      )
-      .where(
-        and(
-          gt(schema.batches.expiryDate, new Date().toISOString()),
-          warehouseId
-            ? eq(schema.inventory.warehouseId, warehouseId)
-            : undefined,
-        ),
-      )
-      .groupBy(schema.batches.productId)
-      .as('sq');
+      );
+
+    const sqFiltered =
+      warehouseId != null
+        ? sqBase.where(eq(schema.inventory.warehouseId, warehouseId))
+        : sqBase;
+
+    const sq = sqFiltered.groupBy(schema.batches.productId).as('sq');
 
     return this.db
       .select({
@@ -622,20 +636,20 @@ export class InventoryRepository {
         productName: schema.products.name,
         sku: schema.products.sku,
         minStockLevel: schema.products.minStockLevel,
-        currentQuantity: sql<number>`coalesce(${sq.totalQuantity}, 0)`.mapWith(
+        currentQuantity: sql<number>`coalesce(${sq.totalQuantity}, 0)::float8`.mapWith(
           Number,
         ),
-        unit: schema.baseUnits.name,
+        unit: sql<string>`coalesce(${schema.baseUnits.name}, '')`,
       })
       .from(schema.products)
-      .innerJoin(
+      .leftJoin(
         schema.baseUnits,
         eq(schema.products.baseUnitId, schema.baseUnits.id),
       )
       .leftJoin(sq, eq(schema.products.id, sq.productId))
       .where(
         lte(
-          sql`coalesce(${sq.totalQuantity}, 0)`,
+          sql`coalesce(${sq.totalQuantity}, 0)::numeric`,
           schema.products.minStockLevel,
         ),
       );
@@ -723,32 +737,65 @@ export class InventoryRepository {
   async resolveCentralKitchenWarehouseId(
     storeId: string | null | undefined,
   ): Promise<number | null> {
-    if (storeId) {
-      const linked = await this.findCentralWarehouseByStoreId(storeId);
+    const sid =
+      storeId != null && String(storeId).trim() !== ''
+        ? String(storeId).trim()
+        : null;
+
+    if (sid) {
+      const linked = await this.findCentralWarehouseByStoreId(sid);
       if (linked) {
+        this.logger.debug(
+          `[resolveCentralKitchen] store-linked central warehouseId=${linked.id} storeId=${sid}`,
+        );
         return linked.id;
       }
     }
+
+    /** Hub chung: `central` không gắn store (dữ liệu seed / bếp đơn). */
+    const globalCentral = await this.db.query.warehouses.findFirst({
+      where: and(
+        eq(schema.warehouses.type, 'central'),
+        isNull(schema.warehouses.storeId),
+      ),
+      orderBy: asc(schema.warehouses.id),
+    });
+    if (globalCentral) {
+      this.logger.debug(
+        `[resolveCentralKitchen] global central (store_id null) warehouseId=${globalCentral.id}`,
+      );
+      return globalCentral.id;
+    }
+
     const centrals = await this.db.query.warehouses.findMany({
       where: eq(schema.warehouses.type, 'central'),
+      orderBy: asc(schema.warehouses.id),
     });
     if (centrals.length === 0) {
+      this.logger.warn('[resolveCentralKitchen] no central warehouse rows');
       return null;
     }
     if (centrals.length === 1) {
+      this.logger.debug(
+        `[resolveCentralKitchen] single central warehouseId=${centrals[0].id}`,
+      );
       return centrals[0].id;
     }
     const counts = await Promise.all(
       centrals.map(async (w) => {
         const [row] = await this.db
-          .select({ n: sql<number>`count(*)::int` })
+          .select({ n: sql<number>`count(*)::int`.mapWith(Number) })
           .from(schema.inventory)
           .where(eq(schema.inventory.warehouseId, w.id));
         return { id: w.id, n: Number(row?.n ?? 0) };
       }),
     );
     counts.sort((a, b) => b.n - a.n || a.id - b.id);
-    return counts[0].id;
+    const picked = counts[0].id;
+    this.logger.debug(
+      `[resolveCentralKitchen] picked central with most inventory rows warehouseId=${picked}`,
+    );
+    return picked;
   }
 
   /**
@@ -778,10 +825,10 @@ export class InventoryRepository {
     const invAgg = this.db
       .select({
         productId: schema.batches.productId,
-        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)`.as(
+        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
           'totalPhysical',
         ),
-        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)`.as(
+        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)::float8`.as(
           'totalReserved',
         ),
       })
@@ -799,17 +846,17 @@ export class InventoryRepository {
         productId: schema.products.id,
         productName: schema.products.name,
         sku: schema.products.sku,
-        unitName: schema.baseUnits.name,
+        unitName: sql<string>`coalesce(${schema.baseUnits.name}, '')`,
         minStock: schema.products.minStockLevel,
-        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}, 0)`.mapWith(
+        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}::numeric, 0)::float8`.mapWith(
           Number,
         ),
-        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}, 0)`.mapWith(
+        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}::numeric, 0)::float8`.mapWith(
           Number,
         ),
       })
       .from(schema.products)
-      .innerJoin(
+      .leftJoin(
         schema.baseUnits,
         eq(schema.products.baseUnitId, schema.baseUnits.id),
       )
@@ -821,16 +868,20 @@ export class InventoryRepository {
 
     const totalRaw = await this.db
       .select({
-        count: sql<number>`count(*)::int`,
+        count: sql<number>`count(*)::int`.mapWith(Number),
       })
       .from(schema.products)
-      .innerJoin(
+      .leftJoin(
         schema.baseUnits,
         eq(schema.products.baseUnitId, schema.baseUnits.id),
       )
       .where(productFilter);
 
     const totalItems = Number(totalRaw[0]?.count || 0);
+
+    this.logger.debug(
+      `[getKitchenSummary] warehouseId=${warehouseId} limit=${limit} offset=${offset} rowCount=${data.length} totalItems=${totalItems} sample=${JSON.stringify(data[0] ?? null)}`,
+    );
 
     return {
       items: data,
@@ -907,39 +958,40 @@ export class InventoryRepository {
   }
 
   /**
-   * Chi tiết lô theo sản phẩm — FEFO (expiry ASC), gồm lô chỉ còn reserved.
+   * Chi tiết lô theo sản phẩm — FEFO (HSD ASC). Từ `batches` LEFT JOIN `inventory` đúng kho:
+   * lô chưa có dòng tồn / tồn 0 vẫn hiển thị; lô hết hạn vẫn có trong danh sách (status từ service).
    */
   async getKitchenProductBatchesFefo(warehouseId: number, productId: number) {
-    return this.db
+    const rows = await this.db
       .select({
         batchId: schema.batches.id,
         batchCode: schema.batches.batchCode,
         expiryDate: schema.batches.expiryDate,
         batchStatus: schema.batches.status,
-        physicalQty: schema.inventory.quantity,
-        reservedQty: schema.inventory.reservedQuantity,
+        physicalQty: sql<string>`coalesce(${schema.inventory.quantity}::text, '0')`,
+        reservedQty: sql<string>`coalesce(${schema.inventory.reservedQuantity}::text, '0')`,
         minShelfLife: schema.products.minShelfLife,
       })
-      .from(schema.inventory)
-      .innerJoin(
-        schema.batches,
-        eq(schema.inventory.batchId, schema.batches.id),
-      )
+      .from(schema.batches)
       .innerJoin(
         schema.products,
         eq(schema.batches.productId, schema.products.id),
       )
-      .where(
+      .leftJoin(
+        schema.inventory,
         and(
+          eq(schema.inventory.batchId, schema.batches.id),
           eq(schema.inventory.warehouseId, warehouseId),
-          eq(schema.batches.productId, productId),
-          or(
-            gt(schema.inventory.quantity, '0'),
-            gt(schema.inventory.reservedQuantity, '0'),
-          ),
         ),
       )
+      .where(eq(schema.batches.productId, productId))
       .orderBy(asc(schema.batches.expiryDate));
+
+    this.logger.debug(
+      `[getKitchenProductBatchesFefo] warehouseId=${warehouseId} productId=${productId} batchLines=${rows.length}`,
+    );
+
+    return rows;
   }
 
   async lockInventoryRowForUpdate(
@@ -1067,10 +1119,10 @@ export class InventoryRepository {
     const invAgg = this.db
       .select({
         productId: schema.batches.productId,
-        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)`.as(
+        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
           'totalPhysical',
         ),
-        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)`.as(
+        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)::float8`.as(
           'totalReserved',
         ),
       })
@@ -1088,10 +1140,10 @@ export class InventoryRepository {
         productId: schema.products.id,
         productName: schema.products.name,
         minStock: schema.products.minStockLevel,
-        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}, 0)`.mapWith(
+        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}::numeric, 0)::float8`.mapWith(
           Number,
         ),
-        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}, 0)`.mapWith(
+        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}::numeric, 0)::float8`.mapWith(
           Number,
         ),
       })

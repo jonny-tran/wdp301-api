@@ -1,0 +1,1 @@
+ALTER TABLE "recipes" DROP COLUMN "standard_output";
