@@ -19,6 +19,19 @@ export function invToDbString(n: number): string {
   return invRound2(n).toFixed(INV_DECIMAL_PLACES);
 }
 
+/** Số lượng dạng cents (BigInt) — tránh lỗi float khi so sánh / trừ (tương đương Decimal 2 chữ số). */
+export function invToCents(value: unknown): bigint {
+  return BigInt(Math.round(invFromDb(value) * 100));
+}
+
+export function invCentsToNumber(cents: bigint): number {
+  return invRound2(Number(cents) / 100);
+}
+
+export function invCentsToDbString(cents: bigint): string {
+  return invToDbString(invCentsToNumber(cents));
+}
+
 /** Phần trăm: part / whole * 100 */
 export function invPct(part: number, whole: number): number {
   if (whole === 0 || !Number.isFinite(whole)) return 0;

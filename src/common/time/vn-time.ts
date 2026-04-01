@@ -15,6 +15,10 @@ export function parseToStartOfDayVn(value: string | Date): dayjs.Dayjs {
   return dayjs(value).tz(VN_TZ).startOf('day');
 }
 
+export function parseToEndOfDayVn(value: string | Date): dayjs.Dayjs {
+  return dayjs(value).tz(VN_TZ).endOf('day');
+}
+
 export function isPastClosingTime(
   nowVn: dayjs.Dayjs,
   closingTimeStr: string | null | undefined,

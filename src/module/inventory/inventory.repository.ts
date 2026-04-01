@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   and,
   asc,
@@ -7,6 +7,7 @@ import {
   gt,
   gte,
   ilike,
+  inArray,
   lte,
   ne,
   or,
@@ -15,6 +16,10 @@ import {
   lt,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import {
+  parseToEndOfDayVn,
+  parseToStartOfDayVn,
+} from '../../common/time/vn-time';
 import { FilterMap } from '../../common/utils/paginate.util';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
@@ -27,6 +32,8 @@ import {
 
 @Injectable()
 export class InventoryRepository {
+  private readonly logger = new Logger(InventoryRepository.name);
+
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
@@ -38,6 +45,13 @@ export class InventoryRepository {
           eq(warehouses.storeId, storeId),
           eq(warehouses.type, 'store_internal'),
         ),
+    });
+  }
+
+  /** Kho `central` gắn với `store_id` trong JWT (bếp trung tâm). */
+  async findCentralWarehouseByStoreId(storeId: string) {
+    return this.db.query.warehouses.findFirst({
+      where: (w) => and(eq(w.storeId, storeId), eq(w.type, 'central')),
     });
   }
 
@@ -690,7 +704,45 @@ export class InventoryRepository {
     return warehouse?.id;
   }
 
-  //  Group theo Product để xem tổng quan
+  /**
+   * Xác định kho bếp cho ngữ cảnh JWT:
+   * - Có `storeId`: warehouse `central` gắn store đó.
+   * - Không khớp / không có store: chọn kho `central` có **nhiều dòng inventory nhất** (tránh lệch khi có nhiều kho central).
+   */
+  async resolveCentralKitchenWarehouseId(
+    storeId: string | null | undefined,
+  ): Promise<number | null> {
+    if (storeId) {
+      const linked = await this.findCentralWarehouseByStoreId(storeId);
+      if (linked) {
+        return linked.id;
+      }
+    }
+    const centrals = await this.db.query.warehouses.findMany({
+      where: eq(schema.warehouses.type, 'central'),
+    });
+    if (centrals.length === 0) {
+      return null;
+    }
+    if (centrals.length === 1) {
+      return centrals[0].id;
+    }
+    const counts = await Promise.all(
+      centrals.map(async (w) => {
+        const [row] = await this.db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(schema.inventory)
+          .where(eq(schema.inventory.warehouseId, w.id));
+        return { id: w.id, n: Number(row?.n ?? 0) };
+      }),
+    );
+    counts.sort((a, b) => b.n - a.n || a.id - b.id);
+    return counts[0].id;
+  }
+
+  /**
+   * Tổng quan bếp: FROM products LEFT JOIN tổng tồn theo warehouse (SKU hết vẫn hiện với 0).
+   */
   async getKitchenSummary(
     warehouseId: number,
     options: { search?: string; limit?: number; offset?: number },
@@ -707,58 +759,155 @@ export class InventoryRepository {
         )
       : undefined;
 
-    const whereCondition = and(
-      eq(schema.inventory.warehouseId, warehouseId),
+    const productFilter = and(
+      eq(schema.products.isActive, true),
       searchCondition,
     );
 
-    const query = this.db
+    const invAgg = this.db
+      .select({
+        productId: schema.batches.productId,
+        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)`.as(
+          'totalPhysical',
+        ),
+        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)`.as(
+          'totalReserved',
+        ),
+      })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(eq(schema.inventory.warehouseId, warehouseId))
+      .groupBy(schema.batches.productId)
+      .as('inv_agg');
+
+    const data = await this.db
       .select({
         productId: schema.products.id,
         productName: schema.products.name,
         sku: schema.products.sku,
         unitName: schema.baseUnits.name,
         minStock: schema.products.minStockLevel,
-        // Tổng tồn kho vật lý
-        totalPhysical: sql<number>`sum(${schema.inventory.quantity})`.mapWith(
+        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}, 0)`.mapWith(
           Number,
         ),
-        // Tổng đang giữ chỗ (Reserved)
-        totalReserved:
-          sql<number>`sum(${schema.inventory.reservedQuantity})`.mapWith(
-            Number,
-          ),
+        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}, 0)`.mapWith(
+          Number,
+        ),
       })
-      .from(schema.inventory)
-      .innerJoin(
-        schema.batches,
-        eq(schema.inventory.batchId, schema.batches.id),
-      )
-      .innerJoin(
-        schema.products,
-        eq(schema.batches.productId, schema.products.id),
-      )
+      .from(schema.products)
       .innerJoin(
         schema.baseUnits,
         eq(schema.products.baseUnitId, schema.baseUnits.id),
       )
-      .where(whereCondition)
-      .groupBy(
-        schema.products.id,
-        schema.products.name,
-        schema.products.sku,
-        schema.baseUnits.name,
-        schema.products.minStockLevel,
-      )
+      .leftJoin(invAgg, eq(schema.products.id, invAgg.productId))
+      .where(productFilter)
+      .orderBy(asc(schema.products.name))
       .limit(limit)
       .offset(offset);
 
-    const data = await query;
-
-    // Count distinct products
     const totalRaw = await this.db
       .select({
-        count: sql<number>`count(distinct ${schema.products.id})`,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.products)
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(productFilter);
+
+    const totalItems = Number(totalRaw[0]?.count || 0);
+
+    return {
+      items: data,
+      meta: {
+        totalItems,
+        itemCount: data.length,
+        itemsPerPage: limit,
+        totalPages: Math.ceil(totalItems / limit),
+        currentPage: page,
+      },
+    };
+  }
+
+  /**
+   * Drill-down lô theo sản phẩm tại một warehouse: từ `batches` LEFT JOIN `inventory`
+   * (chỉ dòng inventory của đúng kho). Khớp macro summary: sản phẩm tồn 0 vẫn thấy các lô (0/0).
+   */
+  async getKitchenBatchDetails(warehouseId: number, productId: number) {
+    return await this.db
+      .select({
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+        quantity: sql<string>`coalesce(${schema.inventory.quantity}::text, '0')`,
+        reserved: sql<string>`coalesce(${schema.inventory.reservedQuantity}::text, '0')`,
+      })
+      .from(schema.batches)
+      .leftJoin(
+        schema.inventory,
+        and(
+          eq(schema.inventory.batchId, schema.batches.id),
+          eq(schema.inventory.warehouseId, warehouseId),
+        ),
+      )
+      .where(eq(schema.batches.productId, productId))
+      .orderBy(asc(schema.batches.expiryDate));
+  }
+
+  /** Product có ít nhất một lô trong kho với HSD trong [today, today+withinDays]. */
+  async getProductIdsNearExpiryAlert(
+    warehouseId: number,
+    productIds: number[],
+    withinDays: number,
+  ): Promise<Set<number>> {
+    if (productIds.length === 0) {
+      return new Set();
+    }
+    const until = new Date();
+    until.setDate(until.getDate() + withinDays);
+    const untilStr = until.toISOString().slice(0, 10);
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    const rows = await this.db
+      .selectDistinct({ productId: schema.batches.productId })
+      .from(schema.inventory)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventory.batchId, schema.batches.id),
+      )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          inArray(schema.batches.productId, productIds),
+          lte(schema.batches.expiryDate, untilStr),
+          gte(schema.batches.expiryDate, todayStr),
+          or(
+            gt(schema.inventory.quantity, '0'),
+            gt(schema.inventory.reservedQuantity, '0'),
+          ),
+        ),
+      );
+
+    return new Set(rows.map((r) => r.productId));
+  }
+
+  /**
+   * Chi tiết lô theo sản phẩm — FEFO (expiry ASC), gồm lô chỉ còn reserved.
+   */
+  async getKitchenProductBatchesFefo(warehouseId: number, productId: number) {
+    return this.db
+      .select({
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        expiryDate: schema.batches.expiryDate,
+        batchStatus: schema.batches.status,
+        physicalQty: schema.inventory.quantity,
+        reservedQty: schema.inventory.reservedQuantity,
+        minShelfLife: schema.products.minShelfLife,
       })
       .from(schema.inventory)
       .innerJoin(
@@ -769,6 +918,124 @@ export class InventoryRepository {
         schema.products,
         eq(schema.batches.productId, schema.products.id),
       )
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.batches.productId, productId),
+          or(
+            gt(schema.inventory.quantity, '0'),
+            gt(schema.inventory.reservedQuantity, '0'),
+          ),
+        ),
+      )
+      .orderBy(asc(schema.batches.expiryDate));
+  }
+
+  async lockInventoryRowForUpdate(
+    warehouseId: number,
+    batchId: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    const [row] = await tx
+      .select()
+      .from(schema.inventory)
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      )
+      .for('update');
+    return row ?? null;
+  }
+
+  async updateInventoryPhysicalOnly(
+    inventoryId: number,
+    newQuantityDb: string,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    await tx
+      .update(schema.inventory)
+      .set({
+        quantity: newQuantityDb,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.inventory.id, inventoryId));
+  }
+
+  /** Lịch sử giao dịch một kho (bếp) + optional batchId, kèm tên nhân viên. */
+  async getWarehouseInventoryTransactions(
+    warehouseId: number,
+    query: GetInventoryTransactionsDto,
+  ) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const conditions: SQL[] = [
+      eq(schema.inventoryTransactions.warehouseId, warehouseId),
+    ];
+
+    if (query.batchId != null) {
+      conditions.push(
+        eq(schema.inventoryTransactions.batchId, Number(query.batchId)),
+      );
+    }
+    if (query.type) {
+      conditions.push(eq(schema.inventoryTransactions.type, query.type));
+    }
+    if (query.fromDate) {
+      conditions.push(
+        gte(
+          schema.inventoryTransactions.createdAt,
+          parseToStartOfDayVn(query.fromDate).toDate(),
+        ),
+      );
+    }
+    if (query.toDate) {
+      conditions.push(
+        lte(
+          schema.inventoryTransactions.createdAt,
+          parseToEndOfDayVn(query.toDate).toDate(),
+        ),
+      );
+    }
+
+    const whereCondition = and(...conditions)!;
+
+    this.logger.debug(
+      `[InventoryTx] warehouseId=${warehouseId} batchId=${query.batchId ?? 'all'} type=${query.type ?? 'all'}`,
+    );
+
+    const data = await this.db
+      .select({
+        id: schema.inventoryTransactions.id,
+        createdAt: schema.inventoryTransactions.createdAt,
+        type: schema.inventoryTransactions.type,
+        quantityChange: schema.inventoryTransactions.quantityChange,
+        reason: schema.inventoryTransactions.reason,
+        referenceId: schema.inventoryTransactions.referenceId,
+        batchCode: schema.batches.batchCode,
+        staffUsername: schema.users.username,
+        staffEmail: schema.users.email,
+      })
+      .from(schema.inventoryTransactions)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventoryTransactions.batchId, schema.batches.id),
+      )
+      .leftJoin(
+        schema.users,
+        eq(schema.inventoryTransactions.createdBy, schema.users.id),
+      )
+      .where(whereCondition)
+      .limit(limit)
+      .offset(offset)
+      .orderBy(desc(schema.inventoryTransactions.createdAt));
+
+    const totalRaw = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.inventoryTransactions)
       .where(whereCondition);
 
     const totalItems = Number(totalRaw[0]?.count || 0);
@@ -785,65 +1052,41 @@ export class InventoryRepository {
     };
   }
 
-  // API 7: Drill-down chi tiết từng Lô (Batch) của 1 Product
-  async getKitchenBatchDetails(warehouseId: number, productId: number) {
-    return await this.db
+  async getAnalyticsSummary(warehouseId: number) {
+    const invAgg = this.db
       .select({
-        batchId: schema.batches.id,
-        batchCode: schema.batches.batchCode,
-        expiryDate: schema.batches.expiryDate,
-        quantity: schema.inventory.quantity,
-        reserved: schema.inventory.reservedQuantity,
+        productId: schema.batches.productId,
+        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)`.as(
+          'totalPhysical',
+        ),
+        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)`.as(
+          'totalReserved',
+        ),
       })
       .from(schema.inventory)
       .innerJoin(
         schema.batches,
         eq(schema.inventory.batchId, schema.batches.id),
       )
-      .where(
-        and(
-          eq(schema.inventory.warehouseId, warehouseId),
-          eq(schema.batches.productId, productId),
-          // Chỉ lấy các lô còn hàng (> 0)
-          gt(schema.inventory.quantity, sql`0`),
-        ),
-      )
-      .orderBy(asc(schema.batches.expiryDate)); // FEFO: Ưu tiên lô hết hạn trước
-  }
+      .where(eq(schema.inventory.warehouseId, warehouseId))
+      .groupBy(schema.batches.productId)
+      .as('inv_agg_analytics');
 
-  async getAnalyticsSummary(warehouseId: number) {
-    // Lưu ý: Hiện tại schema.ts chưa có category_id trong bảng products,
-    // nên ta sẽ bỏ qua filter categoryId hoặc bạn phải bổ sung vào schema sau.
-
-    // 1. Lấy tổng tồn kho theo Product
     const inventoryQuery = this.db
       .select({
         productId: schema.products.id,
         productName: schema.products.name,
         minStock: schema.products.minStockLevel,
-        totalPhysical: sql<number>`CAST(SUM(${schema.inventory.quantity}) AS FLOAT)`,
-        totalReserved: sql<number>`CAST(SUM(${schema.inventory.reservedQuantity}) AS FLOAT)`,
+        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}, 0)`.mapWith(
+          Number,
+        ),
+        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}, 0)`.mapWith(
+          Number,
+        ),
       })
-      .from(schema.inventory)
-      .innerJoin(
-        schema.batches,
-        eq(schema.inventory.batchId, schema.batches.id),
-      )
-      .innerJoin(
-        schema.products,
-        eq(schema.batches.productId, schema.products.id),
-      )
-      .where(eq(schema.inventory.warehouseId, warehouseId))
-      .groupBy(
-        schema.products.id,
-        schema.products.name,
-        schema.products.minStockLevel,
-      );
-
-    // 2. Lấy danh sách Batch sắp hết hạn (< 48h)
-    // Tính toán thời gian 48h tới
-    const next48Hours = new Date();
-    next48Hours.setHours(next48Hours.getHours() + 48);
+      .from(schema.products)
+      .leftJoin(invAgg, eq(schema.products.id, invAgg.productId))
+      .where(eq(schema.products.isActive, true));
 
     const expiredAlertQuery = this.db
       .select({
@@ -860,11 +1103,12 @@ export class InventoryRepository {
       .where(
         and(
           eq(schema.inventory.warehouseId, warehouseId),
-          lt(
-            schema.batches.expiryDate,
-            next48Hours.toISOString().split('T')[0],
-          ), // Cảnh báo expiry < 48h
-          gt(schema.inventory.quantity, '0'), // Chỉ đếm lô còn hàng
+          sql`${schema.batches.expiryDate}::date <= (CURRENT_DATE + interval '3 days')::date`,
+          sql`${schema.batches.expiryDate}::date >= CURRENT_DATE::date`,
+          or(
+            gt(schema.inventory.quantity, '0'),
+            gt(schema.inventory.reservedQuantity, '0'),
+          ),
         ),
       );
 
@@ -912,20 +1156,35 @@ export class InventoryRepository {
     fromDate?: string,
     toDate?: string,
   ) {
-    const conditions = [
-      eq(schema.inventoryTransactions.warehouseId, warehouseId),
+    const wasteLike = or(
       eq(schema.inventoryTransactions.type, 'waste'),
+      eq(schema.inventoryTransactions.type, 'adjust_loss'),
+      and(
+        eq(schema.inventoryTransactions.type, 'adjustment'),
+        sql`${schema.inventoryTransactions.quantityChange}::numeric < 0`,
+      ),
+    );
+
+    const conditions: SQL[] = [
+      eq(schema.inventoryTransactions.warehouseId, warehouseId),
+      wasteLike!,
     ];
 
-    if (fromDate)
+    if (fromDate) {
       conditions.push(
-        gte(schema.inventoryTransactions.createdAt, new Date(fromDate)),
+        gte(
+          schema.inventoryTransactions.createdAt,
+          parseToStartOfDayVn(fromDate).toDate(),
+        ),
       );
+    }
     if (toDate) {
-      // Set to cuối ngày
-      const to = new Date(toDate);
-      to.setHours(23, 59, 59, 999);
-      conditions.push(lte(schema.inventoryTransactions.createdAt, to));
+      conditions.push(
+        lte(
+          schema.inventoryTransactions.createdAt,
+          parseToEndOfDayVn(toDate).toDate(),
+        ),
+      );
     }
 
     return this.db
@@ -951,23 +1210,39 @@ export class InventoryRepository {
   }
 
   // --- Financial Loss Impact ---
-  async getFinancialLoss(from?: string, to?: string) {
-    const invConditions: SQL[] = [
+  async getFinancialLoss(
+    from?: string,
+    to?: string,
+    kitchenWarehouseId?: number,
+  ) {
+    const wasteLike = or(
       eq(schema.inventoryTransactions.type, 'waste'),
-    ];
+      eq(schema.inventoryTransactions.type, 'adjust_loss'),
+      and(
+        eq(schema.inventoryTransactions.type, 'adjustment'),
+        sql`${schema.inventoryTransactions.quantityChange}::numeric < 0`,
+      ),
+    );
+
+    const invConditions: SQL[] = [wasteLike!];
+
+    if (kitchenWarehouseId != null) {
+      invConditions.push(
+        eq(schema.inventoryTransactions.warehouseId, kitchenWarehouseId),
+      );
+    }
+
     const claimConditions: SQL[] = [];
 
     if (from) {
-      invConditions.push(
-        gte(schema.inventoryTransactions.createdAt, new Date(from)),
-      );
-      claimConditions.push(gte(schema.claims.createdAt, new Date(from)));
+      const fromD = parseToStartOfDayVn(from).toDate();
+      invConditions.push(gte(schema.inventoryTransactions.createdAt, fromD));
+      claimConditions.push(gte(schema.claims.createdAt, fromD));
     }
     if (to) {
-      const toDate = new Date(to);
-      toDate.setHours(23, 59, 59, 999);
-      invConditions.push(lte(schema.inventoryTransactions.createdAt, toDate));
-      claimConditions.push(lte(schema.claims.createdAt, toDate));
+      const toD = parseToEndOfDayVn(to).toDate();
+      invConditions.push(lte(schema.inventoryTransactions.createdAt, toD));
+      claimConditions.push(lte(schema.claims.createdAt, toD));
     }
 
     // 1. Hàng hủy tại bếp (Từ bảng Bất biến: InventoryTransactions)

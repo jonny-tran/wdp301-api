@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   Inject,
@@ -17,13 +18,25 @@ import {
   // InventorySummaryQueryDto,
   WasteReportQueryDto,
 } from './dto/analytics-query.dto';
+import { KITCHEN_NEAR_EXPIRY_ALERT_DAYS } from './constants/kitchen-inventory.constants';
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
 import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
+import { KitchenAdjustInventoryDto } from './dto/kitchen-adjust-inventory.dto';
+import { KitchenSummaryQueryDto } from './dto/kitchen-summary-query.dto';
 import { AdjustmentDto, OrderItemLockLine } from './dto/adjustment.dto';
+import type { IJwtPayload } from '../auth/types/auth.types';
 import { InventoryDto } from './inventory.dto';
 import { InventoryRepository } from './inventory.repository';
-import { invFromDb, invPct, invToDbString } from './utils/inventory-decimal.util';
+import {
+  invCentsToDbString,
+  invCentsToNumber,
+  invFromDb,
+  invPct,
+  invRound2,
+  invToCents,
+  invToDbString,
+} from './utils/inventory-decimal.util';
 
 export interface AgingBucketItem {
   batchCode: string;
@@ -200,35 +213,298 @@ export class InventoryService {
     }
   }
 
-  // Helper Lấy ID kho bếp
-  private async getKitchenWarehouseId(): Promise<number> {
-    const id = await this.inventoryRepository.findCentralWarehouseId();
-    if (!id)
-      throw new NotFoundException('Không tìm thấy thông tin kho bếp trung tâm');
+  /**
+   * Kho bếp theo JWT: central + `storeId` token; nếu không khớp thì chọn central có nhiều inventory nhất.
+   */
+  async resolveKitchenWarehouseIdFromJwt(user: IJwtPayload): Promise<number> {
+    const id =
+      await this.inventoryRepository.resolveCentralKitchenWarehouseId(
+        user.storeId,
+      );
+    if (id == null) {
+      throw new NotFoundException(
+        'Không tìm thấy kho bếp trung tâm (warehouses.type = central; liên kết store_id)',
+      );
+    }
+    this.logger.debug(
+      `[Kitchen] warehouseId=${id} storeId=${user.storeId ?? 'null'} role=${user.role} sub=${user.sub}`,
+    );
     return id;
   }
 
-  //  Group theo Product để xem tổng quan
-  async getKitchenSummary(query: GetKitchenInventoryDto) {
-    const centralWarehouseId =
-      await this.inventoryRepository.findCentralWarehouseId();
-
-    if (!centralWarehouseId) {
-      // Nếu chưa có kho trung tâm -> trả về rỗng
-      return {
-        items: [],
-        meta: {
-          totalItems: 0,
-          itemCount: 0,
-          itemsPerPage: query.limit || 20,
-          totalPages: 0,
-          currentPage: query.page || 1,
-        },
-      };
-    }
+  /** GET /inventory/summary — macro bếp, Physical = Available + Reserved */
+  async getKitchenInventorySummary(
+    user: IJwtPayload,
+    query: KitchenSummaryQueryDto,
+  ) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
+    const limit = query.limit ?? 20;
+    const page = query.page ?? 1;
+    const offset = (page - 1) * limit;
 
     const { items, meta } = await this.inventoryRepository.getKitchenSummary(
-      centralWarehouseId,
+      warehouseId,
+      {
+        search: query.searchTerm,
+        limit,
+        offset,
+      },
+    );
+
+    const productIds = items.map((i) => i.productId);
+    const nearExpiry =
+      await this.inventoryRepository.getProductIdsNearExpiryAlert(
+        warehouseId,
+        productIds,
+        KITCHEN_NEAR_EXPIRY_ALERT_DAYS,
+      );
+
+    const data = items.map((item) => {
+      const physical = invRound2(Number(item.totalPhysical) || 0);
+      const reserved = invRound2(Number(item.totalReserved) || 0);
+      const available = invRound2(physical - reserved);
+      const minStock = item.minStock ?? 0;
+      const stockStatus = available < minStock ? 'LOW_STOCK' : 'OK';
+      const expiryStatus = nearExpiry.has(item.productId)
+        ? 'NEAR_EXPIRY_ALERT'
+        : 'OK';
+      const row: Record<string, unknown> = {
+        productId: item.productId,
+        sku: item.sku,
+        productName: item.productName,
+        unit: item.unitName,
+        totalPhysical: physical,
+        totalAvailable: available,
+        totalReserved: reserved,
+        stockStatus,
+        expiryStatus,
+        category: null,
+      };
+      if (stockStatus === 'LOW_STOCK') {
+        const suggested = Math.max(0, invRound2(minStock - available));
+        if (suggested > 0) {
+          row.suggestedProductionQty = suggested;
+        }
+      }
+      return row;
+    });
+
+    return {
+      data,
+      meta: {
+        totalItems: meta.totalItems,
+        page: meta.currentPage,
+        itemsPerPage: meta.itemsPerPage,
+        totalPages: meta.totalPages,
+      },
+    };
+  }
+
+  /** GET /inventory/product/:productId/batches — FEFO, isNextFEFO */
+  async getKitchenProductBatches(user: IJwtPayload, productId: number) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
+    const rows =
+      await this.inventoryRepository.getKitchenProductBatchesFefo(
+        warehouseId,
+        productId,
+      );
+
+    let assignedFefo = false;
+    const batches = rows.map((r) => {
+      const physical = invFromDb(r.physicalQty);
+      const reserved = invFromDb(r.reservedQty);
+      const available = invRound2(physical - reserved);
+      const isNextFEFO = !assignedFefo && available > 0;
+      if (isNextFEFO) {
+        assignedFefo = true;
+      }
+      const status = this.deriveKitchenBatchLineStatus(
+        r.batchStatus,
+        r.expiryDate,
+        r.minShelfLife ?? 0,
+      );
+      return {
+        batchId: r.batchId,
+        batchCode: r.batchCode,
+        expiryDate: this.toExpiryUtcIso(r.expiryDate),
+        physicalQty: physical,
+        availableQty: available,
+        reservedQty: reserved,
+        status,
+        isNextFEFO,
+      };
+    });
+
+    return { productId, batches };
+  }
+
+  private toExpiryUtcIso(expiry: string | Date): string {
+    if (expiry instanceof Date) {
+      return expiry.toISOString();
+    }
+    const s = String(expiry);
+    if (s.includes('T')) {
+      return new Date(s).toISOString();
+    }
+    return new Date(`${s}T00:00:00.000Z`).toISOString();
+  }
+
+  private deriveKitchenBatchLineStatus(
+    batchStatus: string,
+    expiryDate: string | Date,
+    minShelfLifeDays: number,
+  ): string {
+    if (batchStatus === 'expired') {
+      return 'EXPIRED';
+    }
+    if (batchStatus === 'damaged') {
+      return 'DAMAGED';
+    }
+    if (batchStatus === 'empty') {
+      return 'EMPTY';
+    }
+    const exp = new Date(this.toExpiryUtcIso(expiryDate)).getTime();
+    const threshold = Date.now() + minShelfLifeDays * 86400000;
+    if (exp <= threshold) {
+      return 'NEAR_EXPIRY';
+    }
+    return 'GOOD';
+  }
+
+  /** POST /inventory/adjust — đặt physical = actualQuantity, giữ reserved, Decimal + transaction */
+  async adjustKitchenInventory(
+    user: IJwtPayload,
+    dto: KitchenAdjustInventoryDto,
+  ) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
+    const referenceId = `ADJ-${randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`;
+    const reasonText = [dto.reasonCode, dto.note].filter(Boolean).join(' | ');
+
+    return this.uow.runInTransaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(90210, ${warehouseId})`,
+      );
+
+      const invRow = await this.inventoryRepository.lockInventoryRowForUpdate(
+        warehouseId,
+        dto.batchId,
+        tx,
+      );
+      if (!invRow) {
+        throw new NotFoundException(
+          'Không tìm thấy tồn kho cho lô trong kho bếp của bạn',
+        );
+      }
+
+      const physCents = invToCents(invRow.quantity);
+      const resCents = invToCents(invRow.reservedQuantity);
+      const actCents = invToCents(dto.actualQuantity);
+
+      if (actCents < resCents) {
+        throw new BadRequestException(
+          'Số lượng thực tế không được nhỏ hơn tồn đang giữ chỗ (reserved)',
+        );
+      }
+
+      const diffCents = actCents - physCents;
+      const newQtyStr = invCentsToDbString(actCents);
+
+      if (diffCents !== 0n) {
+        await this.inventoryRepository.updateInventoryPhysicalOnly(
+          invRow.id,
+          newQtyStr,
+          tx,
+        );
+        const txType = diffCents < 0n ? 'adjust_loss' : 'adjust_surplus';
+        await this.inventoryRepository.createInventoryTransaction(
+          warehouseId,
+          dto.batchId,
+          txType,
+          invCentsToNumber(diffCents),
+          referenceId,
+          reasonText,
+          tx,
+          { createdBy: user.sub },
+        );
+        await this.inventoryRepository.syncBatchTotalsFromInventory(
+          tx,
+          dto.batchId,
+        );
+      }
+
+      const availNum = invCentsToNumber(actCents - resCents);
+      return {
+        batchId: dto.batchId,
+        physicalQty: invCentsToNumber(actCents),
+        availableQty: availNum,
+        reservedQty: invCentsToNumber(resCents),
+        referenceId,
+        quantityChange:
+          diffCents === 0n ? 0 : invCentsToNumber(diffCents),
+      };
+    });
+  }
+
+  /** GET /inventory/transactions — theo kho bếp JWT */
+  async getKitchenInventoryTransactions(
+    user: IJwtPayload,
+    query: GetInventoryTransactionsDto,
+  ) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
+    const { items, meta } =
+      await this.inventoryRepository.getWarehouseInventoryTransactions(
+        warehouseId,
+        query,
+      );
+
+    const data = items.map((row) => ({
+      id: row.id,
+      timestamp: row.createdAt,
+      type: this.mapInventoryTxTypeForKitchenApi(row.type),
+      batchCode: row.batchCode,
+      changeQty: invFromDb(row.quantityChange),
+      reason: row.reason ?? '',
+      staffName: row.staffUsername ?? row.staffEmail ?? '—',
+      referenceId: row.referenceId ?? '',
+    }));
+
+    return { data, meta };
+  }
+
+  /** Gộp các loại điều chỉnh thành nhãn ADJUSTMENT cho FE */
+  private mapInventoryTxTypeForKitchenApi(
+    type: string,
+  ):
+    | 'ADJUSTMENT'
+    | 'IMPORT'
+    | 'EXPORT'
+    | 'WASTE'
+    | 'RESERVATION'
+    | 'RELEASE'
+    | string {
+    if (type === 'adjust_loss' || type === 'adjust_surplus' || type === 'adjustment') {
+      return 'ADJUSTMENT';
+    }
+    const upper = type.toUpperCase();
+    return upper as
+      | 'ADJUSTMENT'
+      | 'IMPORT'
+      | 'EXPORT'
+      | 'WASTE'
+      | 'RESERVATION'
+      | 'RELEASE'
+      | string;
+  }
+
+  //  Group theo Product để xem tổng quan (legacy path /kitchen/summary)
+  async getKitchenSummary(
+    query: GetKitchenInventoryDto,
+    user: IJwtPayload,
+  ) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
+
+    const { items, meta } = await this.inventoryRepository.getKitchenSummary(
+      warehouseId,
       {
         search: query.search,
         limit: query.limit ? Number(query.limit) : 20,
@@ -263,8 +539,8 @@ export class InventoryService {
   }
 
   // API 7: Xem chi tiết lô (Drill-down)
-  async getKitchenDetails(productId: number) {
-    const warehouseId = await this.getKitchenWarehouseId();
+  async getKitchenDetails(productId: number, user: IJwtPayload) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
     const batches = await this.inventoryRepository.getKitchenBatchDetails(
       warehouseId,
       productId,
@@ -274,22 +550,23 @@ export class InventoryService {
       productId: productId,
       totalBatches: batches.length,
       details: batches.map((b) => {
-        const qty = parseFloat(b.quantity.toString());
-        const res = parseFloat(b.reserved.toString());
+        const qty = invFromDb(b.quantity);
+        const res = invFromDb(b.reserved);
 
         return {
+          batchId: b.batchId,
           batchCode: b.batchCode,
-          expiryDate: b.expiryDate, // Frontend tự format dd/MM/yyyy
+          expiryDate: b.expiryDate,
           physical: qty,
           reserved: res,
-          available: qty - res,
+          available: invRound2(qty - res),
         };
       }),
     };
   }
 
-  async getAnalyticsSummary() {
-    const warehouseId = await this.getKitchenWarehouseId();
+  async getAnalyticsSummary(user: IJwtPayload) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
 
     // Sử dụng query.categoryId (Truyền xuống Repo nếu Repo có hỗ trợ)
     //const categoryId = query.categoryId;
@@ -323,8 +600,8 @@ export class InventoryService {
   }
 
   // --- API 2: Aging Report ---
-  async getAgingReport(query: AgingReportQueryDto) {
-    const warehouseId = await this.getKitchenWarehouseId();
+  async getAgingReport(query: AgingReportQueryDto, user: IJwtPayload) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
     const batches = await this.inventoryRepository.getAgingReport(warehouseId);
 
     const now = new Date().getTime();
@@ -374,8 +651,8 @@ export class InventoryService {
   }
 
   // --- API 3: Waste Report ---
-  async getWasteReport(query: WasteReportQueryDto) {
-    const warehouseId = await this.getKitchenWarehouseId();
+  async getWasteReport(query: WasteReportQueryDto, user: IJwtPayload) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
 
     const wasteData = await this.inventoryRepository.getWasteReport(
       warehouseId,
@@ -409,9 +686,14 @@ export class InventoryService {
   }
 
   // --- API 9: Financial Loss Impact ---
-  async getFinancialLoss(query: FinancialLossQueryDto) {
+  async getFinancialLoss(query: FinancialLossQueryDto, user: IJwtPayload) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
     const { wasteData, claimData } =
-      await this.inventoryRepository.getFinancialLoss(query.from, query.to);
+      await this.inventoryRepository.getFinancialLoss(
+        query.from,
+        query.to,
+        warehouseId,
+      );
 
     // Gộp dữ liệu theo ProductID
     const lossMap = new Map<

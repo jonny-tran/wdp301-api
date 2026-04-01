@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -11,11 +20,11 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import type { IJwtPayload } from '../auth/types/auth.types';
-import { GetInventorySummaryDto } from './dto/get-inventory-summary.dto';
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
 import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
-import { InventoryAdjustmentDto } from './dto/inventory-adjustment.dto';
+import { KitchenAdjustInventoryDto } from './dto/kitchen-adjust-inventory.dto';
+import { KitchenSummaryQueryDto } from './dto/kitchen-summary-query.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
 import {
@@ -81,21 +90,53 @@ export class InventoryController {
   )
   @ApiOperation({
     summary:
-      'Tổng hợp tồn kho (theo kho / tìm kiếm) [Admin, Manager, Kitchen, Supply Coordinator]',
+      'Tổng quan tồn kho bếp (macro) — kho lấy từ JWT [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Bảng tồn tổng quan theo `warehouseId` và từ khóa tìm kiếm, có phân trang.',
+      '**Không gửi `warehouseId`.** Backend xác định kho bếp trung tâm từ `storeId` trong Bearer JWT (ưu tiên warehouse `central` cùng store; fallback kho central đầu tiên).\n\n**Công thức:** Physical = Available + Reserved (aggregate theo product).',
   })
-  async getInventorySummary(@Query() query: GetInventorySummaryDto) {
-    return this.inventoryService.getInventorySummary(
-      {
-        warehouseId: query.warehouseId,
-        searchTerm: query.searchTerm,
-      },
-      {
-        limit: query.limit || 20,
-        offset: (query.page ? query.page - 1 : 0) * (query.limit || 20),
-      },
-    );
+  async getInventorySummary(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: KitchenSummaryQueryDto,
+  ) {
+    return this.inventoryService.getKitchenInventorySummary(user, query);
+  }
+
+  @Get('product/:productId/batches')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary: 'Chi tiết lô theo sản phẩm (FEFO) — kho từ JWT',
+    description:
+      'Lọc theo kho bếp của user; sắp xếp `expiryDate` ASC. `isNextFEFO`: lô cũ nhất còn `availableQty > 0`.',
+  })
+  async getKitchenProductBatches(
+    @CurrentUser() user: IJwtPayload,
+    @Param('productId', ParseIntPipe) productId: number,
+  ) {
+    return this.inventoryService.getKitchenProductBatches(user, productId);
+  }
+
+  @Get('transactions')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary: 'Lịch sử biến động kho bếp (audit) — kho từ JWT',
+    description:
+      'Query: `batchId`, `type`, `fromDate`, `toDate`, phân trang. Chỉ dữ liệu warehouse bếp của user.',
+  })
+  async getKitchenTransactions(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: GetInventoryTransactionsDto,
+  ) {
+    return this.inventoryService.getKitchenInventoryTransactions(user, query);
   }
 
   @Get('low-stock')
@@ -112,14 +153,22 @@ export class InventoryController {
   }
 
   @Post('adjust')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+  )
   @ApiOperation({
-    summary: 'Điều chỉnh tồn kho (hiệu chỉnh thủ công) [Admin, Manager]',
+    summary:
+      'Điều chỉnh kho bếp (kiểm kê / hỏng / sai số) — kho từ JWT [Admin, Manager, Kitchen]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Ghi nhận điều chỉnh tăng/giảm tồn có kiểm soát (`InventoryAdjustmentDto`) — dùng cho kiểm kê, hỏng không qua claim, v.v.',
+      'Body: `batchId`, `actualQuantity`, `reasonCode`, `note`. Không gửi `warehouseId`. Ghi `adjust_loss` / `adjust_surplus` + đồng bộ batch; transaction atomic.',
   })
-  async adjustInventory(@Body() body: InventoryAdjustmentDto) {
-    return this.inventoryService.adjustInventory(body);
+  async adjustKitchenInventory(
+    @CurrentUser() user: IJwtPayload,
+    @Body() body: KitchenAdjustInventoryDto,
+  ) {
+    return this.inventoryService.adjustKitchenInventory(user, body);
   }
 
   @Get('kitchen/summary')
@@ -135,8 +184,11 @@ export class InventoryController {
     description:
       '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Tổng quan tồn kho trung tâm **group theo product** phục vụ bếp và điều phối (`GetKitchenInventoryDto`).',
   })
-  async getKitchenSummary(@Query() query: GetKitchenInventoryDto) {
-    return this.inventoryService.getKitchenSummary(query);
+  async getKitchenSummary(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: GetKitchenInventoryDto,
+  ) {
+    return this.inventoryService.getKitchenSummary(query, user);
   }
 
   @Get('kitchen/details')
@@ -152,8 +204,11 @@ export class InventoryController {
     description:
       '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Drill-down từng **batch** của một `product_id`: HSD, số lượng thực, số lượng **reserve**.',
   })
-  async getKitchenDetails(@Query('product_id') productId: number) {
-    return this.inventoryService.getKitchenDetails(Number(productId));
+  async getKitchenDetails(
+    @CurrentUser() user: IJwtPayload,
+    @Query('product_id') productId: number,
+  ) {
+    return this.inventoryService.getKitchenDetails(Number(productId), user);
   }
 
   @Get('analytics/summary')
@@ -169,19 +224,28 @@ export class InventoryController {
     description:
       '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Chỉ số tổng quan tồn/rủi ro phục vụ vận hành kho trung tâm.',
   })
-  async getAnalyticsSummary() {
-    return this.inventoryService.getAnalyticsSummary();
+  async getAnalyticsSummary(@CurrentUser() user: IJwtPayload) {
+    return this.inventoryService.getAnalyticsSummary(user);
   }
 
   @Get('analytics/aging')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
   @ApiOperation({
-    summary: 'Báo cáo tuổi hàng (Aging) [Admin, Manager]',
+    summary:
+      'Báo cáo tuổi hàng (Aging) [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Phân tích tồn theo độ “già” của hàng (HSD / thời gian lưu kho) qua `AgingReportQueryDto`.',
+      '**Kho bếp theo JWT** (central + storeId / ưu tiên kho có tồn). Phân tích tồn theo HSD / shelf life.',
   })
-  async getAgingReport(@Query() query: AgingReportQueryDto) {
-    return this.inventoryService.getAgingReport(query);
+  async getAgingReport(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: AgingReportQueryDto,
+  ) {
+    return this.inventoryService.getAgingReport(query, user);
   }
 
   @Get('analytics/waste')
@@ -197,18 +261,30 @@ export class InventoryController {
     description:
       '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Thống kê khối lượng **WASTE** trong kỳ và KPI hủy hàng (`WasteReportQueryDto`).',
   })
-  async getWasteReport(@Query() query: WasteReportQueryDto) {
-    return this.inventoryService.getWasteReport(query);
+  async getWasteReport(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: WasteReportQueryDto,
+  ) {
+    return this.inventoryService.getWasteReport(query, user);
   }
 
   @Get('analytics/financial/loss-impact')
-  @Roles(UserRole.MANAGER, UserRole.ADMIN)
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
   @ApiOperation({
-    summary: 'Ước tính thiệt hại tài chính (loss impact) [Admin, Manager]',
+    summary:
+      'Ước tính thiệt hại tài chính (loss impact) [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager\n\n**Nghiệp vụ:** Ước tính giá trị tổn thất tài chính từ hao hụt/hủy theo `FinancialLossQueryDto`.',
+      'Hao hụt kho bếp theo JWT (`waste`, `adjust_loss`, `adjustment` âm tại warehouse đã resolve). Claims cửa hàng giữ nguyên.',
   })
-  async getFinancialLoss(@Query() query: FinancialLossQueryDto) {
-    return this.inventoryService.getFinancialLoss(query);
+  async getFinancialLoss(
+    @CurrentUser() user: IJwtPayload,
+    @Query() query: FinancialLossQueryDto,
+  ) {
+    return this.inventoryService.getFinancialLoss(query, user);
   }
 }

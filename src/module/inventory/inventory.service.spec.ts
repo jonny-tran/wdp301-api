@@ -7,8 +7,10 @@ import {
   AgingReportQueryDto,
   WasteReportQueryDto,
 } from './dto/analytics-query.dto';
+import { KitchenInventoryAdjustReasonCode } from './constants/inventory-adjust-reason.enum';
 import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
+import type { IJwtPayload } from '../auth/types/auth.types';
 import { InventoryRepository } from './inventory.repository';
 import { InventoryService } from './inventory.service';
 
@@ -44,6 +46,13 @@ describe('InventoryService', () => {
       updateBatchStatus: jest.fn(),
       clearReservedForBatchInventory: jest.fn(),
       decreasePhysicalAndReserved: jest.fn(),
+      findCentralWarehouseByStoreId: jest.fn(),
+      resolveCentralKitchenWarehouseId: jest.fn(),
+      getProductIdsNearExpiryAlert: jest.fn(),
+      getKitchenProductBatchesFefo: jest.fn(),
+      getWarehouseInventoryTransactions: jest.fn(),
+      lockInventoryRowForUpdate: jest.fn(),
+      updateInventoryPhysicalOnly: jest.fn(),
     };
 
     mockTx =
@@ -60,27 +69,29 @@ describe('InventoryService', () => {
     };
 
     mockUow = {
-      runInTransaction: jest.fn(async (cb: (tx: unknown) => Promise<unknown>) => {
-        const tx = {
-          execute: jest.fn().mockResolvedValue(undefined),
-          query: {
-            batches: {
-              findFirst: jest.fn().mockResolvedValue({
-                id: 1,
-                status: 'available',
-              }),
+      runInTransaction: jest.fn(
+        async (cb: (tx: unknown) => Promise<unknown>) => {
+          const tx = {
+            execute: jest.fn().mockResolvedValue(undefined),
+            query: {
+              batches: {
+                findFirst: jest.fn().mockResolvedValue({
+                  id: 1,
+                  status: 'available',
+                }),
+              },
+              inventory: {
+                findFirst: jest.fn().mockResolvedValue({
+                  id: 1,
+                  quantity: '100',
+                  reservedQuantity: '0',
+                }),
+              },
             },
-            inventory: {
-              findFirst: jest.fn().mockResolvedValue({
-                id: 1,
-                quantity: '100',
-                reservedQuantity: '0',
-              }),
-            },
-          },
-        };
-        return cb(tx);
-      }),
+          };
+          return cb(tx);
+        },
+      ),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -308,18 +319,29 @@ describe('InventoryService', () => {
 
   describe('Analytics & Summaries', () => {
     describe('getKitchenSummary', () => {
-      it('should return empty if central warehouse not found', async () => {
-        inventoryRepo.findCentralWarehouseId.mockResolvedValue(null as never);
-        const result = await service.getKitchenSummary({
-          limit: 10,
-          page: 2,
-        } as GetKitchenInventoryDto);
-        expect(result.items.length).toBe(0);
-        expect(result.meta.currentPage).toBe(2);
+      const adminJwt = {
+        sub: 'a',
+        email: 'a@b.c',
+        role: 'admin',
+        storeId: null,
+      } as IJwtPayload;
+
+      it('should throw if no central kitchen warehouse resolved', async () => {
+        inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+          null as never,
+        );
+        await expect(
+          service.getKitchenSummary(
+            { limit: 10, page: 2 } as GetKitchenInventoryDto,
+            adminJwt,
+          ),
+        ).rejects.toThrow(NotFoundException);
       });
 
       it('should map items and filters correctly if central warehouse exists', async () => {
-        inventoryRepo.findCentralWarehouseId.mockResolvedValue(55 as never);
+        inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+          55 as never,
+        );
         const repoFormat = {
           items: [
             {
@@ -342,11 +364,14 @@ describe('InventoryService', () => {
         };
         inventoryRepo.getKitchenSummary.mockResolvedValue(repoFormat as never);
 
-        const result = await service.getKitchenSummary({
-          search: 'M',
-          limit: 10,
-          page: 2,
-        } as GetKitchenInventoryDto);
+        const result = await service.getKitchenSummary(
+          {
+            search: 'M',
+            limit: 10,
+            page: 2,
+          } as GetKitchenInventoryDto,
+          adminJwt,
+        );
 
         expect(inventoryRepo.getKitchenSummary).toHaveBeenCalledWith(55, {
           search: 'M',
@@ -362,7 +387,9 @@ describe('InventoryService', () => {
 
     describe('getAgingReport', () => {
       it('should correctly bucket report items', async () => {
-        inventoryRepo.findCentralWarehouseId.mockResolvedValue(1 as never);
+        inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+          1 as never,
+        );
         inventoryRepo.getAgingReport.mockResolvedValue([
           {
             batchCode: 'B1',
@@ -387,9 +414,17 @@ describe('InventoryService', () => {
           },
         ] as never);
 
-        const result = await service.getAgingReport({
-          daysThreshold: 5,
-        } as AgingReportQueryDto);
+        const result = await service.getAgingReport(
+          {
+            daysThreshold: 5,
+          } as AgingReportQueryDto,
+          {
+            sub: 'a',
+            email: 'a@b.c',
+            role: 'admin',
+            storeId: null,
+          } as IJwtPayload,
+        );
 
         expect(inventoryRepo.getAgingReport).toHaveBeenCalledWith(1);
         expect(result.summary.appliedThreshold).toBe(5);
@@ -401,7 +436,9 @@ describe('InventoryService', () => {
 
     describe('getWasteReport', () => {
       it('should sum wasted quantity efficiently and match layout', async () => {
-        inventoryRepo.findCentralWarehouseId.mockResolvedValue(1 as never);
+        inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+          1 as never,
+        );
         inventoryRepo.getWasteReport.mockResolvedValue([
           {
             transactionId: 1,
@@ -421,10 +458,18 @@ describe('InventoryService', () => {
           },
         ] as never);
 
-        const result = await service.getWasteReport({
-          fromDate: '2026-01-01',
-          toDate: '2026-06-01',
-        } as WasteReportQueryDto);
+        const result = await service.getWasteReport(
+          {
+            fromDate: '2026-01-01',
+            toDate: '2026-06-01',
+          } as WasteReportQueryDto,
+          {
+            sub: 'a',
+            email: 'a@b.c',
+            role: 'admin',
+            storeId: null,
+          } as IJwtPayload,
+        );
 
         expect(inventoryRepo.getWasteReport).toHaveBeenCalledWith(
           1,
@@ -438,6 +483,9 @@ describe('InventoryService', () => {
 
     describe('getFinancialLoss', () => {
       it('should calculate estimated loss matching schema design', async () => {
+        inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+          9 as never,
+        );
         inventoryRepo.getFinancialLoss.mockResolvedValue({
           wasteData: [
             { productId: 1, productName: 'Product A', totalWaste: 10 },
@@ -447,14 +495,23 @@ describe('InventoryService', () => {
           ],
         } as never);
 
-        const result = await service.getFinancialLoss({
-          from: '2026-01-01',
-          to: '2026-06-01',
-        });
+        const result = await service.getFinancialLoss(
+          {
+            from: '2026-01-01',
+            to: '2026-06-01',
+          },
+          {
+            sub: 'a',
+            email: 'a@b.c',
+            role: 'admin',
+            storeId: null,
+          } as IJwtPayload,
+        );
 
         expect(inventoryRepo.getFinancialLoss).toHaveBeenCalledWith(
           '2026-01-01',
           '2026-06-01',
+          9,
         );
         // 10 + 5 = 15. price = 50000. 15 * 50000 = 750000
         expect(result.kpi.totalEstimatedLossVnd).toBe(750000);
@@ -657,6 +714,168 @@ describe('InventoryService', () => {
           evidenceImage: 'https://example.com/evidence.png',
         }),
       );
+    });
+  });
+
+  describe('Kitchen inventory APIs (JWT warehouse, FEFO, adjust)', () => {
+    const kitchenUser = {
+      sub: 'user-1',
+      email: 'a@b.c',
+      role: 'central_kitchen_staff',
+      storeId: 'store-central-uuid',
+    } as IJwtPayload;
+
+    it('getKitchenInventorySummary resolves warehouse via storeId and aggregates meta', async () => {
+      inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+        77 as never,
+      );
+      inventoryRepo.getKitchenSummary.mockResolvedValue({
+        items: [
+          {
+            productId: 10,
+            sku: 'SKU',
+            productName: 'P',
+            unitName: 'KG',
+            minStock: 100,
+            totalPhysical: 50,
+            totalReserved: 10,
+          },
+        ],
+        meta: {
+          totalItems: 1,
+          itemCount: 1,
+          itemsPerPage: 20,
+          totalPages: 1,
+          currentPage: 1,
+        },
+      } as never);
+      inventoryRepo.getProductIdsNearExpiryAlert.mockResolvedValue(
+        new Set([10]),
+      );
+
+      const result = await service.getKitchenInventorySummary(kitchenUser, {
+        page: 1,
+        limit: 20,
+      });
+
+      expect(inventoryRepo.resolveCentralKitchenWarehouseId).toHaveBeenCalledWith(
+        'store-central-uuid',
+      );
+      expect(inventoryRepo.getKitchenSummary).toHaveBeenCalledWith(77, {
+        search: undefined,
+        limit: 20,
+        offset: 0,
+      });
+      expect(result.data[0].stockStatus).toBe('LOW_STOCK');
+      expect(result.data[0].expiryStatus).toBe('NEAR_EXPIRY_ALERT');
+      expect(result.data[0].suggestedProductionQty).toBe(60);
+    });
+
+    it('adjustKitchenInventory throws NotFound when batch not in kitchen warehouse', async () => {
+      inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+        1 as never,
+      );
+      mockUow.runInTransaction.mockImplementationOnce(async (cb) =>
+        cb({ execute: jest.fn().mockResolvedValue(undefined) }),
+      );
+      inventoryRepo.lockInventoryRowForUpdate.mockResolvedValue(null as never);
+
+      await expect(
+        service.adjustKitchenInventory(kitchenUser, {
+          batchId: 999,
+          actualQuantity: 1,
+          reasonCode: KitchenInventoryAdjustReasonCode.WASTE,
+        }),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(inventoryRepo.updateInventoryPhysicalOnly).not.toHaveBeenCalled();
+    });
+
+    it('adjustKitchenInventory applies diff inside transaction and syncs batch', async () => {
+      inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+        5 as never,
+      );
+      const txStub = { execute: jest.fn().mockResolvedValue(undefined) };
+      mockUow.runInTransaction.mockImplementationOnce(async (cb) => cb(txStub));
+      inventoryRepo.lockInventoryRowForUpdate.mockResolvedValue({
+        id: 100,
+        quantity: '50.00',
+        reservedQuantity: '10.00',
+      } as never);
+      inventoryRepo.updateInventoryPhysicalOnly.mockResolvedValue(undefined);
+      inventoryRepo.createInventoryTransaction.mockResolvedValue({ id: 1 } as never);
+      inventoryRepo.syncBatchTotalsFromInventory.mockResolvedValue(undefined);
+
+      const out = await service.adjustKitchenInventory(kitchenUser, {
+        batchId: 5001,
+        actualQuantity: 48.5,
+        reasonCode: KitchenInventoryAdjustReasonCode.PRODUCTION_WASTE,
+        note: 'Rơi vãi',
+      });
+
+      expect(inventoryRepo.lockInventoryRowForUpdate).toHaveBeenCalledWith(
+        5,
+        5001,
+        txStub,
+      );
+      expect(inventoryRepo.updateInventoryPhysicalOnly).toHaveBeenCalledWith(
+        100,
+        '48.50',
+        txStub,
+      );
+      expect(inventoryRepo.createInventoryTransaction).toHaveBeenCalledWith(
+        5,
+        5001,
+        'adjust_loss',
+        -1.5,
+        expect.stringMatching(/^ADJ-/),
+        'PRODUCTION_WASTE | Rơi vãi',
+        txStub,
+        { createdBy: 'user-1' },
+      );
+      expect(inventoryRepo.syncBatchTotalsFromInventory).toHaveBeenCalledWith(
+        txStub,
+        5001,
+      );
+      expect(out.physicalQty).toBe(48.5);
+      expect(out.availableQty).toBe(38.5);
+      expect(out.quantityChange).toBe(-1.5);
+    });
+
+    it('getKitchenProductBatches sorts FEFO and sets isNextFEFO on oldest batch with availability', async () => {
+      inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
+        1 as never,
+      );
+      inventoryRepo.getKitchenProductBatchesFefo.mockResolvedValue([
+        {
+          batchId: 2,
+          batchCode: 'MAY',
+          expiryDate: '2026-05-01',
+          batchStatus: 'available',
+          physicalQty: '20',
+          reservedQty: '0',
+          minShelfLife: 0,
+        },
+        {
+          batchId: 1,
+          batchCode: 'JUN',
+          expiryDate: '2026-06-01',
+          batchStatus: 'available',
+          physicalQty: '10',
+          reservedQty: '10',
+          minShelfLife: 0,
+        },
+      ] as never);
+
+      const result = await service.getKitchenProductBatches(kitchenUser, 101);
+
+      expect(result.batches.map((b) => b.batchId)).toEqual([2, 1]);
+      const may = result.batches.find((b) => b.batchId === 2)!;
+      const jun = result.batches.find((b) => b.batchId === 1)!;
+      expect(may.isNextFEFO).toBe(true);
+      expect(jun.isNextFEFO).toBe(false);
+      expect(may.availableQty).toBe(20);
+      expect(jun.availableQty).toBe(0);
     });
   });
 });
