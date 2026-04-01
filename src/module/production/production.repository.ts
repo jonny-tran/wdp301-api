@@ -4,7 +4,7 @@
  * và được parse bằng `fromDbDecimal` trước khi so sánh.
  */
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, ne, or, sql, SQL } from 'drizzle-orm';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
@@ -28,7 +28,255 @@ export class ProductionRepository {
   async findRecipeWithItems(recipeId: number) {
     return this.db.query.recipes.findFirst({
       where: eq(schema.recipes.id, recipeId),
-      with: { items: true, outputProduct: true },
+      with: {
+        items: { with: { ingredient: true } },
+        outputProduct: true,
+      },
+    });
+  }
+
+  async findRecipeDetail(recipeId: number) {
+    return this.findRecipeWithItems(recipeId);
+  }
+
+  async listRecipesPaged(params: {
+    page: number;
+    limit: number;
+    search?: string;
+    isActive?: boolean;
+  }) {
+    const offset = (params.page - 1) * params.limit;
+    const wheres: SQL[] = [];
+    const search = params.search?.trim();
+    if (search) {
+      const p = `%${search}%`;
+      const cond = or(
+        ilike(schema.products.name, p),
+        ilike(schema.recipes.name, p),
+      );
+      if (cond) wheres.push(cond);
+    }
+    if (params.isActive !== undefined) {
+      wheres.push(eq(schema.recipes.isActive, params.isActive));
+    }
+    const whereClause = wheres.length ? and(...wheres) : undefined;
+
+    const [countRow] = await this.db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(schema.recipes)
+      .innerJoin(
+        schema.products,
+        eq(schema.recipes.outputProductId, schema.products.id),
+      )
+      .where(whereClause);
+
+    const totalItems = Number(countRow?.c ?? 0);
+
+    const rows = await this.db
+      .select({
+        id: schema.recipes.id,
+        name: schema.recipes.name,
+        outputProductId: schema.recipes.outputProductId,
+        outputProductName: schema.products.name,
+        outputProductSku: schema.products.sku,
+        isActive: schema.recipes.isActive,
+        createdAt: schema.recipes.createdAt,
+      })
+      .from(schema.recipes)
+      .innerJoin(
+        schema.products,
+        eq(schema.recipes.outputProductId, schema.products.id),
+      )
+      .where(whereClause)
+      .orderBy(desc(schema.recipes.id))
+      .limit(params.limit)
+      .offset(offset);
+
+    const ids = rows.map((r) => r.id);
+    let ingredientCountMap = new Map<number, number>();
+    if (ids.length > 0) {
+      const countRows = await this.db
+        .select({
+          recipeId: schema.recipeItems.recipeId,
+          n: sql<number>`count(*)::int`,
+        })
+        .from(schema.recipeItems)
+        .where(inArray(schema.recipeItems.recipeId, ids))
+        .groupBy(schema.recipeItems.recipeId);
+      ingredientCountMap = new Map(
+        countRows.map((r) => [r.recipeId, Number(r.n)]),
+      );
+    }
+
+    const items = rows.map((r) => ({
+      ...r,
+      ingredientCount: ingredientCountMap.get(r.id) ?? 0,
+    }));
+
+    return {
+      items,
+      meta: {
+        totalItems,
+        itemCount: items.length,
+        itemsPerPage: params.limit,
+        totalPages: Math.max(1, Math.ceil(totalItems / params.limit)),
+        currentPage: params.page,
+      },
+    };
+  }
+
+  async countBlockingOrdersForRecipe(recipeId: number) {
+    const [row] = await this.db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(schema.productionOrders)
+      .where(
+        and(
+          eq(schema.productionOrders.recipeId, recipeId),
+          inArray(schema.productionOrders.status, ['draft', 'in_progress']),
+        ),
+      );
+    return Number(row?.c ?? 0);
+  }
+
+  async countOtherActiveRecipesForProduct(
+    outputProductId: number,
+    excludeRecipeId: number,
+  ) {
+    const [row] = await this.db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(schema.recipes)
+      .where(
+        and(
+          eq(schema.recipes.outputProductId, outputProductId),
+          eq(schema.recipes.isActive, true),
+          ne(schema.recipes.id, excludeRecipeId),
+        ),
+      );
+    return Number(row?.c ?? 0);
+  }
+
+  async updateRecipe(
+    recipeId: number,
+    data: {
+      outputProductId?: number;
+      name?: string;
+      isActive?: boolean;
+      items?: { productId: number; quantity: string }[];
+    },
+  ) {
+    return this.db.transaction(async (tx) => {
+      const patch: Partial<typeof schema.recipes.$inferInsert> = {};
+      if (data.outputProductId !== undefined) {
+        patch.outputProductId = data.outputProductId;
+      }
+      if (data.name !== undefined) {
+        patch.name = data.name;
+      }
+      if (data.isActive !== undefined) {
+        patch.isActive = data.isActive;
+      }
+      if (Object.keys(patch).length > 0) {
+        await tx
+          .update(schema.recipes)
+          .set(patch)
+          .where(eq(schema.recipes.id, recipeId));
+      }
+      if (data.items) {
+        await tx
+          .delete(schema.recipeItems)
+          .where(eq(schema.recipeItems.recipeId, recipeId));
+        if (data.items.length > 0) {
+          await tx.insert(schema.recipeItems).values(
+            data.items.map((i) => ({
+              recipeId,
+              ingredientProductId: i.productId,
+              quantityPerOutput: i.quantity,
+            })),
+          );
+        }
+      }
+      return tx.query.recipes.findFirst({
+        where: eq(schema.recipes.id, recipeId),
+        with: {
+          items: { with: { ingredient: true } },
+          outputProduct: true,
+        },
+      });
+    });
+  }
+
+  async listProductionOrdersPaged(params: {
+    page: number;
+    limit: number;
+    status?: readonly string[];
+  }) {
+    const offset = (params.page - 1) * params.limit;
+    const wheres: SQL[] = [];
+    if (params.status?.length) {
+      wheres.push(
+        inArray(
+          schema.productionOrders.status,
+          params.status as ('draft' | 'in_progress' | 'completed' | 'cancelled')[],
+        ),
+      );
+    }
+    const whereClause = wheres.length ? and(...wheres) : undefined;
+
+    const [countRow] = await this.db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(schema.productionOrders)
+      .where(whereClause);
+
+    const totalItems = Number(countRow?.c ?? 0);
+
+    const rows = await this.db.query.productionOrders.findMany({
+      ...(whereClause ? { where: whereClause } : {}),
+      with: {
+        recipe: { with: { outputProduct: true } },
+        kitchenStaff: true,
+        creator: true,
+      },
+      orderBy: desc(schema.productionOrders.createdAt),
+      limit: params.limit,
+      offset,
+    });
+
+    return {
+      items: rows,
+      meta: {
+        totalItems,
+        itemCount: rows.length,
+        itemsPerPage: params.limit,
+        totalPages: Math.max(1, Math.ceil(totalItems / params.limit)),
+        currentPage: params.page,
+      },
+    };
+  }
+
+  async findProductionOrderDetailById(id: string) {
+    return this.db.query.productionOrders.findFirst({
+      where: eq(schema.productionOrders.id, id),
+      with: {
+        recipe: {
+          with: {
+            outputProduct: true,
+            items: { with: { ingredient: true } },
+          },
+        },
+        reservations: {
+          with: {
+            batch: { with: { product: true } },
+          },
+        },
+        batchLineages: {
+          with: {
+            parentBatch: { with: { product: true } },
+            childBatch: { with: { product: true } },
+          },
+        },
+        creator: true,
+        kitchenStaff: true,
+      },
     });
   }
 

@@ -462,6 +462,17 @@ export class InventoryRepository {
     });
   }
 
+  /** Giao dịch kho gắn `reference_id` (ví dụ `PRODUCTION:{orderUuid}`). */
+  async listTransactionsByReferenceId(referenceId: string) {
+    return this.db.query.inventoryTransactions.findMany({
+      where: eq(schema.inventoryTransactions.referenceId, referenceId),
+      orderBy: asc(schema.inventoryTransactions.id),
+      with: {
+        batch: { with: { product: true } },
+      },
+    });
+  }
+
   async listBatchesToExpire(tx?: NodePgDatabase<typeof schema>) {
     const database = tx || this.db;
     return database.query.batches.findMany({

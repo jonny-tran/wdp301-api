@@ -1,10 +1,15 @@
 import {
   Body,
   Controller,
+  Delete,
+  Get,
   NotFoundException,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
+  Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -19,6 +24,9 @@ import { WarehouseRepository } from '../warehouse/warehouse.repository';
 import { CompleteProductionDto } from './dto/complete-production.dto';
 import { CreateProductionOrderDto } from './dto/create-production-order.dto';
 import { CreateRecipeDto } from './dto/create-recipe.dto';
+import { GetProductionOrdersQueryDto } from './dto/get-production-orders-query.dto';
+import { GetRecipesQueryDto } from './dto/get-recipes-query.dto';
+import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { ProductionService } from './production.service';
 
 @ApiTags('Production')
@@ -47,6 +55,96 @@ export class ProductionController {
         quantity: i.quantity,
       })),
     });
+  }
+
+  @Get('recipes')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.ADMIN,
+  )
+  @ApiOperation({
+    summary: 'Danh sách công thức (BOM) [Manager, Kitchen, Admin]',
+    description:
+      'Phân trang; `search` theo tên thành phẩm / tên công thức. Mỗi dòng có `ingredientCount` (số nguyên liệu). Không còn `standardOutput` — định mức xem từng dòng `quantityPerOutput` (1 đơn vị TP).',
+  })
+  @ResponseMessage('Success')
+  listRecipes(@Query() query: GetRecipesQueryDto) {
+    return this.productionService.listRecipes(query);
+  }
+
+  @Get('recipes/:id')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.ADMIN,
+  )
+  @ApiOperation({
+    summary: 'Chi tiết công thức + BOM đầy đủ [Manager, Kitchen, Admin]',
+  })
+  @ResponseMessage('Success')
+  getRecipe(@Param('id', ParseIntPipe) id: number) {
+    return this.productionService.getRecipeById(id);
+  }
+
+  @Patch('recipes/:id')
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Cập nhật công thức [Manager, Kitchen]',
+    description:
+      'Đổi `productId` (thành phẩm), thay toàn bộ `items`, hoặc `isActive`. Không đổi BOM/thành phẩm nếu còn lệnh **draft** / **in_progress** gắn công thức này.',
+  })
+  @ResponseMessage('Đã cập nhật công thức')
+  updateRecipe(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateRecipeDto,
+  ) {
+    return this.productionService.updateRecipe(id, dto);
+  }
+
+  @Delete('recipes/:id')
+  @Roles(UserRole.MANAGER, UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary: 'Ngừng công thức (soft) [Manager, Kitchen]',
+    description: 'Đặt `is_active = false`.',
+  })
+  @ResponseMessage('Đã ngừng công thức')
+  removeRecipe(@Param('id', ParseIntPipe) id: number) {
+    return this.productionService.softDeleteRecipe(id);
+  }
+
+  @Get('orders')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.ADMIN,
+  )
+  @ApiOperation({
+    summary: 'Danh sách lệnh sản xuất [Manager, Kitchen, Coordinator, Admin]',
+    description:
+      'Lọc `status`: `draft`, `in_progress`, `completed`, `cancelled` (CSV hoặc lặp query). Phân trang `page`/`limit`.',
+  })
+  @ResponseMessage('Success')
+  listOrders(@Query() query: GetProductionOrdersQueryDto) {
+    return this.productionService.listProductionOrders(query);
+  }
+
+  @Get('orders/:id')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+    UserRole.ADMIN,
+  )
+  @ApiOperation({
+    summary: 'Chi tiết lệnh sản xuất — reservation, lineage, giao dịch kho [Manager, Kitchen, Coordinator, Admin]',
+    description:
+      '`inventoryTransactions` gồm các bản ghi `reference_id` = `PRODUCTION:{id}` (consume, output, waste PRODUCTION_LOSS, surplus adjustment…).',
+  })
+  @ResponseMessage('Success')
+  getOrder(@Param('id', ParseUUIDPipe) id: string) {
+    return this.productionService.getProductionOrderById(id);
   }
 
   @Post('orders')

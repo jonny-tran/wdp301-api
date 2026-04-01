@@ -12,6 +12,9 @@ import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { ProductType } from '../product/constants/product-type.enum';
 import { ProductRepository } from '../product/product.repository';
+import { GetProductionOrdersQueryDto } from './dto/get-production-orders-query.dto';
+import { GetRecipesQueryDto } from './dto/get-recipes-query.dto';
+import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { PRODUCTION_SURPLUS_APPROVAL_RATIO } from './production.constants';
 import { ProductionRepository } from './production.repository';
 import {
@@ -32,21 +35,13 @@ export class ProductionService {
     private readonly inventoryRepo: InventoryRepository,
   ) {}
 
-  async createRecipe(input: {
-    productId: number;
-    items: { productId: number; quantity: number }[];
-  }) {
-    const output = await this.productRepo.findById(input.productId);
-    if (!output || !output.isActive) {
-      throw new NotFoundException('Thành phẩm (product) không tồn tại hoặc đã ngừng');
-    }
-    if (output.type !== ProductType.FINISHED_GOOD) {
-      throw new BadRequestException(
-        'Thành phẩm đầu ra phải có loại finished_good',
-      );
-    }
-    for (const line of input.items) {
-      if (line.productId === input.productId) {
+  /** Kiểm tra từng dòng BOM: raw_material, không trùng thành phẩm. */
+  private async assertBomIngredientLines(
+    outputProductId: number,
+    items: { productId: number; quantity: number }[],
+  ) {
+    for (const line of items) {
+      if (line.productId === outputProductId) {
         throw new BadRequestException(
           'Nguyên liệu không được trùng với thành phẩm đầu ra',
         );
@@ -63,6 +58,22 @@ export class ProductionService {
         );
       }
     }
+  }
+
+  async createRecipe(input: {
+    productId: number;
+    items: { productId: number; quantity: number }[];
+  }) {
+    const output = await this.productRepo.findById(input.productId);
+    if (!output || !output.isActive) {
+      throw new NotFoundException('Thành phẩm (product) không tồn tại hoặc đã ngừng');
+    }
+    if (output.type !== ProductType.FINISHED_GOOD) {
+      throw new BadRequestException(
+        'Thành phẩm đầu ra phải có loại finished_good',
+      );
+    }
+    await this.assertBomIngredientLines(input.productId, input.items);
     return this.repo.createRecipe({
       name: output.name,
       productId: input.productId,
@@ -71,6 +82,138 @@ export class ProductionService {
         quantity: String(i.quantity),
       })),
     });
+  }
+
+  async listRecipes(query: GetRecipesQueryDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    return this.repo.listRecipesPaged({
+      page,
+      limit,
+      search: query.search,
+      isActive: query.isActive,
+    });
+  }
+
+  async getRecipeById(id: number) {
+    const recipe = await this.repo.findRecipeDetail(id);
+    if (!recipe) {
+      throw new NotFoundException('Không tìm thấy công thức');
+    }
+    return recipe;
+  }
+
+  async updateRecipe(recipeId: number, dto: UpdateRecipeDto) {
+    if (
+      dto.productId === undefined &&
+      dto.items === undefined &&
+      dto.isActive === undefined
+    ) {
+      throw new BadRequestException('Không có trường nào để cập nhật');
+    }
+
+    const existing = await this.repo.findRecipeDetail(recipeId);
+    if (!existing) {
+      throw new NotFoundException('Không tìm thấy công thức');
+    }
+
+    const structuralChange =
+      dto.productId !== undefined || dto.items !== undefined;
+    if (structuralChange) {
+      const blocking = await this.repo.countBlockingOrdersForRecipe(recipeId);
+      if (blocking > 0) {
+        throw new BadRequestException(
+          'Công thức đang gắn lệnh sản xuất nháp hoặc đang chạy; không thể đổi thành phẩm hoặc định mức.',
+        );
+      }
+    }
+
+    let nextOutputId = existing.outputProductId;
+    let nextName: string | undefined;
+
+    if (dto.productId !== undefined) {
+      const output = await this.productRepo.findById(dto.productId);
+      if (!output?.isActive) {
+        throw new NotFoundException('Thành phẩm không tồn tại hoặc đã ngừng');
+      }
+      if (output.type !== ProductType.FINISHED_GOOD) {
+        throw new BadRequestException(
+          'Thành phẩm đầu ra phải có loại finished_good',
+        );
+      }
+      const willBeActive = dto.isActive ?? existing.isActive;
+      if (willBeActive) {
+        const dup = await this.repo.countOtherActiveRecipesForProduct(
+          dto.productId,
+          recipeId,
+        );
+        if (dup > 0) {
+          throw new BadRequestException(
+            'Đã có công thức active khác cho thành phẩm này; chỉ được giữ một BOM active.',
+          );
+        }
+      }
+      nextOutputId = dto.productId;
+      nextName = output.name;
+    }
+
+    if (dto.isActive === true && !existing.isActive) {
+      const dup = await this.repo.countOtherActiveRecipesForProduct(
+        nextOutputId,
+        recipeId,
+      );
+      if (dup > 0) {
+        throw new BadRequestException(
+          'Đã có công thức active khác cho cùng thành phẩm; không thể bật lại công thức này.',
+        );
+      }
+    }
+
+    const itemsToValidate = dto.items ?? [];
+    if (dto.items !== undefined) {
+      await this.assertBomIngredientLines(nextOutputId, itemsToValidate);
+    }
+
+    const itemsPayload = dto.items
+      ? dto.items.map((i) => ({
+          productId: i.productId,
+          quantity: String(i.quantity),
+        }))
+      : undefined;
+
+    return this.repo.updateRecipe(recipeId, {
+      outputProductId:
+        dto.productId !== undefined ? nextOutputId : undefined,
+      name: dto.productId !== undefined ? nextName : undefined,
+      isActive: dto.isActive,
+      items: itemsPayload,
+    });
+  }
+
+  /** Soft-delete: `is_active = false`. */
+  async softDeleteRecipe(recipeId: number) {
+    return this.updateRecipe(recipeId, { isActive: false });
+  }
+
+  async listProductionOrders(query: GetProductionOrdersQueryDto) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    return this.repo.listProductionOrdersPaged({
+      page,
+      limit,
+      status: query.status,
+    });
+  }
+
+  async getProductionOrderById(id: string) {
+    const order = await this.repo.findProductionOrderDetailById(id);
+    if (!order) {
+      throw new NotFoundException('Không tìm thấy lệnh sản xuất');
+    }
+    const ref = `PRODUCTION:${id}`;
+    const inventoryTransactions =
+      await this.inventoryRepo.listTransactionsByReferenceId(ref);
+    return { ...order, inventoryTransactions };
   }
 
   async createOrder(input: {

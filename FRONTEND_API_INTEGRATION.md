@@ -329,7 +329,13 @@ Chi tiết **partial fulfillment**, **waiting_for_production**, **catalog**: `OR
 
 | Method & path | Roles |
 | ------------- | ----- |
+| `GET /production/recipes` | `manager`, `central_kitchen_staff`, `admin` |
+| `GET /production/recipes/:id` | Cùng nhóm |
 | `POST /production/recipes` | `manager`, `central_kitchen_staff` |
+| `PATCH /production/recipes/:id` | `manager`, `central_kitchen_staff` |
+| `DELETE /production/recipes/:id` | `manager`, `central_kitchen_staff` |
+| `GET /production/orders` | `manager`, `central_kitchen_staff`, `supply_coordinator`, `admin` |
+| `GET /production/orders/:id` | Cùng nhóm |
 | `POST /production/orders` | `central_kitchen_staff`, `manager` |
 | `POST /production/orders/:id/start` | `central_kitchen_staff` |
 | `POST /production/orders/:id/complete` | `central_kitchen_staff` |

@@ -5,7 +5,13 @@
 
 | Method | Path | Ý nghĩa |
 |--------|------|--------|
+| GET | `/production/recipes` | Danh sách BOM (phân trang, `search`, `isActive`) — mỗi dòng có `ingredientCount` |
+| GET | `/production/recipes/:id` | Chi tiết BOM + từng nguyên liệu (`ingredient`) |
 | POST | `/production/recipes` | Tạo BOM |
+| PATCH | `/production/recipes/:id` | Sửa BOM / đổi thành phẩm / `isActive` (không đổi BOM khi còn lệnh draft/in_progress) |
+| DELETE | `/production/recipes/:id` | Ngừng công thức (`is_active = false`) |
+| GET | `/production/orders` | Danh sách lệnh (phân trang, lọc `status`) |
+| GET | `/production/orders/:id` | Chi tiết lệnh: recipe, reservations (lô FEFO), lineage, `inventoryTransactions` (`PRODUCTION:{id}`) |
 | POST | `/production/orders` | Tạo lệnh **draft** (body: `productId` + `plannedQuantity`) |
 | POST | `/production/orders/:id/start` | Kiểm tồn/HSD, tạm giữ NL (FEFO) |
 | POST | `/production/orders/:id/complete` | Ghi nhận sản lượng thực tế, trừ NL, tạo lô TP + lineage |
