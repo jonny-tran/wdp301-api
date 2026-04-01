@@ -468,7 +468,7 @@ export class InventoryRepository {
       where: eq(schema.inventoryTransactions.referenceId, referenceId),
       orderBy: asc(schema.inventoryTransactions.id),
       with: {
-        batch: { with: { product: true } },
+        batch: { with: { product: { with: { baseUnit: true } } } },
       },
     });
   }

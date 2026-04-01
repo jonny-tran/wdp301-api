@@ -18,6 +18,12 @@ import { UpdateRecipeDto } from './dto/update-recipe.dto';
 import { PRODUCTION_SURPLUS_APPROVAL_RATIO } from './production.constants';
 import { ProductionRepository } from './production.repository';
 import {
+  enrichInventoryTransactionsWithProductBaseUnit,
+  enrichProductionOrderDetail,
+  enrichRecipeForResponse,
+  enrichRecipeOutputProductOnly,
+} from './utils/enrich-product-base-unit.util';
+import {
   fromDbDecimal,
   hasMaterialRemaining,
   isLossPositive,
@@ -74,7 +80,7 @@ export class ProductionService {
       );
     }
     await this.assertBomIngredientLines(input.productId, input.items);
-    return this.repo.createRecipe({
+    const created = await this.repo.createRecipe({
       name: output.name,
       productId: input.productId,
       items: input.items.map((i) => ({
@@ -82,6 +88,10 @@ export class ProductionService {
         quantity: String(i.quantity),
       })),
     });
+    if (!created) {
+      throw new NotFoundException('Không tạo được công thức');
+    }
+    return enrichRecipeForResponse(created as Record<string, unknown>);
   }
 
   async listRecipes(query: GetRecipesQueryDto) {
@@ -100,7 +110,7 @@ export class ProductionService {
     if (!recipe) {
       throw new NotFoundException('Không tìm thấy công thức');
     }
-    return recipe;
+    return enrichRecipeForResponse(recipe as Record<string, unknown>);
   }
 
   async updateRecipe(recipeId: number, dto: UpdateRecipeDto) {
@@ -181,13 +191,17 @@ export class ProductionService {
         }))
       : undefined;
 
-    return this.repo.updateRecipe(recipeId, {
+    const updated = await this.repo.updateRecipe(recipeId, {
       outputProductId:
         dto.productId !== undefined ? nextOutputId : undefined,
       name: dto.productId !== undefined ? nextName : undefined,
       isActive: dto.isActive,
       items: itemsPayload,
     });
+    if (!updated) {
+      throw new NotFoundException('Không tìm thấy công thức');
+    }
+    return enrichRecipeForResponse(updated as Record<string, unknown>);
   }
 
   /** Soft-delete: `is_active = false`. */
@@ -198,11 +212,20 @@ export class ProductionService {
   async listProductionOrders(query: GetProductionOrdersQueryDto) {
     const page = Number(query.page) || 1;
     const limit = Number(query.limit) || 10;
-    return this.repo.listProductionOrdersPaged({
+    const { items, meta } = await this.repo.listProductionOrdersPaged({
       page,
       limit,
       status: query.status,
     });
+    return {
+      items: items.map((row) => ({
+        ...row,
+        recipe: row.recipe
+          ? enrichRecipeOutputProductOnly(row.recipe as Record<string, unknown>)
+          : row.recipe,
+      })),
+      meta,
+    };
   }
 
   async getProductionOrderById(id: string) {
@@ -213,7 +236,15 @@ export class ProductionService {
     const ref = `PRODUCTION:${id}`;
     const inventoryTransactions =
       await this.inventoryRepo.listTransactionsByReferenceId(ref);
-    return { ...order, inventoryTransactions };
+    const base = enrichProductionOrderDetail(
+      order as unknown as Record<string, unknown>,
+    );
+    return {
+      ...base,
+      inventoryTransactions: enrichInventoryTransactionsWithProductBaseUnit(
+        inventoryTransactions as unknown as Record<string, unknown>[],
+      ),
+    };
   }
 
   async createOrder(input: {

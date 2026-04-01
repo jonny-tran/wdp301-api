@@ -29,8 +29,10 @@ export class ProductionRepository {
     return this.db.query.recipes.findFirst({
       where: eq(schema.recipes.id, recipeId),
       with: {
-        items: { with: { ingredient: true } },
-        outputProduct: true,
+        items: {
+          with: { ingredient: { with: { baseUnit: true } } },
+        },
+        outputProduct: { with: { baseUnit: true } },
       },
     });
   }
@@ -68,6 +70,10 @@ export class ProductionRepository {
         schema.products,
         eq(schema.recipes.outputProductId, schema.products.id),
       )
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
       .where(whereClause);
 
     const totalItems = Number(countRow?.c ?? 0);
@@ -79,6 +85,7 @@ export class ProductionRepository {
         outputProductId: schema.recipes.outputProductId,
         outputProductName: schema.products.name,
         outputProductSku: schema.products.sku,
+        outputProductBaseUnitName: schema.baseUnits.name,
         isActive: schema.recipes.isActive,
         createdAt: schema.recipes.createdAt,
       })
@@ -86,6 +93,10 @@ export class ProductionRepository {
       .innerJoin(
         schema.products,
         eq(schema.recipes.outputProductId, schema.products.id),
+      )
+      .innerJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
       )
       .where(whereClause)
       .orderBy(desc(schema.recipes.id))
@@ -198,8 +209,10 @@ export class ProductionRepository {
       return tx.query.recipes.findFirst({
         where: eq(schema.recipes.id, recipeId),
         with: {
-          items: { with: { ingredient: true } },
-          outputProduct: true,
+          items: {
+            with: { ingredient: { with: { baseUnit: true } } },
+          },
+          outputProduct: { with: { baseUnit: true } },
         },
       });
     });
@@ -232,7 +245,9 @@ export class ProductionRepository {
     const rows = await this.db.query.productionOrders.findMany({
       ...(whereClause ? { where: whereClause } : {}),
       with: {
-        recipe: { with: { outputProduct: true } },
+        recipe: {
+          with: { outputProduct: { with: { baseUnit: true } } },
+        },
         kitchenStaff: true,
         creator: true,
       },
@@ -259,19 +274,21 @@ export class ProductionRepository {
       with: {
         recipe: {
           with: {
-            outputProduct: true,
-            items: { with: { ingredient: true } },
+            outputProduct: { with: { baseUnit: true } },
+            items: {
+              with: { ingredient: { with: { baseUnit: true } } },
+            },
           },
         },
         reservations: {
           with: {
-            batch: { with: { product: true } },
+            batch: { with: { product: { with: { baseUnit: true } } } },
           },
         },
         batchLineages: {
           with: {
-            parentBatch: { with: { product: true } },
-            childBatch: { with: { product: true } },
+            parentBatch: { with: { product: { with: { baseUnit: true } } } },
+            childBatch: { with: { product: { with: { baseUnit: true } } } },
           },
         },
         creator: true,
@@ -319,7 +336,12 @@ export class ProductionRepository {
 
       return tx.query.recipes.findFirst({
         where: eq(schema.recipes.id, recipe.id),
-        with: { items: true, outputProduct: true },
+        with: {
+          items: {
+            with: { ingredient: { with: { baseUnit: true } } },
+          },
+          outputProduct: { with: { baseUnit: true } },
+        },
       });
     });
   }
