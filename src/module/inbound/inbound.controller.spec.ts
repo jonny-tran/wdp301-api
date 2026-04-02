@@ -12,6 +12,7 @@ describe('InboundController', () => {
       completeReceipt: jest.fn(),
       addReceiptItem: jest.fn(),
       getBatchLabel: jest.fn(),
+      removeDraftReceipt: jest.fn(),
       deleteBatchItem: jest.fn(),
       reprintBatchLabel: jest.fn(),
       getAllReceipts: jest.fn(),
@@ -28,5 +29,13 @@ describe('InboundController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  it('removeDraftReceipt should delegate to service', async () => {
+    inboundService.removeDraftReceipt!.mockResolvedValue({ message: 'Success' });
+    await expect(
+      controller.removeDraftReceipt('rid-1'),
+    ).resolves.toEqual({ message: 'Success' });
+    expect(inboundService.removeDraftReceipt).toHaveBeenCalledWith('rid-1');
   });
 });

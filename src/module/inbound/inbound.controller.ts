@@ -117,6 +117,18 @@ export class InboundController {
     return this.inboundService.getBatchLabel(Number(id));
   }
 
+  @Delete('receipts/:id')
+  @Roles(UserRole.CENTRAL_KITCHEN_STAFF, UserRole.MANAGER)
+  @ApiOperation({
+    summary: 'Xóa hoàn toàn phiếu nhập nháp [Kitchen, Manager]',
+    description:
+      '**Quyền truy cập (Roles):** Central Kitchen Staff, Manager\n\n**Nghiệp vụ:** Chỉ cho phiếu `draft`; xóa toàn bộ dòng và bản ghi phiếu (batch legacy gắn dòng cũng được gỡ).',
+  })
+  @ResponseMessage('Xóa phiếu nhập thành công')
+  async removeDraftReceipt(@Param('id') id: string) {
+    return this.inboundService.removeDraftReceipt(id);
+  }
+
   @Patch('receipts/:id/complete')
   @Roles(UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({

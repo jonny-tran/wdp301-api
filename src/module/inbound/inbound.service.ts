@@ -20,6 +20,7 @@ import { GetInboundProductsDto } from './dto/get-inbound-products.dto';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
 import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import { generateQrData } from './helpers/inbound.util';
+import { ReceiptStatus } from './constants/receipt-status.enum';
 import { InboundRepository } from './inbound.repository';
 
 type Tx = NodePgDatabase<typeof schema>;
@@ -342,6 +343,20 @@ export class InboundService {
         expiryDate: batch.expiryDate,
       },
     };
+  }
+
+  async removeDraftReceipt(id: string) {
+    const receipt = await this.inboundRepo.findReceiptById(id);
+    if (!receipt) {
+      throw new NotFoundException('Không tìm thấy phiếu nhập');
+    }
+    if (receipt.status !== ReceiptStatus.DRAFT) {
+      throw new BadRequestException(
+        'Chỉ có thể xóa phiếu nhập ở trạng thái Nháp',
+      );
+    }
+    await this.inboundRepo.deleteReceipt(id);
+    return { message: 'Success' };
   }
 
   async deleteReceiptLine(receiptId: string, receiptItemId: number) {

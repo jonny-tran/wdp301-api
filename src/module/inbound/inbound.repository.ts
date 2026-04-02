@@ -5,6 +5,7 @@ import {
   eq,
   gte,
   ilike,
+  inArray,
   InferSelectModel,
   lte,
   or,
@@ -461,6 +462,39 @@ export class InboundRepository {
       .where(whereClause);
 
     return { items, total: Number(countRow?.count ?? 0) };
+  }
+
+  /**
+   * Xóa hoàn toàn phiếu nhập và mọi dòng `receipt_items` trong một transaction.
+   * Dòng legacy có `batch_id` → xóa batch tương ứng sau khi gỡ dòng (tránh orphan).
+   */
+  async deleteReceipt(receiptId: string): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const items = await tx
+        .select({ batchId: schema.receiptItems.batchId })
+        .from(schema.receiptItems)
+        .where(eq(schema.receiptItems.receiptId, receiptId));
+
+      const batchIds = [
+        ...new Set(
+          items
+            .map((row) => row.batchId)
+            .filter((id): id is number => id != null),
+        ),
+      ];
+
+      await tx
+        .delete(schema.receiptItems)
+        .where(eq(schema.receiptItems.receiptId, receiptId));
+
+      if (batchIds.length > 0) {
+        await tx
+          .delete(schema.batches)
+          .where(inArray(schema.batches.id, batchIds));
+      }
+
+      await tx.delete(schema.receipts).where(eq(schema.receipts.id, receiptId));
+    });
   }
 
   /** Xóa dòng phiếu nháp; nếu đã có batch (legacy) thì xóa cả batch */

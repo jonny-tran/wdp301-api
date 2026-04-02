@@ -28,6 +28,7 @@ Tài liệu này mô tả **hợp đồng nghiệp vụ và kỹ thuật** sau r
 ## API hữu ích
 
 - `GET /inbound/receipts/:id?omitExpected=true` — ẩn `expectedQuantity` ở response (màn kiểm đếm).
+- `DELETE /inbound/receipts/:id` — xóa **toàn bộ** phiếu chỉ khi `status = draft`; role `central_kitchen_staff` hoặc `manager`. Trong một transaction: xóa mọi `receipt_items`, xóa các `batches` gắn dòng legacy (nếu có), rồi xóa `receipts`.
 - `DELETE /inbound/receipts/:receiptId/items/:itemId` — xóa dòng nháp (có `batch_id` legacy thì xóa luôn batch tạm).
 
 ## Sinh mã lô

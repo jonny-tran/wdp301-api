@@ -11,6 +11,7 @@ import { AddReceiptItemDto } from './dto/add-receipt-item.dto';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
 import { ReprintBatchDto } from './dto/reprint-batch.dto';
 import * as inboundUtils from './helpers/inbound.util';
+import { ReceiptStatus } from './constants/receipt-status.enum';
 import { InboundRepository } from './inbound.repository';
 import { InboundService } from './inbound.service';
 import * as vnTime from '../../common/time/vn-time';
@@ -54,6 +55,7 @@ describe('InboundService', () => {
       findReceiptDetail: jest.fn(),
       findReceiptItemById: jest.fn(),
       deleteReceiptLine: jest.fn(),
+      deleteReceipt: jest.fn(),
       insertBatch: jest.fn(),
       updateReceiptItemBatchLink: jest.fn(),
       lockWarehouseStock: jest.fn(),
@@ -509,6 +511,43 @@ describe('InboundService', () => {
         'rid',
         'u-mgr',
       );
+    });
+  });
+
+  describe('removeDraftReceipt', () => {
+    it('should delete draft receipt via repository', async () => {
+      const id = 'r-del';
+      inboundRepo.findReceiptById.mockResolvedValue({
+        status: ReceiptStatus.DRAFT,
+      } as never);
+      inboundRepo.deleteReceipt.mockResolvedValue(undefined as never);
+
+      const result = await service.removeDraftReceipt(id);
+
+      expect(inboundRepo.findReceiptById).toHaveBeenCalledWith(id);
+      expect(inboundRepo.deleteReceipt).toHaveBeenCalledWith(id);
+      expect(result).toEqual({ message: 'Success' });
+    });
+
+    it('should throw NotFoundException when receipt missing', async () => {
+      inboundRepo.findReceiptById.mockResolvedValue(null as never);
+      await expect(service.removeDraftReceipt('missing')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(inboundRepo.deleteReceipt).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when status is not draft', async () => {
+      inboundRepo.findReceiptById.mockResolvedValue({
+        status: ReceiptStatus.COMPLETED,
+      } as never);
+      await expect(service.removeDraftReceipt('r1')).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.removeDraftReceipt('r1')).rejects.toThrow(
+        'Chỉ có thể xóa phiếu nhập ở trạng thái Nháp',
+      );
+      expect(inboundRepo.deleteReceipt).not.toHaveBeenCalled();
     });
   });
 
