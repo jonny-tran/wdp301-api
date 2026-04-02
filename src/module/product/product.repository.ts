@@ -6,11 +6,12 @@ import {
   desc,
   eq,
   gte,
+  ilike,
   inArray,
   lte,
   or,
   sql,
-  SQL,
+  type SQL,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
@@ -224,7 +225,7 @@ export class ProductRepository {
 
   // --- Batch Methods ---
 
-  async findBatchById(id: number) {
+  private async findBatchDetailFirst(where: SQL) {
     const result = await this.db
       .select({
         id: schema.batches.id,
@@ -242,11 +243,33 @@ export class ProductRepository {
         schema.inventory,
         eq(schema.batches.id, schema.inventory.batchId),
       )
-      .where(eq(schema.batches.id, id))
+      .where(where)
       .limit(1);
 
     if (!result.length) return null;
     return result[0];
+  }
+
+  async findBatchById(id: number) {
+    return this.findBatchDetailFirst(eq(schema.batches.id, id));
+  }
+
+  /**
+   * Chuỗi chỉ gồm chữ số → tra theo id; ngược lại → tra theo batch_code (khớp chính xác).
+   */
+  async findBatchByIdOrKey(key: string) {
+    const trimmed = key.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (/^\d+$/.test(trimmed)) {
+      const id = parseInt(trimmed, 10);
+      if (!Number.isSafeInteger(id) || id < 1) {
+        return null;
+      }
+      return this.findBatchById(id);
+    }
+    return this.findBatchDetailFirst(eq(schema.batches.batchCode, trimmed));
   }
 
   async updateBatch(
@@ -308,6 +331,7 @@ export class ProductRepository {
       page = 1,
       limit = 10,
       search,
+      batchCode,
       productId,
       fromDate,
       toDate,
@@ -333,12 +357,21 @@ export class ProductRepository {
     }
 
     if (search) {
-      const searchCondition = or(
-        sql`${schema.batches.batchCode} ILIKE ${'%' + search + '%'}`,
-        sql`${schema.products.name} ILIKE ${'%' + search + '%'}`,
-      );
-      if (searchCondition) {
-        conditions.push(searchCondition);
+      const term = search.trim();
+      if (term) {
+        conditions.push(
+          or(
+            ilike(schema.batches.batchCode, `%${term}%`),
+            ilike(schema.products.name, `%${term}%`),
+          )!,
+        );
+      }
+    }
+
+    if (batchCode) {
+      const code = batchCode.trim();
+      if (code) {
+        conditions.push(ilike(schema.batches.batchCode, `%${code}%`));
       }
     }
 
@@ -362,6 +395,7 @@ export class ProductRepository {
       .select({
         batches: schema.batches,
         productName: schema.products.name,
+        productSku: schema.products.sku,
       })
       .from(schema.batches)
       .innerJoin(
@@ -392,6 +426,7 @@ export class ProductRepository {
     const items = itemsData.map((row) => ({
       ...row.batches,
       productName: row.productName,
+      productSku: row.productSku,
     }));
 
     // Enrich with currentQuantity

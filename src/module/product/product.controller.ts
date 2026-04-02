@@ -10,7 +10,12 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
 import { ResponseMessage } from '../../common/decorators/response-message.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../auth/dto/create-user.dto';
@@ -66,6 +71,8 @@ export class ProductController {
   @ApiOperation({
     summary:
       'Lấy danh sách lô hàng [Manager, Central Kitchen Staff, Supply Coordinator, Franchise Staff]',
+    description:
+      'Query: `search` (mã lô hoặc tên SP), `batchCode` (chỉ lọc theo mã lô, một phần), `productId`, khoảng HSD, phân trang. Mỗi item có thêm `productName`, `productSku`, `currentQuantity`.',
   })
   @ResponseMessage('Success')
   async findAllBatches(@Query() filter: GetBatchesDto) {
@@ -124,13 +131,19 @@ export class ProductController {
     UserRole.SUPPLY_COORDINATOR,
     UserRole.FRANCHISE_STORE_STAFF,
   )
+  @ApiParam({
+    name: 'id',
+    description:
+      'ID số của lô (ví dụ 42) hoặc mã lô `batch_code` (ví dụ PCC300STFG-20260401-3CAC3C24). Chuỗi chỉ gồm chữ số được hiểu là ID.',
+    example: 42,
+  })
   @ApiOperation({
     summary:
-      'Chi tiết lô hàng [Manager, Central Kitchen Staff, Supply Coordinator, Franchise Staff]',
+      'Chi tiết lô hàng theo ID hoặc mã lô (batch_code) [Manager, Central Kitchen Staff, Supply Coordinator, Franchise Staff]',
   })
   @ResponseMessage('Success')
-  async findOneBatch(@Param('id', ParseIntPipe) id: number) {
-    return await this.productService.getBatch(id);
+  async findOneBatch(@Param('id') idOrBatchCode: string) {
+    return await this.productService.getBatch(idOrBatchCode);
   }
 
   @Patch('batches/:id')

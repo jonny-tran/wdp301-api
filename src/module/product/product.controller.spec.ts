@@ -120,6 +120,29 @@ describe('ProductController', () => {
     });
   });
 
+  describe('findOneBatch', () => {
+    it('should resolve batch by id string and by batch_code', async () => {
+      const byId = { id: 42, batchCode: 'X' };
+      productService.getBatch.mockResolvedValue(byId as never);
+
+      await expect(controller.findOneBatch('42')).resolves.toEqual(byId);
+      expect(productService.getBatch).toHaveBeenCalledWith('42');
+
+      const byCode = {
+        id: 42,
+        batchCode: 'PCC300STFG-20260401-3CAC3C24',
+      };
+      productService.getBatch.mockResolvedValue(byCode as never);
+
+      await expect(
+        controller.findOneBatch('PCC300STFG-20260401-3CAC3C24'),
+      ).resolves.toEqual(byCode);
+      expect(productService.getBatch).toHaveBeenCalledWith(
+        'PCC300STFG-20260401-3CAC3C24',
+      );
+    });
+  });
+
   describe('findAllBatches', () => {
     it('should return batches with pagination metadata', async () => {
       // Arrange

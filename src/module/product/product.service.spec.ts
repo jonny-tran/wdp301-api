@@ -28,6 +28,7 @@ describe('ProductService', () => {
       restore: jest.fn(),
       findAllBatches: jest.fn(),
       findBatchById: jest.fn(),
+      findBatchByIdOrKey: jest.fn(),
       updateBatch: jest.fn(),
       createBatch: jest.fn(),
       findCentralWarehouseId: jest.fn(),
@@ -296,6 +297,37 @@ describe('ProductService', () => {
 
       expect(productRepository.findAll).toHaveBeenCalledWith(filter);
       expect(result.items.length).toBe(1);
+    });
+  });
+
+  describe('getBatch (ID hoặc batch_code)', () => {
+    it('should return batch when key is numeric id', async () => {
+      const row = { id: 42, batchCode: 'X-1' };
+      productRepository.findBatchByIdOrKey.mockResolvedValue(row as never);
+
+      const result = await service.getBatch('42');
+
+      expect(productRepository.findBatchByIdOrKey).toHaveBeenCalledWith('42');
+      expect(result).toEqual(row);
+    });
+
+    it('should return batch when key is batch_code', async () => {
+      const code = 'PCC300STFG-20260401-3CAC3C24';
+      const row = { id: 42, batchCode: code };
+      productRepository.findBatchByIdOrKey.mockResolvedValue(row as never);
+
+      const result = await service.getBatch(code);
+
+      expect(productRepository.findBatchByIdOrKey).toHaveBeenCalledWith(code);
+      expect(result).toEqual(row);
+    });
+
+    it('should throw NotFoundException when batch missing', async () => {
+      productRepository.findBatchByIdOrKey.mockResolvedValue(null);
+
+      await expect(service.getBatch('unknown')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 

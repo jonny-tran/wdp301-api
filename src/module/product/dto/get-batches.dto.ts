@@ -10,6 +10,15 @@ export class GetBatchesDto extends PaginationParamsDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Lọc theo mã lô (batch_code), khớp một phần (không phân biệt hoa thường). Có thể dùng cùng hoặc thay cho `search` khi chỉ cần tìm theo mã lô.',
+    example: 'PCC300STFG-20260401',
+  })
+  @IsOptional()
+  @IsString()
+  batchCode?: string;
   @ApiPropertyOptional({
     description: 'Tìm kiếm sản phẩm theo ID',
   })

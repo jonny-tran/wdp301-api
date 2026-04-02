@@ -100,8 +100,9 @@ export class ProductService {
     return await this.productRepository.findAllBatches(filter);
   }
 
-  async getBatch(id: number) {
-    const batch = await this.productRepository.findBatchById(id);
+  async getBatch(idOrBatchCode: string) {
+    const batch =
+      await this.productRepository.findBatchByIdOrKey(idOrBatchCode);
     if (!batch) {
       throw new NotFoundException('Lô hàng không tồn tại');
     }
