@@ -36,6 +36,22 @@ import { GetOrdersDto } from './dto/get-orders.dto';
 import { InventoryService } from '../inventory/inventory.service';
 import { OrderRepository } from './order.repository';
 
+const FALLBACK_TIMING_HOURS = 24;
+
+function describeConfigHours(
+  raw: string | null,
+  fallback: number,
+): { rawInDb: string | null; effectiveHours: number; usedFallback: boolean } {
+  if (raw == null || String(raw).trim() === '') {
+    return { rawInDb: raw, effectiveHours: fallback, usedFallback: true };
+  }
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n < 0) {
+    return { rawInDb: raw, effectiveHours: fallback, usedFallback: true };
+  }
+  return { rawInDb: raw, effectiveHours: n, usedFallback: false };
+}
+
 //interface
 export interface ShortfallReason {
   reason: string;
@@ -149,17 +165,75 @@ export class OrderService {
       }
     }
 
+    const timingValues = await this.systemConfigService.getValues([
+      'DEFAULT_PREP_TIME_HOURS',
+      'DEFAULT_TRANSIT_TIME_HOURS',
+    ]);
+    const defaultPrepRaw = timingValues['DEFAULT_PREP_TIME_HOURS'];
+    const defaultTransitRaw = timingValues['DEFAULT_TRANSIT_TIME_HOURS'];
+    const defaultPrepMeta = describeConfigHours(
+      defaultPrepRaw,
+      FALLBACK_TIMING_HOURS,
+    );
+    const defaultTransitMeta = describeConfigHours(
+      defaultTransitRaw,
+      FALLBACK_TIMING_HOURS,
+    );
+    const defaultPrepHours = defaultPrepMeta.effectiveHours;
+    const defaultTransitHours = defaultTransitMeta.effectiveHours;
+
+    const perProductPrep = snapshots.map((p) => ({
+      productId: p.id,
+      prepTimeHoursFromProduct: p.prepTimeHours ?? null,
+      effectivePrepHours: p.prepTimeHours ?? defaultPrepHours,
+    }));
     const maxPrep = Math.max(
-      ...snapshots.map((p) => p.prepTimeHours ?? 24),
+      ...perProductPrep.map((row) => row.effectivePrepHours),
       0,
     );
-    const transit = store.transitTimeHours ?? 24;
+    const transitFromStore = store.transitTimeHours ?? null;
+    const transit =
+      store.transitTimeHours ?? defaultTransitHours;
     const earliestInstant = vnNow.add(maxPrep + transit, 'hour');
     const earliestDay = earliestInstant.startOf('day');
     if (effectiveDeliveryVn.startOf('day').isBefore(earliestDay)) {
-      throw new BadRequestException(
-        `Ngày giao hàng sớm nhất theo hàng sơ chế và vận chuyển là ${earliestDay.tz(VN_TZ).format('YYYY-MM-DD')}.`,
-      );
+      throw new BadRequestException({
+        code: 'DELIVERY_DATE_TOO_EARLY',
+        message:
+          `Ngày giao hàng không đủ thời gian sơ chế và vận chuyển. ` +
+          `Ngày giao sớm nhất hợp lệ là ${earliestDay.tz(VN_TZ).format('YYYY-MM-DD')} ` +
+          `(đang yêu cầu ${effectiveDeliveryVn.tz(VN_TZ).format('YYYY-MM-DD')}). ` +
+          `Thời gian tính: max(sơ chế từng SP hoặc DEFAULT_PREP_TIME_HOURS) = ${maxPrep}h, ` +
+          `vận chuyển (cửa hàng hoặc DEFAULT_TRANSIT_TIME_HOURS) = ${transit}h, ` +
+          `tổng buffer từ "bây giờ" ≈ ${maxPrep + transit}h. ` +
+          `Nếu đã qua giờ chốt đơn (ORDER_CLOSING_TIME), hệ thống có thể đẩy ngày giao tối thiểu sang ngày hôm sau — vẫn phải thỏa ngày sớm nhất ở trên.`,
+        earliestDeliveryDate: earliestDay.tz(VN_TZ).format('YYYY-MM-DD'),
+        requestedDeliveryDate: effectiveDeliveryVn.tz(VN_TZ).format('YYYY-MM-DD'),
+        appliedConfig: {
+          DEFAULT_PREP_TIME_HOURS: {
+            rawInDb: defaultPrepMeta.rawInDb,
+            effectiveHours: defaultPrepMeta.effectiveHours,
+            usedFallback: defaultPrepMeta.usedFallback,
+          },
+          DEFAULT_TRANSIT_TIME_HOURS: {
+            rawInDb: defaultTransitMeta.rawInDb,
+            effectiveHours: defaultTransitMeta.effectiveHours,
+            usedFallback: defaultTransitMeta.usedFallback,
+          },
+          ORDER_CLOSING_TIME: {
+            rawInDb: closingStr,
+            pastClosingApplied: pastClosing,
+          },
+        },
+        breakdown: {
+          perProductPrepHours: perProductPrep,
+          maxPrepHours: maxPrep,
+          storeTransitHours: transitFromStore,
+          transitUsedDefaultFromConfig: transitFromStore == null,
+          effectiveTransitHours: transit,
+          totalLeadTimeHoursFromNow: maxPrep + transit,
+        },
+      });
     }
 
     const linePayload = items.map((item) => {

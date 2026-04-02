@@ -64,6 +64,10 @@ describe('OrderService', () => {
 
     const mockSystemConfigServiceObj = {
       getConfigValue: jest.fn().mockResolvedValue(null), // Default: no closing time check
+      getValues: jest.fn().mockResolvedValue({
+        DEFAULT_PREP_TIME_HOURS: null,
+        DEFAULT_TRANSIT_TIME_HOURS: null,
+      }),
       findAll: jest.fn(),
       refreshCache: jest.fn(),
       updateConfig: jest.fn(),

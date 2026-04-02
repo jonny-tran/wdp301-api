@@ -38,6 +38,36 @@ export class SystemConfigService {
     return null;
   }
 
+  /**
+   * Lấy nhiều giá trị cấu hình (ưu tiên cache). Khóa không tồn tại trả về null.
+   */
+  async getValues(keys: string[]): Promise<Record<string, string | null>> {
+    const result: Record<string, string | null> = {};
+    const missing: string[] = [];
+
+    for (const key of keys) {
+      if (this.configCache.has(key)) {
+        result[key] = this.configCache.get(key) ?? null;
+      } else {
+        missing.push(key);
+      }
+    }
+
+    await Promise.all(
+      missing.map(async (key) => {
+        const config = await this.systemConfigRepository.findByKey(key);
+        if (config) {
+          this.configCache.set(key, config.value);
+          result[key] = config.value;
+        } else {
+          result[key] = null;
+        }
+      }),
+    );
+
+    return result;
+  }
+
   async updateConfig(key: string, data: UpdateSystemConfigDto) {
     const existingConfig = await this.systemConfigRepository.findByKey(key);
 

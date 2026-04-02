@@ -28,6 +28,18 @@ async function runSeed() {
           'Sau giờ này, Store Staff không được phép tạo đơn hàng mới cho ngày hôm sau.',
       },
       {
+        key: 'DEFAULT_PREP_TIME_HOURS',
+        value: '24',
+        description:
+          'Giờ sơ chế mặc định khi sản phẩm chưa có prepTimeHours (tính ngày giao sớm nhất khi tạo đơn).',
+      },
+      {
+        key: 'DEFAULT_TRANSIT_TIME_HOURS',
+        value: '24',
+        description:
+          'Giờ vận chuyển mặc định khi cửa hàng chưa có transitTimeHours (tính ngày giao sớm nhất khi tạo đơn).',
+      },
+      {
         key: 'MIN_STOCK_ALERT_THRESHOLD',
         value: '20',
         description:

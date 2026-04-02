@@ -29,6 +29,36 @@ describe('SystemConfigService', () => {
     jest.clearAllMocks();
   });
 
+  describe('getValues', () => {
+    it('should return values from cache when keys are cached', async () => {
+      mockRepository.findAll.mockResolvedValue([
+        { key: 'A', value: '1' },
+        { key: 'B', value: '2' },
+      ] as never[]);
+
+      const fresh = new SystemConfigService(
+        mockRepository as unknown as SystemConfigRepository,
+      );
+      await fresh.refreshCache();
+
+      const result = await fresh.getValues(['A', 'B']);
+      expect(result).toEqual({ A: '1', B: '2' });
+      expect(mockRepository.findByKey).not.toHaveBeenCalled();
+    });
+
+    it('should fetch missing keys from repository', async () => {
+      mockRepository.findByKey.mockImplementation(async (key: string) => {
+        if (key === 'X') return { key: 'X', value: '99' };
+        return null;
+      });
+
+      const result = await service.getValues(['X', 'Y']);
+
+      expect(result.X).toBe('99');
+      expect(result.Y).toBeNull();
+    });
+  });
+
   describe('updateConfig', () => {
     it('should create new config if it does not exist', async () => {
       mockRepository.findByKey.mockResolvedValue(null);
