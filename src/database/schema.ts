@@ -56,7 +56,9 @@ export const orderStatusEnum = pgEnum('order_status', [
 ]);
 export const shipmentStatusEnum = pgEnum('shipment_status', [
   'preparing',
+  'consolidated',
   'in_transit',
+  'departed',
   'delivered',
   'completed',
   'cancelled',
@@ -76,6 +78,32 @@ export const transactionTypeEnum = pgEnum('transaction_type', [
   'adjust_loss',
   /** Điều chỉnh tăng (kiểm kê dư) */
   'adjust_surplus',
+  /** Xuất kho điều chuyển sang cửa hàng khác */
+  'transfer_out',
+  /** Nhập kho từ điều chuyển nội bộ */
+  'transfer_in',
+]);
+
+/** Lý do tiêu hủy / ghi nhận trên inventory_transactions.waste_reason */
+export const wasteReasonEnum = pgEnum('waste_reason', [
+  'expired',
+  'damaged',
+  'quality_fail',
+  'production_loss',
+]);
+
+export const vehicleStatusEnum = pgEnum('vehicle_status', [
+  'available',
+  'in_transit',
+  'maintenance',
+]);
+
+export const transferOrderStatusEnum = pgEnum('transfer_order_status', [
+  'draft',
+  'pending',
+  'in_transit',
+  'completed',
+  'cancelled',
 ]);
 export const claimStatusEnum = pgEnum('claim_status', [
   'pending',
@@ -165,6 +193,36 @@ export const otpCodes = pgTable('otp_codes', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+/** Tuyến giao hàng / logistics (gom manifest theo route) */
+export const routes = pgTable('routes', {
+  id: serial('id').primaryKey(),
+  routeName: text('route_name').notNull(),
+  distanceKm: decimal('distance_km', { precision: 10, scale: 2 }).notNull(),
+  estimatedHours: decimal('estimated_hours', {
+    precision: 10,
+    scale: 2,
+  }).notNull(),
+  baseTransportCost: decimal('base_transport_cost', {
+    precision: 12,
+    scale: 2,
+  }).notNull(),
+});
+
+/** Đội xe phục vụ manifest / shipment */
+export const vehicles = pgTable('vehicles', {
+  id: serial('id').primaryKey(),
+  licensePlate: text('license_plate').notNull().unique(),
+  payloadCapacity: decimal('payload_capacity', {
+    precision: 12,
+    scale: 3,
+  }).notNull(),
+  fuelRatePerKm: decimal('fuel_rate_per_km', {
+    precision: 12,
+    scale: 4,
+  }).notNull(),
+  status: vehicleStatusEnum('status').default('available').notNull(),
+});
+
 export const stores = pgTable('stores', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: text('name').notNull(),
@@ -172,6 +230,8 @@ export const stores = pgTable('stores', {
   managerName: text('manager_name'),
   phone: text('phone'),
   isActive: boolean('is_active').default(true).notNull(),
+  /** Cửa hàng thuộc tuyến logistics (gom đơn / lập lịch xe) */
+  routeId: integer('route_id').references(() => routes.id),
   /** Tổng sức chứa tối đa (đơn vị cùng khối với quantity đặt/tồn). null = không giới hạn trong API */
   maxStorageCapacity: decimal('max_storage_capacity', {
     precision: 12,
@@ -271,6 +331,11 @@ export const batches = pgTable(
     })
       .default('0')
       .notNull(),
+    /** Giá vốn đơn vị tại thời điểm nhập / sản xuất (snapshot báo cáo tài chính) */
+    unitCostAtImport: decimal('unit_cost_at_import', {
+      precision: 12,
+      scale: 4,
+    }),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },
@@ -469,6 +534,12 @@ export const inventoryTransactions = pgTable(
       precision: 10,
       scale: 2,
     }).notNull(),
+    wasteReason: wasteReasonEnum('waste_reason'),
+    /** quantity × giá vốn tại thời điểm ghi nhận (tiêu hủy / điều chỉnh) */
+    totalValueSnapshot: decimal('total_value_snapshot', {
+      precision: 14,
+      scale: 4,
+    }),
     referenceId: text('reference_id'),
     reason: text('reason'),
     evidenceImage: text('evidence_image'),
@@ -565,6 +636,11 @@ export const orderItems = pgTable('order_items', {
   /** Snapshot tại thời điểm đặt — không đổi khi master product thay đổi */
   unitSnapshot: varchar('unit_snapshot', { length: 100 }),
   priceSnapshot: decimal('price_snapshot', { precision: 12, scale: 2 }),
+  /** Giá bán cho franchise tại thời điểm đặt đơn (snapshot tài chính) */
+  unitPriceAtOrder: decimal('unit_price_at_order', {
+    precision: 12,
+    scale: 4,
+  }),
   packagingInfoSnapshot: text('packaging_info_snapshot'),
 });
 
@@ -583,9 +659,18 @@ export const shipments = pgTable(
     toWarehouseId: integer('to_warehouse_id')
       .references(() => warehouses.id)
       .notNull(),
+    vehicleId: integer('vehicle_id').references(() => vehicles.id),
+    routeId: integer('route_id').references(() => routes.id),
     status: shipmentStatusEnum('status').default('preparing').notNull(),
     shipDate: timestamp('ship_date'),
     consolidationGroupId: uuid('consolidation_group_id'),
+    /** Chi phí vận chuyển thực tế chuyến (đối soát lãi/lỗ manifest) */
+    actualTransportCost: decimal('actual_transport_cost', {
+      precision: 12,
+      scale: 2,
+    }),
+    /** Tổng khối lượng chuyến (kiểm soát tải trọng xe; có thể đồng bộ với total_weight_kg) */
+    totalWeight: decimal('total_weight', { precision: 12, scale: 3 }),
     totalWeightKg: decimal('total_weight_kg', { precision: 12, scale: 3 }),
     totalVolumeM3: decimal('total_volume_m3', { precision: 12, scale: 4 }),
     overloadWarning: boolean('overload_warning').default(false).notNull(),
@@ -657,6 +742,27 @@ export const shipmentItems = pgTable('shipment_items', {
   /** Lô thực tế sau khi quét xác nhận */
   actualBatchId: integer('actual_batch_id').references(() => batches.id),
   quantity: decimal('quantity', { precision: 10, scale: 2 }).notNull(),
+  /** Giá đơn vị tại thời điểm xuất kho / giao (snapshot tài chính) */
+  unitPriceAtShipment: decimal('unit_price_at_shipment', {
+    precision: 12,
+    scale: 4,
+  }),
+});
+
+/** Điều chuyển tồn liên cửa hàng */
+export const transferOrders = pgTable('transfer_orders', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  fromStoreId: uuid('from_store_id')
+    .references(() => stores.id)
+    .notNull(),
+  toStoreId: uuid('to_store_id')
+    .references(() => stores.id)
+    .notNull(),
+  createdBy: uuid('created_by')
+    .references(() => users.id)
+    .notNull(),
+  status: transferOrderStatusEnum('status').default('draft').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
 });
 
 /** Một shipment có thể gộp nhiều đơn (consolidation) */
@@ -724,6 +830,7 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   store: one(stores, { fields: [users.storeId], references: [stores.id] }),
   refreshTokens: many(refreshTokens),
   otpCodes: many(otpCodes),
+  createdTransferOrders: many(transferOrders),
   createdProductionOrders: many(productionOrders, {
     relationName: 'productionOrderCreator',
   }),
@@ -732,10 +839,26 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   }),
 }));
 
-export const storeRelations = relations(stores, ({ many }) => ({
+export const routesRelations = relations(routes, ({ many }) => ({
+  stores: many(stores),
+  shipments: many(shipments),
+}));
+
+export const vehiclesRelations = relations(vehicles, ({ many }) => ({
+  shipments: many(shipments),
+}));
+
+export const storeRelations = relations(stores, ({ one, many }) => ({
+  route: one(routes, { fields: [stores.routeId], references: [routes.id] }),
   warehouses: many(warehouses),
   orders: many(orders),
   users: many(users),
+  transferOrdersFrom: many(transferOrders, {
+    relationName: 'transferOrderFromStore',
+  }),
+  transferOrdersTo: many(transferOrders, {
+    relationName: 'transferOrderToStore',
+  }),
 }));
 
 export const warehouseRelations = relations(warehouses, ({ one, many }) => ({
@@ -822,9 +945,34 @@ export const shipmentRelations = relations(shipments, ({ one, many }) => ({
     fields: [shipments.manifestId],
     references: [manifests.id],
   }),
+  vehicle: one(vehicles, {
+    fields: [shipments.vehicleId],
+    references: [vehicles.id],
+  }),
+  route: one(routes, {
+    fields: [shipments.routeId],
+    references: [routes.id],
+  }),
   items: many(shipmentItems),
   claims: many(claims),
   orderLinks: many(shipmentOrders),
+}));
+
+export const transferOrderRelations = relations(transferOrders, ({ one }) => ({
+  fromStore: one(stores, {
+    fields: [transferOrders.fromStoreId],
+    references: [stores.id],
+    relationName: 'transferOrderFromStore',
+  }),
+  toStore: one(stores, {
+    fields: [transferOrders.toStoreId],
+    references: [stores.id],
+    relationName: 'transferOrderToStore',
+  }),
+  creator: one(users, {
+    fields: [transferOrders.createdBy],
+    references: [users.id],
+  }),
 }));
 
 export const shipmentOrderLinkRelations = relations(

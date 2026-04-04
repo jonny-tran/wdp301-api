@@ -218,6 +218,13 @@
       "when": 1775066627060,
       "tag": "0031_keen_young_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1775316222070,
+      "tag": "0032_logistics_manifest_finance_waste",
+      "breakpoints": true
     }
   ]
 }

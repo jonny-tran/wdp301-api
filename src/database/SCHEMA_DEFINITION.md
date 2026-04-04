@@ -61,12 +61,16 @@ Each table below lists: **Enum name** (PostgreSQL type), **Value**, and **Busine
 | Value | Business meaning |
 |-------|------------------|
 | `preparing` | Shipment created; picking / staging / loading not finished. |
+| `consolidated` | Orders grouped into a manifest leg; ready for dispatch planning / load confirmation. |
 | `in_transit` | Vehicle leg started; goods moving to destination warehouse. |
+| `departed` | Trip departed (aligned with manifest-style accountability); use with logistics timestamps as needed. |
 | `delivered` | Arrival acknowledged at destination (handover point). |
 | `completed` | Shipment fully closed (quantities, documents, optional claim window handled per policy). |
 | `cancelled` | Shipment voided; inventory and order links must be reconciled in application logic. |
 
 ### 1.6 `transaction_type` (`inventory_transactions`)
+
+> **Code:** Drizzle export `transactionTypeEnum` (PostgreSQL `transaction_type`).
 
 | Value | Business meaning |
 |-------|------------------|
@@ -80,6 +84,17 @@ Each table below lists: **Enum name** (PostgreSQL type), **Value**, and **Busine
 | `release` | Undo reservation on cancel/error: **reserved ↓, available ↑**. |
 | `adjust_loss` | Approved shrinkage (theft, unrecorded loss). |
 | `adjust_surplus` | Approved surplus (cycle count gain). |
+| `transfer_out` | Inter-store transfer: stock leaves source store warehouse. |
+| `transfer_in` | Inter-store transfer: stock enters destination store warehouse. |
+
+### 1.6a `waste_reason` (`inventory_transactions.waste_reason`)
+
+| Value | Business meaning |
+|-------|------------------|
+| `expired` | Past usable life / policy. |
+| `damaged` | Physical damage; not saleable. |
+| `quality_fail` | QC failure. |
+| `production_loss` | Yield loss during production. |
 
 ### 1.7 `claim_status`
 
@@ -153,6 +168,24 @@ Each table below lists: **Enum name** (PostgreSQL type), **Value**, and **Busine
 > **Rule**  
 > API catalog đặt hàng (`GET /orders/catalog`) luôn lọc `type IN ('finished_good','resell_product')`. Quản trị dùng `GET /products` với lọc `type` tùy chọn.
 
+### 1.15 `vehicle_status`
+
+| Value | Business meaning |
+|-------|------------------|
+| `available` | Có thể gán cho manifest / shipment. |
+| `in_transit` | Đang chạy chuyến. |
+| `maintenance` | Bảo trì; không gán chuyến. |
+
+### 1.16 `transfer_order_status`
+
+| Value | Business meaning |
+|-------|------------------|
+| `draft` | Khởi tạo; chưa thực hiện điều chuyển. |
+| `pending` | Chờ duyệt / xử lý (theo quy trình ứng dụng). |
+| `in_transit` | Hàng đang trên đường giữa hai cửa hàng. |
+| `completed` | Điều chuyển hoàn tất, tồn đã cập nhật. |
+| `cancelled` | Hủy lệnh điều chuyển. |
+
 ---
 
 ## 2. Core Entities (Tables)
@@ -179,6 +212,7 @@ Batches are the **atomic traceability unit** for a product: one manufactured lot
 | `physical_quantity` | Total on-hand **on the batch aggregate** (synced from Σ `inventory.quantity` for that batch)—**physical = available + reserved** at batch level. |
 | `available_quantity` | Quantity not reserved; can be allocated to new orders/production. |
 | `reserved_quantity` | Quantity already committed (orders, production, etc.). |
+| `unit_cost_at_import` | **Snapshot** đơn giá vốn tại nhập / sản xuất; dùng cho báo cáo và `total_value_snapshot` trên giao dịch tồn. |
 
 > **Note**  
 > Authoritative per-location stock is **`inventory`** (`warehouse_id` + `batch_id`). Batch-level quantities are **denormalized aggregates** for reporting and fast checks; they must stay consistent with inventory lines.
@@ -208,6 +242,29 @@ Franchise **store demand** with explicit approval and consolidation semantics.
 | `quantity_requested` | What the store asked for. |
 | `quantity_approved` | What supply commits to ship; may be **less than requested** (partial approval) without deleting the line—supports **no “stuck debt” order** semantics when stock is insufficient. |
 | `unit_snapshot`, `price_snapshot`, `packaging_info_snapshot` | Immutable commercial and UoM context at order time; master product changes do not rewrite history. |
+| `unit_price_at_order` | **Snapshot** giá bán cho franchise tại thời điểm đặt (bổ sung cho báo cáo tài chính; có thể đồng bộ với `price_snapshot` theo policy). |
+
+### 2.2a `routes` & `vehicles` (logistics)
+
+**`routes`** — tuyến giao hàng (khoảng cách, thời gian, chi phí cơ sở).
+
+| Field | Logic |
+|-------|--------|
+| `route_name` | Tên hiển thị / mã tuyến. |
+| `distance_km` | Khoảng cách tham chiếu (decimal). |
+| `estimated_hours` | Thời gian chạy ước tính (decimal). |
+| `base_transport_cost` | Chi phí vận chuyển cơ sở theo tuyến (decimal). |
+
+**`vehicles`** — xe tải phục vụ manifest.
+
+| Field | Logic |
+|-------|--------|
+| `license_plate` | Biển số; **unique**. |
+| `payload_capacity` | Tải trọng (kg, decimal). |
+| `fuel_rate_per_km` | Hệ số nhiên liệu / km (decimal). |
+| `status` | `vehicle_status` (available / in_transit / maintenance). |
+
+**`stores.route_id`** — Optional FK tới `routes`: cửa hàng thuộc tuyến nào để gom đơn và lập lịch.
 
 ### 2.3 `shipments`, `shipment_items`, `shipment_orders`
 
@@ -219,10 +276,17 @@ Physical **movement** from `from_warehouse_id` to `to_warehouse_id`, optionally 
 |-------|--------|
 | `order_id` | Primary order link (legacy/single-order path). |
 | `manifest_id` | Groups many shipments into one vehicle trip (wave / route). |
+| `vehicle_id` | FK `vehicles` — xe thực hiện chuyến (manifest). |
+| `route_id` | FK `routes` — tuyến gán cho chuyến. |
 | `status` | Operational leg (§1.5). |
 | `consolidation_group_id` | Aligns with order consolidation. |
+| `actual_transport_cost` | Chi phí vận chuyển thực tế chuyến (decimal) — đối soát lãi/lỗ. |
+| `total_weight` | Tổng khối lượng chuyến (decimal); kiểm soát tải trọng (song song `total_weight_kg` nếu cần đơn vị cụ thể). |
 | `total_weight_kg`, `total_volume_m3`, `overload_warning` | Capacity checks for transport planning. |
 | `delivered_at` | Proof of arrival timestamp. |
+
+> **Manifest**  
+> Luồng gom đơn: `manifests` + `shipment_orders` + `orders`; `shipments` vẫn là thực thể chuyến/chặng gắn `manifest_id`, `vehicle_id`, `route_id`.
 
 **`shipment_items`**
 
@@ -232,12 +296,24 @@ Physical **movement** from `from_warehouse_id` to `to_warehouse_id`, optionally 
 | `suggested_batch_id` | **FEFO/system-proposed** batch; picker should scan this unless exception (damage) is recorded. |
 | `actual_batch_id` | **Scan-confirmed** batch after pick; enables discrepancy detection vs suggestion. |
 | `quantity` | Shipped quantity for that batch line. |
+| `unit_price_at_shipment` | **Snapshot** đơn giá tại xuất kho / giao (báo cáo tài chính). |
 
 **`shipment_orders`**
 
 | Field | Logic |
 |-------|--------|
 | `(shipment_id, order_id)` | Many-to-many: **one shipment can consolidate multiple orders**. |
+
+### 2.3a `transfer_orders`
+
+Điều chuyển tồn **giữa hai cửa hàng** (workflow do tầng service triển khai).
+
+| Field | Logic |
+|-------|--------|
+| `from_store_id`, `to_store_id` | Cửa hàng nguồn / đích. |
+| `created_by` | Người tạo lệnh. |
+| `status` | `transfer_order_status` (§1.16). |
+| `created_at` | Thời điểm tạo. |
 
 ### 2.4 `inventory_transactions`
 
@@ -247,6 +323,8 @@ Append-only style **ledger** of quantity changes per `warehouse_id` + `batch_id`
 |-------|--------|
 | `type` | See §1.6; encodes economic meaning of the movement. |
 | `quantity_change` | Signed delta applied to inventory (convention defined in application services). |
+| `waste_reason` | Khi `type = waste` (hoặc báo cáo tiêu hủy): `waste_reason` enum (§1.6a). |
+| `total_value_snapshot` | **quantity × giá vốn** tại thời điểm ghi (decimal); hỗ trợ báo cáo lỗ tiêu hủy / điều chỉnh. |
 | `reference_id` | Correlation to orders, shipments, receipts, production IDs, etc. |
 | `reason`, `evidence_image` | Audit for adjustments, waste, and claims-related corrections. |
 | `created_by` | Accountability. |
@@ -382,6 +460,9 @@ shipment_items  ──►  physical truth at dispatch (per batch)
 | `order_status` | `orderStatusEnum` |
 | `shipment_status` | `shipmentStatusEnum` |
 | `transaction_type` | `transactionTypeEnum` |
+| `waste_reason` | `wasteReasonEnum` |
+| `vehicle_status` | `vehicleStatusEnum` |
+| `transfer_order_status` | `transferOrderStatusEnum` |
 | `claim_status` | `claimStatusEnum` |
 | `receipt_status` | `receiptStatusEnum` |
 | `batch_status` | `batchStatusEnum` |
