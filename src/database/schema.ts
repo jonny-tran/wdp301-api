@@ -609,6 +609,8 @@ export const orders = pgTable(
     pendingPriceConfirm: boolean('pending_price_confirm')
       .default(false)
       .notNull(),
+    /** Phiếu giao (shipment) chính gắn đơn — đồng bộ khi duyệt / gom manifest */
+    shipmentId: uuid('shipment_id').references(() => shipments.id),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
   },
@@ -902,7 +904,10 @@ export const batchRelations = relations(batches, ({ one, many }) => ({
 export const orderRelations = relations(orders, ({ one, many }) => ({
   store: one(stores, { fields: [orders.storeId], references: [stores.id] }),
   items: many(orderItems),
-  shipment: one(shipments),
+  shipment: one(shipments, {
+    fields: [orders.shipmentId],
+    references: [shipments.id],
+  }),
   shipmentOrderLinks: many(shipmentOrders),
 }));
 

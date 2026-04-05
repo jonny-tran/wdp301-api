@@ -1,12 +1,15 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { eq, sql } from 'drizzle-orm';
+import { Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
+import { eq, InferSelectModel, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { PaginationParamsDto } from '../../common/dto/pagination-params.dto';
 import { FilterMap, paginate } from '../../common/utils/paginate.util';
+import { firstInsertedRow } from '../../common/drizzle/query-helpers';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { ClaimStatus } from './constants/claim-status.enum';
 import { GetClaimsDto } from './dto/get-claims.dto';
+
+type ClaimRow = InferSelectModel<typeof schema.claims>;
 
 @Injectable()
 export class ClaimRepository {
@@ -79,13 +82,6 @@ export class ClaimRepository {
   async getShipmentForValidation(shipmentId: string) {
     return this.db.query.shipments.findFirst({
       where: eq(schema.shipments.id, shipmentId),
-      columns: {
-        id: true,
-        status: true,
-        updatedAt: true,
-        toWarehouseId: true,
-        orderId: true,
-      },
       with: {
         order: {
           columns: {
@@ -96,13 +92,24 @@ export class ClaimRepository {
     });
   }
 
+  /** Tránh nested relation typing; dùng cho kiểm tra quyền cửa hàng. */
+  async getOrderStoreIdByShipmentId(shipmentId: string) {
+    const rows = await this.db
+      .select({ storeId: schema.orders.storeId })
+      .from(schema.shipments)
+      .innerJoin(schema.orders, eq(schema.shipments.orderId, schema.orders.id))
+      .where(eq(schema.shipments.id, shipmentId))
+      .limit(1);
+    return rows[0]?.storeId ?? null;
+  }
+
   async createClaim(
     shipmentId: string,
     createdBy: string,
     tx?: NodePgDatabase<typeof schema>,
-  ) {
+  ): Promise<ClaimRow> {
     const database = tx || this.db;
-    const [claim] = await database
+    const inserted = await database
       .insert(schema.claims)
       .values({
         shipmentId,
@@ -110,6 +117,10 @@ export class ClaimRepository {
         status: this.claimStatusEnum.PENDING,
       })
       .returning();
+    const claim = firstInsertedRow<ClaimRow>(inserted);
+    if (!claim) {
+      throw new InternalServerErrorException('Không tạo được bản ghi claim');
+    }
     return claim;
   }
 
@@ -169,9 +180,9 @@ export class ClaimRepository {
     id: string,
     status: ClaimStatus.APPROVED | ClaimStatus.REJECTED,
     tx?: NodePgDatabase<typeof schema>,
-  ) {
+  ): Promise<ClaimRow | undefined> {
     const database = tx || this.db;
-    const [updated] = await database
+    const inserted = await database
       .update(schema.claims)
       .set({
         status,
@@ -179,7 +190,7 @@ export class ClaimRepository {
       })
       .where(eq(schema.claims.id, id))
       .returning();
-    return updated;
+    return firstInsertedRow<ClaimRow>(inserted);
   }
 
   // --- API : Analytics Discrepancy & Bottleneck ---

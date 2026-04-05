@@ -25,8 +25,9 @@ export class ProductionRepository {
     private readonly db: Db,
   ) {}
 
-  async findRecipeWithItems(recipeId: number) {
-    return this.db.query.recipes.findFirst({
+  async findRecipeWithItems(recipeId: number, tx?: Db) {
+    const runner = tx ?? this.db;
+    return runner.query.recipes.findFirst({
       where: eq(schema.recipes.id, recipeId),
       with: {
         items: {
@@ -381,7 +382,6 @@ export class ProductionRepository {
     return tx.query.productionOrders.findFirst({
       where: eq(schema.productionOrders.id, id),
       with: {
-        recipe: { with: { items: true } },
         reservations: { with: { batch: true } },
       },
     });

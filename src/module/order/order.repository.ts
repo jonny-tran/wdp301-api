@@ -431,7 +431,7 @@ export class OrderRepository {
   ) {
     const { storeId, deliveryDate, items, consolidationGroupId, totalAmount } =
       params;
-    const [newOrder] = await tx
+    const inserted = await tx
       .insert(schema.orders)
       .values({
         storeId: storeId,
@@ -442,6 +442,7 @@ export class OrderRepository {
       })
       .returning();
 
+    const newOrder = Array.isArray(inserted) ? inserted[0] : undefined;
     if (!newOrder) {
       throw new Error('Không thể tạo đơn hàng');
     }

@@ -79,6 +79,12 @@ describe('ProductionService', () => {
     inboundRepo = module.get(InboundRepository);
     productRepo = module.get(ProductRepository);
     inventoryRepo = module.get(InventoryRepository);
+
+    repo.findRecipeWithItems.mockResolvedValue({
+      id: 1,
+      outputProductId: 99,
+      items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
+    } as never);
   });
 
   afterEach(() => {
@@ -155,10 +161,7 @@ describe('ProductionService', () => {
         status: 'draft',
         warehouseId: 1,
         plannedQuantity: '0',
-        recipe: {
-          outputProductId: 99,
-          items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
-        },
+        recipeId: 1,
       } as never);
       productRepo.findById.mockResolvedValue({
         id: 99,
@@ -178,10 +181,7 @@ describe('ProductionService', () => {
         status: 'draft',
         warehouseId: 1,
         plannedQuantity: '10',
-        recipe: {
-          outputProductId: 99,
-          items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
-        },
+        recipeId: 1,
       } as never);
       productRepo.findById.mockResolvedValue({
         id: 99,
@@ -215,10 +215,7 @@ describe('ProductionService', () => {
         status: 'draft',
         warehouseId: 1,
         plannedQuantity: '10',
-        recipe: {
-          outputProductId: 99,
-          items: [{ ingredientProductId: 5, quantityPerOutput: '2' }],
-        },
+        recipeId: 1,
       } as never);
       productRepo.findById.mockResolvedValue({
         id: 99,
@@ -250,12 +247,20 @@ describe('ProductionService', () => {
   describe('completeProduction', () => {
     const orderId = 'order-1';
 
+    beforeEach(() => {
+      repo.findRecipeWithItems.mockResolvedValue({
+        id: 1,
+        outputProductId: 100,
+        items: [{ ingredientProductId: 1, quantityPerOutput: '1' }],
+      } as never);
+    });
+
     const baseOrderMock = {
       id: orderId,
       status: 'in_progress',
       warehouseId: 7,
       plannedQuantity: '4',
-      recipe: { outputProductId: 100 },
+      recipeId: 1,
       reservations: [
         {
           batchId: 11,

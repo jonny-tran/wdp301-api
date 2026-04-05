@@ -312,7 +312,7 @@ export class ProductionService {
       if (order.status !== 'draft') {
         throw new BadRequestException('Lệnh không ở trạng thái nháp');
       }
-      const recipe = order.recipe;
+      const recipe = await this.repo.findRecipeWithItems(order.recipeId, tx);
       if (!recipe?.items?.length) {
         throw new BadRequestException('Công thức không có nguyên liệu');
       }
@@ -459,7 +459,10 @@ export class ProductionService {
         );
       }
 
-      const recipe = order.recipe;
+      const recipe = await this.repo.findRecipeWithItems(order.recipeId, tx);
+      if (!recipe) {
+        throw new NotFoundException('Không tìm thấy công thức của lệnh sản xuất');
+      }
       const outputProductId = recipe.outputProductId;
       const product = await this.productRepo.findById(outputProductId);
       if (!product) {

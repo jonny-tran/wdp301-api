@@ -247,11 +247,14 @@ export class ClaimService {
       throw new NotFoundException('Không tìm thấy khiếu nại này');
     }
 
-    if (
-      user.role === (UserRole.FRANCHISE_STORE_STAFF as string) &&
-      claim.shipment.order.store.id !== user.storeId
-    ) {
-      throw new ForbiddenException('Bạn không có quyền xem khiếu nại này');
+    if (user.role === (UserRole.FRANCHISE_STORE_STAFF as string)) {
+      const orderStoreId =
+        await this.claimRepository.getOrderStoreIdByShipmentId(
+          claim.shipmentId,
+        );
+      if (orderStoreId !== user.storeId) {
+        throw new ForbiddenException('Bạn không có quyền xem khiếu nại này');
+      }
     }
 
     return {

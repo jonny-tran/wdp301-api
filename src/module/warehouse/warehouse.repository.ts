@@ -418,4 +418,50 @@ export class WarehouseRepository {
       },
     });
   }
+
+  /**
+   * Tổng khối lượng gom đơn: Σ(quantity_approved × product.weight_kg) theo từng order;
+   * route_id lấy từ store.
+   */
+  async findOrderWeightsAndRoutes(
+    orderIds: string[],
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<
+    Array<{ orderId: string; routeId: number | null; totalWeightKg: number }>
+  > {
+    if (orderIds.length === 0) return [];
+    const rows = await this.getDb(tx)
+      .select({
+        orderId: schema.orders.id,
+        routeId: schema.stores.routeId,
+        totalWeightKg: sql<string>`COALESCE(SUM(COALESCE(${schema.orderItems.quantityApproved}, 0)::numeric * COALESCE(${schema.products.weightKg}, 0)), 0)`,
+      })
+      .from(schema.orders)
+      .innerJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
+      .innerJoin(
+        schema.orderItems,
+        eq(schema.orderItems.orderId, schema.orders.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.orderItems.productId, schema.products.id),
+      )
+      .where(inArray(schema.orders.id, orderIds))
+      .groupBy(schema.orders.id, schema.stores.routeId);
+
+    return rows.map((r) => ({
+      orderId: r.orderId,
+      routeId: r.routeId,
+      totalWeightKg: Number(r.totalWeightKg),
+    }));
+  }
+
+  async findVehicleById(
+    vehicleId: number,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    return this.getDb(tx).query.vehicles.findFirst({
+      where: eq(schema.vehicles.id, vehicleId),
+    });
+  }
 }

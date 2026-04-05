@@ -13,6 +13,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { oneRelation } from '../../common/drizzle/query-helpers';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
@@ -507,7 +508,13 @@ export class InboundRepository {
       if (!item) {
         return { deleted: false as const };
       }
-      if (item.receipt.status !== 'draft') {
+      const receiptRow = oneRelation<InferSelectModel<typeof schema.receipts>>(
+        item.receipt,
+      );
+      if (!receiptRow) {
+        return { deleted: false as const };
+      }
+      if (receiptRow.status !== 'draft') {
         return { deleted: false as const, reason: 'not_draft' as const };
       }
       await tx
