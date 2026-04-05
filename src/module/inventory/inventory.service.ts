@@ -530,7 +530,7 @@ export class InventoryService {
       );
 
       this.logger.log(
-        `[reportWaste] batchId=${dto.batchId} qty=${totalQty} reason=${dto.reason} ref=${referenceId} warehouseId=${warehouseId}`,
+        `[reportWaste] userId=${user.sub} batchId=${dto.batchId} qty=${totalQty} reason=${dto.reason} ref=${referenceId} warehouseId=${warehouseId}`,
       );
 
       return {
@@ -748,16 +748,16 @@ export class InventoryService {
     let totalWasteQuantity = 0;
 
     const formattedData = wasteData.map((w) => {
-      const qty = Math.abs(parseFloat(w.quantityWasted));
+      const qty = parseFloat(String(w.totalWasteQuantity));
       totalWasteQuantity += qty;
 
       return {
-        transactionId: w.transactionId,
+        productId: w.productId,
         productName: w.productName,
-        batchCode: w.batchCode,
-        wastedQuantity: qty,
-        reason: w.reason,
-        date: w.createdAt,
+        sku: w.sku,
+        unitName: w.unitName,
+        totalWasteQuantity: qty,
+        wasteEventsCount: Number(w.wasteEventsCount),
       };
     });
 

@@ -1341,26 +1341,42 @@ export class InventoryRepository {
       );
     }
 
-    return this.db
-      .select({
-        transactionId: schema.inventoryTransactions.id,
-        quantityWasted: schema.inventoryTransactions.quantityChange,
-        reason: schema.inventoryTransactions.reason,
-        createdAt: schema.inventoryTransactions.createdAt,
-        productName: schema.products.name,
-        batchCode: schema.batches.batchCode,
-      })
-      .from(schema.inventoryTransactions)
-      .innerJoin(
-        schema.batches,
-        eq(schema.inventoryTransactions.batchId, schema.batches.id),
-      )
-      .innerJoin(
-        schema.products,
-        eq(schema.batches.productId, schema.products.id),
-      )
-      .where(and(...conditions))
-      .orderBy(asc(schema.inventoryTransactions.createdAt));
+    return Object.values(
+      await this.db
+        .select({
+          productId: schema.products.id,
+          productName: schema.products.name,
+          sku: schema.products.sku,
+          unitName: schema.baseUnits.name,
+          totalWasteQuantity: sql<number>`SUM(ABS(${schema.inventoryTransactions.quantityChange}::numeric))`,
+          wasteEventsCount: sql<number>`COUNT(${schema.inventoryTransactions.id})::int`,
+        })
+        .from(schema.inventoryTransactions)
+        .innerJoin(
+          schema.batches,
+          eq(schema.inventoryTransactions.batchId, schema.batches.id),
+        )
+        .innerJoin(
+          schema.products,
+          eq(schema.batches.productId, schema.products.id),
+        )
+        .innerJoin(
+          schema.baseUnits,
+          eq(schema.products.baseUnitId, schema.baseUnits.id),
+        )
+        .where(and(...conditions))
+        .groupBy(
+          schema.products.id,
+          schema.products.name,
+          schema.products.sku,
+          schema.baseUnits.name,
+        )
+        .orderBy(
+          desc(
+            sql`SUM(ABS(${schema.inventoryTransactions.quantityChange}::numeric))`,
+          ),
+        ),
+    );
   }
 
   // --- Financial Loss Impact ---
