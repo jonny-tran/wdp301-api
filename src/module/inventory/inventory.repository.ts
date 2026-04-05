@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import Decimal from 'decimal.js';
 import {
   and,
   asc,
@@ -1367,5 +1373,52 @@ export class InventoryRepository {
 
     const [wasteData, claimData] = await Promise.all([wasteQuery, claimQuery]);
     return { wasteData, claimData };
+  }
+
+  /**
+   * Trừ đúng một lô tại kho: giảm `quantity` và `reserved_quantity` cùng một lượng
+   * (sau khi đã lock bằng giữ chỗ salvage).
+   */
+  async deductStockFromSpecificBatch(
+    warehouseId: number,
+    batchId: number,
+    amount: number,
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    if (!(amount > 0)) {
+      throw new BadRequestException('Số lượng trừ phải lớn hơn 0');
+    }
+    const amt = new Decimal(amount);
+    const locked = await tx
+      .select()
+      .from(schema.inventory)
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      )
+      .for('update');
+    const inv = locked[0];
+    if (!inv) {
+      throw new BadRequestException(
+        'Không có bản ghi tồn kho cho lô này tại kho đã chọn',
+      );
+    }
+    const q = new Decimal(String(inv.quantity));
+    const r = new Decimal(String(inv.reservedQuantity));
+    if (q.lt(amt) || r.lt(amt)) {
+      throw new BadRequestException(
+        'Không đủ tồn vật lý hoặc lượng giữ chỗ để trừ cho lô chỉ định',
+      );
+    }
+    await tx
+      .update(schema.inventory)
+      .set({
+        quantity: q.minus(amt).toFixed(4),
+        reservedQuantity: r.minus(amt).toFixed(4),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.inventory.id, inv.id));
   }
 }

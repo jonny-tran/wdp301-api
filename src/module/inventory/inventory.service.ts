@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { and, eq, sql } from 'drizzle-orm';
+import Decimal from 'decimal.js';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { UnitOfWork } from '../../database/unit-of-work';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
@@ -956,6 +957,54 @@ export class InventoryService {
 
       await this.inventoryRepository.syncBatchTotalsFromInventory(tx, dto.batchId);
     });
+  }
+
+  /**
+   * Giữ chỗ trên đúng một lô tại kho (Salvage — không qua FEFO).
+   */
+  async lockSpecificBatch(
+    warehouseId: number,
+    batchId: number,
+    amount: number,
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    if (!(amount > 0)) {
+      throw new BadRequestException('Số lượng giữ chỗ phải lớn hơn 0');
+    }
+    const amt = new Decimal(amount);
+    const locked = await tx
+      .select()
+      .from(schema.inventory)
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      )
+      .for('update');
+    const inv = locked[0];
+    if (!inv) {
+      throw new BadRequestException(
+        'Không có tồn kho cho lô này tại kho đã chọn',
+      );
+    }
+    const q = new Decimal(String(inv.quantity));
+    const r = new Decimal(String(inv.reservedQuantity));
+    const avail = q.minus(r);
+    if (avail.lt(amt)) {
+      throw new BadRequestException(
+        'Không đủ tồn khả dụng trên lô để giữ chỗ salvage',
+      );
+    }
+    await tx
+      .update(schema.inventory)
+      .set({
+        reservedQuantity: r.plus(amt).toFixed(4),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.inventory.id, inv.id));
+
+    await this.inventoryRepository.syncBatchTotalsFromInventory(tx, batchId);
   }
 
   /**

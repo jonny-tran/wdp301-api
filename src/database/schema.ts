@@ -363,6 +363,12 @@ export const productionOrderStatusEnum = pgEnum('production_order_status', [
   'cancelled',
 ]);
 
+/** Chuẩn (FEFO) vs tận dụng lô chỉ định (Salvage / shelf-life extension) */
+export const productionOrderTypeEnum = pgEnum('production_order_type', [
+  'standard',
+  'salvage',
+]);
+
 /** Công thức (BOM): một thành phẩm = nhiều dòng nguyên liệu */
 export const recipes = pgTable('recipes', {
   id: serial('id').primaryKey(),
@@ -408,6 +414,11 @@ export const productionOrders = pgTable('production_orders', {
     scale: 4,
   }),
   status: productionOrderStatusEnum('status').default('draft').notNull(),
+  productionType: productionOrderTypeEnum('production_type')
+    .default('standard')
+    .notNull(),
+  /** Lệnh salvage: lô nguyên liệu bắt buộc (không FEFO) */
+  inputBatchId: integer('input_batch_id').references(() => batches.id),
   kitchenStaffId: uuid('kitchen_staff_id').references(() => users.id),
   createdBy: uuid('created_by')
     .references(() => users.id)
@@ -899,6 +910,9 @@ export const batchRelations = relations(batches, ({ one, many }) => ({
   shipmentItemsAsActual: many(shipmentItems, {
     relationName: 'shipmentItemActualBatch',
   }),
+  salvageProductionOrders: many(productionOrders, {
+    relationName: 'productionOrderInputBatch',
+  }),
 }));
 
 export const orderRelations = relations(orders, ({ one, many }) => ({
@@ -1146,6 +1160,11 @@ export const productionOrdersRelations = relations(
     recipe: one(recipes, {
       fields: [productionOrders.recipeId],
       references: [recipes.id],
+    }),
+    inputBatch: one(batches, {
+      fields: [productionOrders.inputBatchId],
+      references: [batches.id],
+      relationName: 'productionOrderInputBatch',
     }),
     creator: one(users, {
       fields: [productionOrders.createdBy],

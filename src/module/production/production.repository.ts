@@ -3,13 +3,14 @@
  * Số lượng từ DB (numeric) nên được truyền sang service dưới dạng string
  * và được parse bằng `fromDbDecimal` trước khi so sánh.
  */
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
 import { and, asc, desc, eq, ilike, inArray, ne, or, sql, SQL } from 'drizzle-orm';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { VN_TZ } from '../../common/time/vn-time';
+import { firstInsertedRow } from '../../common/drizzle/query-helpers';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 
@@ -294,6 +295,7 @@ export class ProductionRepository {
         },
         creator: true,
         kitchenStaff: true,
+        inputBatch: { with: { product: { with: { baseUnit: true } } } },
       },
     });
   }
@@ -363,13 +365,26 @@ export class ProductionRepository {
   async createProductionOrder(
     data: typeof schema.productionOrders.$inferInsert,
     tx?: Db,
-  ) {
+  ): Promise<typeof schema.productionOrders.$inferSelect> {
     const runner = tx ?? this.db;
-    const [row] = await runner
+    const inserted = await runner
       .insert(schema.productionOrders)
       .values(data)
       .returning();
+    const row = firstInsertedRow<typeof schema.productionOrders.$inferSelect>(
+      inserted as (typeof schema.productionOrders.$inferSelect)[],
+    );
+    if (!row) {
+      throw new InternalServerErrorException('Không tạo được lệnh sản xuất');
+    }
     return row;
+  }
+
+  async findBatchById(tx: Db, batchId: number) {
+    return tx.query.batches.findFirst({
+      where: eq(schema.batches.id, batchId),
+      with: { product: true },
+    });
   }
 
   async findBatchByCode(tx: Db, batchCode: string) {
@@ -383,6 +398,7 @@ export class ProductionRepository {
       where: eq(schema.productionOrders.id, id),
       with: {
         reservations: { with: { batch: true } },
+        inputBatch: true,
       },
     });
   }

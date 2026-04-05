@@ -8,6 +8,7 @@ import { UserRole } from '../auth/dto/create-user.dto';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { ProductType } from '../product/constants/product-type.enum';
+import { InventoryService } from '../inventory/inventory.service';
 import { ProductRepository } from '../product/product.repository';
 import { ProductionRepository } from './production.repository';
 import { ProductionService } from './production.service';
@@ -39,6 +40,11 @@ describe('ProductionService', () => {
       insertBatchLineage: jest.fn(),
       decreaseStockAndReserved: jest.fn(),
       findBatchByCode: jest.fn().mockResolvedValue(undefined),
+      findBatchById: jest.fn(),
+    };
+
+    const mockInventoryService = {
+      lockSpecificBatch: jest.fn().mockResolvedValue(undefined),
     };
 
     const mockInbound = {
@@ -71,6 +77,7 @@ describe('ProductionService', () => {
         { provide: InboundRepository, useValue: mockInbound },
         { provide: ProductRepository, useValue: mockProduct },
         { provide: InventoryRepository, useValue: mockInventory },
+        { provide: InventoryService, useValue: mockInventoryService },
       ],
     }).compile();
 
@@ -129,6 +136,7 @@ describe('ProductionService', () => {
           warehouseId: 2,
           plannedQuantity: '10',
           status: 'draft',
+          productionType: 'standard',
           createdBy: 'user-1',
           kitchenStaffId: 'user-1',
         },
@@ -162,6 +170,7 @@ describe('ProductionService', () => {
         warehouseId: 1,
         plannedQuantity: '0',
         recipeId: 1,
+        productionType: 'standard',
       } as never);
       productRepo.findById.mockResolvedValue({
         id: 99,
@@ -182,6 +191,7 @@ describe('ProductionService', () => {
         warehouseId: 1,
         plannedQuantity: '10',
         recipeId: 1,
+        productionType: 'standard',
       } as never);
       productRepo.findById.mockResolvedValue({
         id: 99,
@@ -216,6 +226,7 @@ describe('ProductionService', () => {
         warehouseId: 1,
         plannedQuantity: '10',
         recipeId: 1,
+        productionType: 'standard',
       } as never);
       productRepo.findById.mockResolvedValue({
         id: 99,
@@ -261,6 +272,7 @@ describe('ProductionService', () => {
       warehouseId: 7,
       plannedQuantity: '4',
       recipeId: 1,
+      productionType: 'standard',
       reservations: [
         {
           batchId: 11,
