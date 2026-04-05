@@ -13,6 +13,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { oneRelation } from '../../common/drizzle/query-helpers';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { GetReceiptsDto } from './dto/get-receipts.dto';
@@ -145,9 +146,11 @@ export class InboundRepository {
       batchCode: string;
       manufacturedDate: string;
       expiryDate: string;
+      /** Salvage / sản xuất nội bộ: ghi nhận giá vốn đơn vị sau tính lại */
+      unitCostAtImport?: string | null;
     },
   ) {
-    const [batch] = await tx
+    const inserted = await tx
       .insert(schema.batches)
       .values({
         productId: data.productId,
@@ -155,9 +158,11 @@ export class InboundRepository {
         manufacturedDate: data.manufacturedDate,
         expiryDate: data.expiryDate,
         status: 'pending',
+        unitCostAtImport: data.unitCostAtImport ?? null,
       })
       .returning();
-    return batch;
+    const rows = Array.isArray(inserted) ? inserted : [];
+    return rows[0];
   }
 
   async updateReceiptItemBatchLink(
@@ -507,7 +512,13 @@ export class InboundRepository {
       if (!item) {
         return { deleted: false as const };
       }
-      if (item.receipt.status !== 'draft') {
+      const receiptRow = oneRelation<InferSelectModel<typeof schema.receipts>>(
+        item.receipt,
+      );
+      if (!receiptRow) {
+        return { deleted: false as const };
+      }
+      if (receiptRow.status !== 'draft') {
         return { deleted: false as const, reason: 'not_draft' as const };
       }
       await tx

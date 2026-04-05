@@ -1,8 +1,11 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
+import Decimal from 'decimal.js';
+import { oneRelation } from '../../common/drizzle/query-helpers';
 import { generateInboundBatchCode } from '../../common/utils/generate-batch-code.util';
 import { InsufficientStockException } from '../../common/exceptions/insufficient-stock.exception';
 import { nowVn, parseToStartOfDayVn } from '../../common/time/vn-time';
@@ -10,6 +13,7 @@ import { UnitOfWork } from '../../database/unit-of-work';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
+import { InventoryService } from '../inventory/inventory.service';
 import { ProductType } from '../product/constants/product-type.enum';
 import { ProductRepository } from '../product/product.repository';
 import { GetProductionOrdersQueryDto } from './dto/get-production-orders-query.dto';
@@ -31,6 +35,11 @@ import {
   isSurplusPositive,
 } from './utils/production-decimal.util';
 
+/** Lô nguyên liệu (kèm product) dùng cho salvage — đồng bộ với findBatchById. */
+type SalvageInputBatch = NonNullable<
+  Awaited<ReturnType<ProductionRepository['findBatchById']>>
+>;
+
 @Injectable()
 export class ProductionService {
   constructor(
@@ -39,6 +48,7 @@ export class ProductionService {
     private readonly inboundRepo: InboundRepository,
     private readonly productRepo: ProductRepository,
     private readonly inventoryRepo: InventoryRepository,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   /** Kiểm tra từng dòng BOM: raw_material, không trùng thành phẩm. */
@@ -296,6 +306,7 @@ export class ProductionService {
           warehouseId: input.warehouseId,
           plannedQuantity: String(input.plannedQuantity),
           status: 'draft',
+          productionType: 'standard',
           createdBy: input.createdBy,
           kitchenStaffId: input.createdBy,
         },
@@ -309,10 +320,15 @@ export class ProductionService {
     return this.uow.runInTransaction(async (tx) => {
       const order = await this.repo.findOrderById(tx, orderId);
       if (!order) throw new NotFoundException('Không tìm thấy lệnh sản xuất');
+      if (order.productionType === 'salvage') {
+        throw new BadRequestException(
+          'Lệnh salvage đã giữ chỗ khi tạo; không gọi start (FEFO).',
+        );
+      }
       if (order.status !== 'draft') {
         throw new BadRequestException('Lệnh không ở trạng thái nháp');
       }
-      const recipe = order.recipe;
+      const recipe = await this.repo.findRecipeWithItems(order.recipeId, tx);
       if (!recipe?.items?.length) {
         throw new BadRequestException('Công thức không có nguyên liệu');
       }
@@ -423,6 +439,11 @@ export class ProductionService {
     return this.uow.runInTransaction(async (tx) => {
       const order = await this.repo.findOrderById(tx, orderId);
       if (!order) throw new NotFoundException('Không tìm thấy lệnh sản xuất');
+      if (order.productionType === 'salvage') {
+        throw new BadRequestException(
+          'Lệnh salvage: dùng POST /production/salvage/:id/complete.',
+        );
+      }
       if (order.status !== 'in_progress') {
         throw new BadRequestException('Lệnh phải đang chạy mới hoàn tất được');
       }
@@ -459,7 +480,10 @@ export class ProductionService {
         );
       }
 
-      const recipe = order.recipe;
+      const recipe = await this.repo.findRecipeWithItems(order.recipeId, tx);
+      if (!recipe) {
+        throw new NotFoundException('Không tìm thấy công thức của lệnh sản xuất');
+      }
       const outputProductId = recipe.outputProductId;
       const product = await this.productRepo.findById(outputProductId);
       if (!product) {
@@ -590,6 +614,310 @@ export class ProductionService {
         actualQuantity: actual,
         lossQuantity: isLossPositive(loss) ? loss : 0,
         surplusQuantity: isSurplusPositive(surplus) ? surplus : 0,
+      };
+    });
+  }
+
+  /**
+   * Salvage: giữ chỗ đúng một lô NL + tạo lệnh in_progress (không FEFO).
+   * Yêu cầu BOM **một dòng** nguyên liệu trùng `product_id` của lô chỉ định.
+   */
+  async createSalvageProductionOrder(input: {
+    inputBatchId: number;
+    recipeId: number;
+    quantityToConsume: number;
+    warehouseId: number;
+    createdBy: string;
+  }) {
+    const qtyDec = new Decimal(input.quantityToConsume);
+    if (!qtyDec.gt(0)) {
+      throw new BadRequestException('quantityToConsume phải lớn hơn 0.');
+    }
+
+    return this.uow.runInTransaction(async (tx) => {
+      const recipe = await this.repo.findRecipeWithItems(input.recipeId, tx);
+      if (!recipe) {
+        throw new NotFoundException('Không tìm thấy công thức');
+      }
+      if (!recipe.isActive) {
+        throw new BadRequestException('Công thức không còn hoạt động');
+      }
+      const items = recipe.items ?? [];
+      if (items.length !== 1) {
+        throw new BadRequestException(
+          'Salvage chỉ hỗ trợ công thức **một** nguyên liệu (một dòng BOM).',
+        );
+      }
+      const ingredientLine = items[0]!;
+      const outputProduct = await this.productRepo.findById(recipe.outputProductId);
+      if (!outputProduct?.isActive) {
+        throw new NotFoundException('Thành phẩm không tồn tại hoặc đã ngừng');
+      }
+      if (outputProduct.type !== ProductType.FINISHED_GOOD) {
+        throw new BadRequestException(
+          'Công thức phải cho ra thành phẩm loại finished_good.',
+        );
+      }
+
+      const inputBatch = await this.repo.findBatchById(tx, input.inputBatchId);
+      if (!inputBatch) {
+        throw new NotFoundException('Không tìm thấy lô nguyên liệu');
+      }
+      if (inputBatch.productId !== ingredientLine.ingredientProductId) {
+        throw new BadRequestException(
+          'Lô không khớp nguyên liệu trong công thức đã chọn.',
+        );
+      }
+
+      const todayStr = nowVn().format('YYYY-MM-DD');
+      if (String(inputBatch.expiryDate) < todayStr) {
+        throw new BadRequestException(
+          'Lô đã quá hạn sử dụng — không thể tạo lệnh salvage.',
+        );
+      }
+
+      await this.inventoryService.lockSpecificBatch(
+        input.warehouseId,
+        input.inputBatchId,
+        qtyDec.toNumber(),
+        tx,
+      );
+
+      const code = await this.repo.generateNextProductionOrderCode(tx);
+      const order = await this.repo.createProductionOrder(
+        {
+          code,
+          recipeId: recipe.id,
+          warehouseId: input.warehouseId,
+          plannedQuantity: qtyDec.toFixed(4),
+          status: 'in_progress',
+          productionType: 'salvage',
+          inputBatchId: input.inputBatchId,
+          createdBy: input.createdBy,
+          kitchenStaffId: input.createdBy,
+          startedAt: new Date(),
+        },
+        tx,
+      );
+
+      await this.repo.insertReservation(tx, {
+        productionOrderId: order.id,
+        batchId: input.inputBatchId,
+        reservedQuantity: qtyDec.toFixed(4),
+      });
+
+      return {
+        orderId: order.id,
+        code: order.code,
+        productionType: order.productionType,
+        inputBatchId: input.inputBatchId,
+        quantityReserved: qtyDec.toFixed(4),
+        recipeId: recipe.id,
+        outputProductId: recipe.outputProductId,
+      };
+    });
+  }
+
+  /**
+   * Hoàn tất salvage: trừ đúng lô đã giữ, nhập lô TP mới, lineage, giao dịch kho.
+   * `plannedQuantity` trên lệnh = khối lượng NL đã tiêu thụ; sản lượng TP lý thuyết = NL / quantityPerOutput.
+   */
+  async completeSalvageProduction(
+    orderId: string,
+    input: {
+      actualYield: number;
+      surplusNote?: string;
+      callerRole?: string;
+    },
+  ) {
+    return this.uow.runInTransaction(async (tx) => {
+      const order = await this.repo.findOrderById(tx, orderId);
+      if (!order) {
+        throw new NotFoundException('Không tìm thấy lệnh sản xuất');
+      }
+      if (order.productionType !== 'salvage') {
+        throw new BadRequestException('Đây không phải lệnh salvage.');
+      }
+      if (order.status !== 'in_progress') {
+        throw new BadRequestException('Lệnh salvage phải đang thực hiện.');
+      }
+      if (order.inputBatchId == null) {
+        throw new BadRequestException('Thiếu input_batch_id trên lệnh salvage.');
+      }
+
+      const recipe = await this.repo.findRecipeWithItems(order.recipeId, tx);
+      if (!recipe?.items?.length || recipe.items.length !== 1) {
+        throw new BadRequestException('Công thức salvage không hợp lệ.');
+      }
+      const ingredientLine = recipe.items[0]!;
+      const resv = order.reservations?.[0];
+      if (!resv || resv.batchId !== order.inputBatchId) {
+        throw new BadRequestException(
+          'Thiếu reservation khớp lô salvage — dữ liệu không nhất quán.',
+        );
+      }
+
+      const consumed = new Decimal(order.plannedQuantity);
+      const qPerOut = new Decimal(String(ingredientLine.quantityPerOutput));
+      if (!qPerOut.gt(0)) {
+        throw new BadRequestException('Định mức quantityPerOutput không hợp lệ.');
+      }
+      const expectedTp = consumed.div(qPerOut);
+      const actualTp = new Decimal(input.actualYield);
+      if (!actualTp.gt(0)) {
+        throw new BadRequestException('actualYield phải lớn hơn 0.');
+      }
+
+      const expectedNum = expectedTp.toNumber();
+      const actualNum = actualTp.toNumber();
+      const maxAllowedWithoutManager =
+        expectedNum * (1 + PRODUCTION_SURPLUS_APPROVAL_RATIO);
+      if (
+        actualNum > maxAllowedWithoutManager &&
+        !ProductionService.canApproveHighSurplus(input.callerRole)
+      ) {
+        throw new BadRequestException(
+          `Sản lượng thực tế vượt quá ${Math.round(PRODUCTION_SURPLUS_APPROVAL_RATIO * 100)}% so với định mức lý thuyết (${expectedNum.toFixed(4)}). ` +
+            `Chỉ quản lý hoặc admin mới ghi nhận mức dư lớn như vậy.`,
+        );
+      }
+      if (actualNum > expectedNum && !input.surplusNote?.trim()) {
+        throw new BadRequestException(
+          'Vượt định mức lý thuyết: bắt buộc nhập surplusNote (giải trình).',
+        );
+      }
+
+      await this.inventoryRepo.deductStockFromSpecificBatch(
+        order.warehouseId,
+        order.inputBatchId,
+        consumed.toNumber(),
+        tx,
+      );
+
+      const inputBatchRaw =
+        order.inputBatch ?? (await this.repo.findBatchById(tx, order.inputBatchId));
+      const inputBatch = oneRelation<SalvageInputBatch>(inputBatchRaw);
+      if (!inputBatch) {
+        throw new NotFoundException('Không tìm thấy lô nguyên liệu');
+      }
+
+      await this.inventoryRepo.createInventoryTransaction(
+        order.warehouseId,
+        order.inputBatchId,
+        'production_consume',
+        -consumed.toNumber(),
+        `PRODUCTION:${orderId}`,
+        'Salvage: tiêu hao nguyên liệu (lô chỉ định)',
+        tx,
+      );
+      await this.inventoryRepo.syncBatchTotalsFromInventory(tx, order.inputBatchId);
+
+      const outputProduct = await this.productRepo.findById(recipe.outputProductId);
+      if (!outputProduct) {
+        throw new NotFoundException('Thành phẩm không tồn tại');
+      }
+
+      const parentUnit = inputBatch.unitCostAtImport
+        ? new Decimal(String(inputBatch.unitCostAtImport))
+        : null;
+      const childUnitCost =
+        parentUnit && actualTp.gt(0)
+          ? parentUnit.mul(consumed).div(actualTp).toFixed(4)
+          : null;
+
+      await this.inboundRepo.lockBatchCodeGeneration(tx);
+      let batchCode = generateInboundBatchCode(outputProduct.sku);
+      for (let i = 0; i < 24; i++) {
+        const exists = await this.repo.findBatchByCode(tx, batchCode);
+        if (!exists) break;
+        batchCode = generateInboundBatchCode(outputProduct.sku);
+      }
+
+      const mfg = nowVn().format('YYYY-MM-DD');
+      const expiryDate = this.calculateFinishedGoodExpiry({
+        manufacturedDateYmd: mfg,
+        shelfLifeDays: outputProduct.shelfLifeDays,
+        parentExpiryYmds: [String(inputBatch.expiryDate)],
+      });
+
+      const childBatch = await this.inboundRepo.insertBatch(tx, {
+        productId: recipe.outputProductId,
+        batchCode,
+        manufacturedDate: mfg,
+        expiryDate,
+        unitCostAtImport: childUnitCost,
+      });
+      if (!childBatch) {
+        throw new InternalServerErrorException('Không tạo được lô thành phẩm');
+      }
+
+      await this.inboundRepo.updateBatchStatus(tx, childBatch.id, 'available');
+
+      await this.repo.insertBatchLineage(tx, {
+        parentBatchId: order.inputBatchId,
+        childBatchId: childBatch.id,
+        productionOrderId: order.id,
+        consumedQuantity: consumed.toFixed(4),
+      });
+
+      await this.inboundRepo.upsertInventory(
+        tx,
+        order.warehouseId,
+        childBatch.id,
+        actualTp.toFixed(4),
+      );
+      await this.inventoryRepo.syncBatchTotalsFromInventory(tx, childBatch.id);
+
+      await this.inventoryRepo.createInventoryTransaction(
+        order.warehouseId,
+        childBatch.id,
+        'production_output',
+        actualNum,
+        `PRODUCTION:${orderId}`,
+        'Salvage: nhập thành phẩm (production output)',
+        tx,
+      );
+
+      const lossDec = expectedTp.minus(actualTp);
+      const loss = lossDec.gt(0) ? lossDec.toNumber() : 0;
+      const surplusDec = actualTp.minus(expectedTp);
+      const surplus = surplusDec.gt(0) ? surplusDec.toNumber() : 0;
+
+      if (isLossPositive(loss)) {
+        await this.inventoryRepo.createInventoryTransaction(
+          order.warehouseId,
+          childBatch.id,
+          'waste',
+          -loss,
+          `PRODUCTION:${orderId}`,
+          'PRODUCTION_LOSS (salvage yield)',
+          tx,
+        );
+      }
+      if (isSurplusPositive(surplus)) {
+        const trimmedNote = input.surplusNote?.trim() ?? '';
+        const surplusReason = `PRODUCTION_SURPLUS | ${trimmedNote}`;
+        await this.inventoryRepo.createInventoryTransaction(
+          order.warehouseId,
+          childBatch.id,
+          'adjustment',
+          surplus,
+          `PRODUCTION:${orderId}`,
+          surplusReason,
+          tx,
+        );
+      }
+
+      await this.repo.markOrderCompleted(tx, order.id, actualTp.toFixed(4));
+
+      return {
+        batchId: childBatch.id,
+        batchCode: childBatch.batchCode,
+        expectedYieldTheoretical: expectedNum,
+        actualYield: actualNum,
+        lossQuantity: isLossPositive(loss) ? loss : 0,
+        surplusQuantity: isSurplusPositive(surplus) ? surplus : 0,
+        unitCostAtImport: childUnitCost,
       };
     });
   }

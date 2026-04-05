@@ -6,8 +6,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, InferSelectModel, lt, sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { oneRelation } from '../../common/drizzle/query-helpers';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import { UnitOfWork } from '../../database/unit-of-work';
 import * as schema from '../../database/schema';
@@ -20,6 +21,7 @@ import {
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { OrderRepository } from '../order/order.repository';
 import { SystemConfigService } from '../system-config/system-config.service';
+import { ConsolidateManifestDto } from './dto/consolidate-manifest.dto';
 import { CreateManifestDto } from './dto/create-manifest.dto';
 import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
 
@@ -29,6 +31,19 @@ import { ReportIssueDto } from './dto/report-issue.dto';
 import { ReportManifestBatchIssueDto } from './dto/report-manifest-batch-issue.dto';
 import { VerifyManifestItemDto } from './dto/verify-manifest-item.dto';
 import { WarehouseRepository } from './warehouse.repository';
+
+/** Kết quả relational `findManifestById`: picking list + items + product + baseUnit */
+type ManifestPickingListNested = InferSelectModel<
+  typeof schema.pickingLists
+> & {
+  items: Array<
+    InferSelectModel<typeof schema.pickingListItems> & {
+      product: InferSelectModel<typeof schema.products> & {
+        baseUnit: InferSelectModel<typeof schema.baseUnits> | null;
+      };
+    }
+  >;
+};
 
 @Injectable()
 export class WarehouseService {
@@ -254,8 +269,14 @@ export class WarehouseService {
       throw new NotFoundException('Không tìm thấy thông tin lô hàng này.');
 
     const inv = batchInfo.inventory[0];
+    const product = oneRelation<InferSelectModel<typeof schema.products>>(
+      batchInfo.product,
+    );
+    if (!product) {
+      throw new NotFoundException('Thiếu thông tin sản phẩm cho lô hàng');
+    }
     return {
-      productName: batchInfo.product.name,
+      productName: product.name,
       batchId: batchInfo.id,
       batchCode: batchInfo.batchCode,
       expiryDate: batchInfo.expiryDate,
@@ -522,6 +543,180 @@ export class WarehouseService {
     });
   }
 
+  /**
+   * Gom đơn vào manifest: cùng route, kiểm tra tải trọng xe, tạo manifest + picking list,
+   * gán shipment (consolidated), orders.shipment_id và chuyển đơn → picking.
+   */
+  async consolidateManifestOrders(dto: ConsolidateManifestDto) {
+    const centralId = await this.getCentralWarehouseId();
+    const uniqueOrderIds = [...new Set(dto.orderIds)];
+    if (uniqueOrderIds.length !== dto.orderIds.length) {
+      throw new BadRequestException('Danh sách đơn không được trùng lặp.');
+    }
+
+    return this.uow.runInTransaction(async (tx) => {
+      const vehicle = await this.warehouseRepo.findVehicleById(
+        dto.vehicleId,
+        tx,
+      );
+      if (!vehicle) {
+        throw new NotFoundException('Không tìm thấy xe.');
+      }
+      const capacityKg = parseFloat(String(vehicle.payloadCapacity));
+      if (Number.isNaN(capacityKg) || capacityKg <= 0) {
+        throw new BadRequestException('Xe không có payload_capacity hợp lệ.');
+      }
+
+      const weightRows =
+        await this.warehouseRepo.findOrderWeightsAndRoutes(
+          uniqueOrderIds,
+          tx,
+        );
+      if (weightRows.length !== uniqueOrderIds.length) {
+        throw new BadRequestException(
+          'Không đủ dữ liệu đơn hoặc dòng hàng để gom (kiểm tra đơn tồn tại và có item đã duyệt).',
+        );
+      }
+
+      if (weightRows.some((r) => r.routeId == null)) {
+        throw new BadRequestException(
+          'Mỗi cửa hàng phải được gán route trước khi gom đơn.',
+        );
+      }
+      const routeId = weightRows[0]!.routeId!;
+      if (weightRows.some((r) => r.routeId !== routeId)) {
+        throw new BadRequestException('Orders must belong to the same route');
+      }
+
+      const totalWeightKg = weightRows.reduce(
+        (s, r) => s + r.totalWeightKg,
+        0,
+      );
+      if (totalWeightKg > capacityKg) {
+        throw new BadRequestException(
+          `Vehicle overload (Total: ${totalWeightKg.toFixed(3)} kg / Max: ${capacityKg.toFixed(3)} kg)`,
+        );
+      }
+
+      const orders = await tx.query.orders.findMany({
+        where: inArray(schema.orders.id, uniqueOrderIds),
+      });
+      if (orders.length !== uniqueOrderIds.length) {
+        throw new NotFoundException('Một hoặc nhiều đơn hàng không tồn tại.');
+      }
+      for (const o of orders) {
+        if (o.status !== OrderStatus.APPROVED) {
+          throw new BadRequestException(
+            `Đơn ${o.id} không ở trạng thái đã duyệt (approved).`,
+          );
+        }
+        if (o.shipmentId != null) {
+          throw new BadRequestException(
+            `Đơn ${o.id} đã có shipment_id — chỉ gom các đơn chưa gắn phiếu giao.`,
+          );
+        }
+      }
+
+      const weightByOrderId = new Map(
+        weightRows.map((r) => [r.orderId, r.totalWeightKg]),
+      );
+
+      const shipments = await this.warehouseRepo.findShipmentsReadyForManifest(
+        uniqueOrderIds,
+        centralId,
+        tx,
+      );
+      if (shipments.length !== uniqueOrderIds.length) {
+        throw new BadRequestException(
+          'Thiếu phiếu giao preparing, hoặc đơn không cùng kho trung tâm / đã gán manifest.',
+        );
+      }
+
+      const code = `MAN-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
+
+      const [manifest] = await tx
+        .insert(schema.manifests)
+        .values({
+          code,
+          driverName: dto.driverName ?? null,
+          vehiclePlate: vehicle.licensePlate,
+          status: 'preparing',
+        })
+        .returning();
+
+      for (const sh of shipments) {
+        const w = weightByOrderId.get(sh.orderId) ?? 0;
+        const wStr = w.toFixed(3);
+        await tx
+          .update(schema.shipments)
+          .set({
+            manifestId: manifest.id,
+            vehicleId: dto.vehicleId,
+            routeId,
+            status: 'consolidated',
+            totalWeightKg: wStr,
+            totalWeight: wStr,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.shipments.id, sh.id));
+
+        await tx
+          .update(schema.orders)
+          .set({
+            shipmentId: sh.id,
+            status: OrderStatus.PICKING,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.orders.id, sh.orderId));
+      }
+
+      for (const sh of shipments) {
+        for (const it of sh.items) {
+          await tx
+            .update(schema.shipmentItems)
+            .set({ suggestedBatchId: it.batchId })
+            .where(eq(schema.shipmentItems.id, it.id));
+        }
+      }
+
+      const [pickingList] = await tx
+        .insert(schema.pickingLists)
+        .values({ manifestId: manifest.id, status: 'open' })
+        .returning();
+
+      const byProduct = new Map<number, number>();
+      for (const sh of shipments) {
+        for (const it of sh.items) {
+          const pid = it.batch.productId;
+          const q = invFromDb(it.quantity);
+          byProduct.set(pid, (byProduct.get(pid) ?? 0) + q);
+        }
+      }
+
+      for (const [productId, qty] of byProduct) {
+        await tx.insert(schema.pickingListItems).values({
+          pickingListId: pickingList.id,
+          productId,
+          totalPlannedQuantity: invToDbString(qty),
+          totalPickedQuantity: '0',
+        });
+      }
+
+      return {
+        manifestId: manifest.id,
+        code: manifest.code,
+        vehicleId: dto.vehicleId,
+        routeId,
+        totalWeightKg: totalWeightKg.toFixed(3),
+        maxPayloadKg: capacityKg.toFixed(3),
+        pickingListId: pickingList.id,
+        orderIds: uniqueOrderIds,
+        orderCount: shipments.length,
+        aggregatedProductLines: byProduct.size,
+      };
+    });
+  }
+
   async getManifestPickingList(manifestId: number) {
     await this.uow.runInTransaction(async (tx) => {
       await this.warehouseRepo.syncPickingListPickedTotals(manifestId, tx);
@@ -536,20 +731,35 @@ export class WarehouseService {
       status: m.status,
       driverName: m.driverName,
       vehiclePlate: m.vehiclePlate,
-      pickingList: m.pickingList
-        ? {
-            id: m.pickingList.id,
-            status: m.pickingList.status,
-            items: m.pickingList.items.map((row) => ({
+      pickingList: (() => {
+        const pl = oneRelation<ManifestPickingListNested>(m.pickingList);
+        if (!pl) return null;
+        const lineItems = Array.isArray(pl.items) ? pl.items : [];
+        return {
+          id: pl.id,
+          status: pl.status,
+          items: lineItems.map((row) => {
+            const prod = oneRelation<
+              InferSelectModel<typeof schema.products> & {
+                baseUnit: InferSelectModel<typeof schema.baseUnits> | null;
+              }
+            >(row.product);
+            const baseUnit = prod
+              ? oneRelation<InferSelectModel<typeof schema.baseUnits>>(
+                  prod.baseUnit,
+                )
+              : null;
+            return {
               id: row.id,
               productId: row.productId,
-              productName: row.product.name,
-              unit: row.product.baseUnit?.name,
+              productName: prod?.name ?? '',
+              unit: baseUnit?.name,
               totalPlannedQuantity: row.totalPlannedQuantity,
               totalPickedQuantity: row.totalPickedQuantity,
-            })),
-          }
-        : null,
+            };
+          }),
+        };
+      })(),
       shipments: m.shipments.map((sh) => ({
         shipmentId: sh.id,
         orderId: sh.orderId,
@@ -641,7 +851,13 @@ export class WarehouseService {
         );
       }
 
-      const productId = item.batch.productId;
+      const batchRow = oneRelation<InferSelectModel<typeof schema.batches>>(
+        item.batch,
+      );
+      if (!batchRow) {
+        throw new NotFoundException('Không tìm thấy lô hàng trên dòng shipment.');
+      }
+      const productId = batchRow.productId;
       const result = await this.warehouseRepo.replaceDamagedBatchTransaction(
         centralId,
         { batchId: dto.batchId },

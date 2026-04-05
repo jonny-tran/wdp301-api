@@ -2,10 +2,13 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { InferSelectModel } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { oneRelation } from '../../common/drizzle/query-helpers';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { UnitOfWork } from '../../database/unit-of-work';
@@ -24,6 +27,11 @@ import { ReceiptStatus } from './constants/receipt-status.enum';
 import { InboundRepository } from './inbound.repository';
 
 type Tx = NodePgDatabase<typeof schema>;
+
+type ProductRow = InferSelectModel<typeof schema.products>;
+type ReceiptRow = InferSelectModel<typeof schema.receipts>;
+type SupplierRow = InferSelectModel<typeof schema.suppliers>;
+type UserRow = InferSelectModel<typeof schema.users>;
 
 const VARIANCE_CONFIG_KEY = 'inbound.receipt_variance_percent';
 
@@ -104,7 +112,7 @@ export class InboundService {
           continue;
         }
 
-        const product = item.product;
+        const product = oneRelation<ProductRow>(item.product);
         if (!product) {
           throw new BadRequestException(`Thiếu sản phẩm trên dòng #${item.id}`);
         }
@@ -364,7 +372,8 @@ export class InboundService {
     if (!item || item.receiptId !== receiptId) {
       throw new NotFoundException('Không tìm thấy dòng phiếu');
     }
-    if (item.receipt.status !== 'draft') {
+    const receipt = oneRelation<ReceiptRow>(item.receipt);
+    if (!receipt || receipt.status !== 'draft') {
       throw new BadRequestException(
         'Chỉ có thể xóa hàng hóa trong phiếu nhập nháp',
       );
@@ -380,7 +389,8 @@ export class InboundService {
   async deleteBatchItem(batchId: number) {
     const item = await this.inboundRepo.findReceiptItemByBatchId(batchId);
     if (!item) throw new NotFoundException('Không tìm thấy chi tiết lô hàng');
-    if (item.receipt.status !== 'draft') {
+    const receipt = oneRelation<ReceiptRow>(item.receipt);
+    if (!receipt || receipt.status !== 'draft') {
       throw new BadRequestException(
         'Chỉ có thể xóa hàng hóa trong phiếu nhập nháp',
       );
@@ -419,6 +429,14 @@ export class InboundService {
       );
     }
 
+    const supplier = oneRelation<SupplierRow>(receipt.supplier);
+    const createdByUser = oneRelation<UserRow>(receipt.user);
+    if (!supplier || !createdByUser) {
+      throw new InternalServerErrorException(
+        'Phiếu nhập thiếu dữ liệu nhà cung cấp hoặc người tạo',
+      );
+    }
+
     return {
       id: receipt.id,
       status: receipt.status,
@@ -426,14 +444,14 @@ export class InboundService {
       createdAt: receipt.createdAt,
       varianceApprovedAt: receipt.varianceApprovedAt,
       supplier: {
-        id: receipt.supplier.id,
-        name: receipt.supplier.name,
-        contactName: receipt.supplier.contactName,
-        phone: receipt.supplier.phone,
+        id: supplier.id,
+        name: supplier.name,
+        contactName: supplier.contactName,
+        phone: supplier.phone,
       },
       createdBy: {
-        id: receipt.user.id,
-        username: receipt.user.username,
+        id: createdByUser.id,
+        username: createdByUser.username,
       },
       items: receipt.items.map((item) => {
         const productFromBatch = item.batch?.product;

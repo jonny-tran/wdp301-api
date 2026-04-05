@@ -54,6 +54,8 @@ describe('WarehouseService', () => {
       replaceDamagedBatchTransaction: jest.fn(),
       decreaseStockFinal: jest.fn(),
       findShipmentsReadyForManifest: jest.fn(),
+      findOrderWeightsAndRoutes: jest.fn(),
+      findVehicleById: jest.fn(),
       syncPickingListPickedTotals: jest.fn().mockResolvedValue(undefined),
       findManifestById: jest.fn(),
       findShipmentItemById: jest.fn(),

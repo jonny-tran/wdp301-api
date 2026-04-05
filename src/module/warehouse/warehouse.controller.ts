@@ -18,6 +18,7 @@ import { AtGuard } from '../auth/guards/auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import type { IJwtPayload } from '../auth/types/auth.types';
 import { CancelPickingTaskDto } from './dto/cancel-picking-task.dto';
+import { ConsolidateManifestDto } from './dto/consolidate-manifest.dto';
 import { CreateManifestDto } from './dto/create-manifest.dto';
 import { FinalizeBulkShipmentDto } from './dto/finalize-bulk-shipment.dto';
 
@@ -142,6 +143,22 @@ export class WarehouseController {
   async reportIssue(@Body() dto: ReportIssueDto) {
     const warehouseId = await this.warehouseService.getCentralWarehouseId();
     return this.warehouseService.reportIssue(warehouseId, dto);
+  }
+
+  @Post('manifest/consolidate')
+  @Roles(
+    UserRole.ADMIN,
+    UserRole.MANAGER,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary: 'Gom đơn vào manifest (route + tải trọng xe) [Điều phối / Quản lý]',
+    description:
+      'Kiểm tra đơn approved, chưa shipment_id, cùng route (store.route_id), tổng khối lượng theo quantity_approved × weight_kg không vượt payload xe; tạo manifest, shipment consolidated, gán orders.shipment_id và chuyển đơn sang picking.',
+  })
+  @ResponseMessage('Gom đơn vào manifest thành công')
+  async consolidateManifest(@Body() dto: ConsolidateManifestDto) {
+    return this.warehouseService.consolidateManifestOrders(dto);
   }
 
   @Post('manifests')

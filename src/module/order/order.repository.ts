@@ -431,7 +431,7 @@ export class OrderRepository {
   ) {
     const { storeId, deliveryDate, items, consolidationGroupId, totalAmount } =
       params;
-    const [newOrder] = await tx
+    const inserted = await tx
       .insert(schema.orders)
       .values({
         storeId: storeId,
@@ -442,6 +442,7 @@ export class OrderRepository {
       })
       .returning();
 
+    const newOrder = Array.isArray(inserted) ? inserted[0] : undefined;
     if (!newOrder) {
       throw new Error('Không thể tạo đơn hàng');
     }
@@ -541,9 +542,53 @@ export class OrderRepository {
             product: true,
           },
         },
-        store: true,
+        store: {
+          with: {
+            route: true,
+          },
+        },
       },
     });
+  }
+
+  /**
+   * Cập nhật atomically các dòng đơn (duyệt + snapshot giá) và header đơn trong cùng transaction.
+   */
+  async applySmartOrderApproval(
+    tx: NodePgDatabase<typeof schema>,
+    params: {
+      orderId: string;
+      status: OrderStatus;
+      orderNote: string | null;
+      totalAmount: string;
+      itemRows: Array<{
+        orderItemId: number;
+        quantityApproved: string;
+        unitPriceAtOrder: string;
+        unitCostAtImport: string | null;
+      }>;
+    },
+  ): Promise<void> {
+    for (const row of params.itemRows) {
+      await tx
+        .update(schema.orderItems)
+        .set({
+          quantityApproved: row.quantityApproved,
+          unitPriceAtOrder: row.unitPriceAtOrder,
+          unitCostAtImport: row.unitCostAtImport,
+        })
+        .where(eq(schema.orderItems.id, row.orderItemId));
+    }
+
+    await tx
+      .update(schema.orders)
+      .set({
+        status: params.status,
+        totalAmount: params.totalAmount,
+        note: params.orderNote,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.orders.id, params.orderId));
   }
 
   async updateStatusWithReason(

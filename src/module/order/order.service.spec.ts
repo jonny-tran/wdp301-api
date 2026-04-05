@@ -20,7 +20,12 @@ describe('OrderService', () => {
   let orderRepo: jest.Mocked<OrderRepository>;
   let shipmentService: jest.Mocked<ShipmentService>;
   let systemConfigService: jest.Mocked<SystemConfigService>;
-  let inventoryService: jest.Mocked<Pick<InventoryService, 'lockStockForOrder'>>;
+  let inventoryService: jest.Mocked<
+    Pick<
+      InventoryService,
+      'lockStockForOrder' | 'sumAtpAvailableForProduct' | 'releaseStockForShipment'
+    >
+  >;
   let mockTx: jest.Mocked<OrderRepository>;
 
   beforeEach(async () => {
@@ -43,6 +48,7 @@ describe('OrderService', () => {
       getBatchesForFEFO: jest.fn(),
       reserveInventory: jest.fn(),
       updateOrderItemApprovedQuantity: jest.fn(),
+      applySmartOrderApproval: jest.fn(),
       updateStatusWithReason: jest.fn(),
       updateOrderApproved: jest.fn(),
       getStoreWarehouseId: jest.fn(),
@@ -75,6 +81,7 @@ describe('OrderService', () => {
 
     const mockInventoryServiceObj = {
       lockStockForOrder: jest.fn(),
+      sumAtpAvailableForProduct: jest.fn(),
       releaseStockForShipment: jest.fn(),
     };
 
@@ -321,6 +328,7 @@ describe('OrderService', () => {
       mockTx.getStoreWarehouseId.mockResolvedValue(88 as never);
       mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
       mockTx.setOrderPendingPriceConfirm.mockResolvedValue(undefined as never);
+      mockTx.applySmartOrderApproval.mockResolvedValue(undefined as never);
       systemConfigService.getConfigValue.mockResolvedValue(null);
       inventoryService.lockStockForOrder.mockResolvedValue({
         shipmentItems: [{ batchId: 5, quantity: 10 }],
@@ -331,16 +339,25 @@ describe('OrderService', () => {
             requested: 10,
             approved: 10,
             missing: 0,
+            fefoUnitCostAtImport: '12.5',
           },
         ],
       });
 
       const result = await service.approveOrder(orderId);
 
-      expect(mockTx.updateOrderItemApprovedQuantity).toHaveBeenCalledWith(
-        10,
-        '10',
+      expect(mockTx.applySmartOrderApproval).toHaveBeenCalledWith(
         mockTx,
+        expect.objectContaining({
+          orderId,
+          status: OrderStatus.APPROVED,
+          itemRows: expect.arrayContaining([
+            expect.objectContaining({
+              orderItemId: 10,
+              quantityApproved: '10.00',
+            }),
+          ]),
+        }),
       );
       expect(result.status).toBe(OrderStatus.APPROVED);
       expect(result.results[0].approved).toBe(10);
@@ -374,6 +391,7 @@ describe('OrderService', () => {
       mockTx.getStoreWarehouseId.mockResolvedValue(88 as never);
       mockTx.setOrderProductionFlag.mockResolvedValue(undefined as never);
       mockTx.setOrderPendingPriceConfirm.mockResolvedValue(undefined as never);
+      mockTx.applySmartOrderApproval.mockResolvedValue(undefined as never);
       systemConfigService.getConfigValue.mockResolvedValue(null);
       inventoryService.lockStockForOrder.mockResolvedValue({
         shipmentItems: [{ batchId: 5, quantity: 60 }],
@@ -384,6 +402,7 @@ describe('OrderService', () => {
             requested: 100,
             approved: 60,
             missing: 40,
+            fefoUnitCostAtImport: '10',
           },
         ],
       });
@@ -392,16 +411,21 @@ describe('OrderService', () => {
         production_confirm: true,
       }); // force fill + production confirm for partial shortage
 
-      expect(mockTx.updateOrderItemApprovedQuantity).toHaveBeenCalledWith(
-        10,
-        '60',
+      expect(mockTx.applySmartOrderApproval).toHaveBeenCalledWith(
         mockTx,
+        expect.objectContaining({
+          itemRows: expect.arrayContaining([
+            expect.objectContaining({
+              orderItemId: 10,
+              quantityApproved: '60.00',
+            }),
+          ]),
+        }),
       );
       expect(result.status).toBe(OrderStatus.APPROVED);
       expect(result.results[0].approved).toBe(60);
       expect(result.results[0].missing).toBe(40);
       // Ensure no backorder is created (we only update the approved quantity and dispatch)
-      expect(mockTx.updateOrderApproved).toHaveBeenCalledWith(order.id, mockTx);
       expect(shipmentService.createShipmentForOrder).toHaveBeenCalled();
     });
 
@@ -539,7 +563,8 @@ describe('OrderService', () => {
         id: 'o-1',
         storeId: 's-1',
         status: OrderStatus.PENDING,
-        store: { name: 'KFC' },
+        deliveryDate: new Date('2026-06-15T00:00:00.000Z'),
+        store: { name: 'KFC', route: null, transitTimeHours: 24 },
         items: [
           {
             productId: 1,
@@ -551,14 +576,16 @@ describe('OrderService', () => {
 
       orderRepo.getOrderById.mockResolvedValue(mockOrder as never);
       orderRepo.getCentralWarehouseId.mockResolvedValue(99 as never);
-      orderRepo.getBatchesForFEFO.mockResolvedValue([
-        { batchId: 5, quantity: '30', reservedQuantity: '5' }, // 25 available
-      ] as never[]);
+      inventoryService.sumAtpAvailableForProduct.mockResolvedValue(25);
 
       const result = await service.reviewOrder('o-1');
 
       expect(orderRepo.getOrderById).toHaveBeenCalledWith('o-1');
-      expect(orderRepo.getBatchesForFEFO).toHaveBeenCalledWith(1, 99);
+      expect(inventoryService.sumAtpAvailableForProduct).toHaveBeenCalledWith(
+        1,
+        99,
+        expect.any(String),
+      );
       // No state updates
       expect(orderRepo.updateStatusWithReason).not.toHaveBeenCalled();
       expect(orderRepo.updateOrderApproved).not.toHaveBeenCalled();
@@ -762,6 +789,7 @@ describe('OrderService', () => {
             requested: 10,
             approved: 3,
             missing: 7,
+            fefoUnitCostAtImport: null,
           },
         ],
       });

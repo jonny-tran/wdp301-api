@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { and, eq, sql } from 'drizzle-orm';
+import Decimal from 'decimal.js';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { UnitOfWork } from '../../database/unit-of-work';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
@@ -959,6 +960,54 @@ export class InventoryService {
   }
 
   /**
+   * Giữ chỗ trên đúng một lô tại kho (Salvage — không qua FEFO).
+   */
+  async lockSpecificBatch(
+    warehouseId: number,
+    batchId: number,
+    amount: number,
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<void> {
+    if (!(amount > 0)) {
+      throw new BadRequestException('Số lượng giữ chỗ phải lớn hơn 0');
+    }
+    const amt = new Decimal(amount);
+    const locked = await tx
+      .select()
+      .from(schema.inventory)
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      )
+      .for('update');
+    const inv = locked[0];
+    if (!inv) {
+      throw new BadRequestException(
+        'Không có tồn kho cho lô này tại kho đã chọn',
+      );
+    }
+    const q = new Decimal(String(inv.quantity));
+    const r = new Decimal(String(inv.reservedQuantity));
+    const avail = q.minus(r);
+    if (avail.lt(amt)) {
+      throw new BadRequestException(
+        'Không đủ tồn khả dụng trên lô để giữ chỗ salvage',
+      );
+    }
+    await tx
+      .update(schema.inventory)
+      .set({
+        reservedQuantity: r.plus(amt).toFixed(4),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.inventory.id, inv.id));
+
+    await this.inventoryRepository.syncBatchTotalsFromInventory(tx, batchId);
+  }
+
+  /**
    * Đặt chỗ theo đơn (FEFO + đệm min_shelf_life): Available ↓, Reserved ↑, Physical không đổi.
    */
   async lockStockForOrder(
@@ -966,7 +1015,11 @@ export class InventoryService {
     warehouseId: number,
     items: OrderItemLockLine[],
     tx: NodePgDatabase<typeof schema>,
-    createdBy?: string | null,
+    options?: {
+      createdBy?: string | null;
+      /** Ngày tối đa (YYYY-MM-DD) mà HSD lô phải lớn hơn — ATP logistics */
+      safetyMinimumExpiryDateStr?: string;
+    },
   ): Promise<{
     shipmentItems: { batchId: number; quantity: number }[];
     results: {
@@ -975,6 +1028,8 @@ export class InventoryService {
       requested: number;
       approved: number;
       missing: number;
+      /** Giá vốn lô FEFO đầu tiên có nhận phân bổ (snapshot duyệt đơn) */
+      fefoUnitCostAtImport: string | null;
     }[];
   }> {
     const shipmentItems: { batchId: number; quantity: number }[] = [];
@@ -984,17 +1039,25 @@ export class InventoryService {
       requested: number;
       approved: number;
       missing: number;
+      fefoUnitCostAtImport: string | null;
     }[] = [];
+
+    const createdBy = options?.createdBy ?? null;
+    const shelfOpts = options?.safetyMinimumExpiryDateStr
+      ? { safetyMinimumExpiryDateStr: options.safetyMinimumExpiryDateStr }
+      : undefined;
 
     for (const line of items) {
       let remaining = line.quantityRequested;
       let approved = 0;
+      let fefoUnitCostAtImport: string | null = null;
 
       const batches =
         await this.inventoryRepository.findBatchesForFEFOWithShelfBuffer(
           line.productId,
           warehouseId,
           tx,
+          shelfOpts,
         );
 
       for (const batch of batches) {
@@ -1005,6 +1068,14 @@ export class InventoryService {
         if (available <= 0) continue;
 
         const takeNum = Math.min(available, remaining);
+
+        if (fefoUnitCostAtImport == null && takeNum > 0) {
+          const raw = batch.unitCostAtImport;
+          fefoUnitCostAtImport =
+            raw != null && String(raw).trim() !== ''
+              ? String(raw)
+              : null;
+        }
 
         await this.inventoryRepository.reserveInventoryQuantity(
           batch.inventoryId,
@@ -1039,10 +1110,33 @@ export class InventoryService {
         requested: line.quantityRequested,
         approved,
         missing: Math.max(0, line.quantityRequested - approved),
+        fefoUnitCostAtImport,
       });
     }
 
     return { shipmentItems, results };
+  }
+
+  /** Tổng ATP (khả dụng) theo lô thỏa mốc HSD — chỉ đọc, không khóa */
+  async sumAtpAvailableForProduct(
+    productId: number,
+    centralWarehouseId: number,
+    safetyMinimumExpiryDateStr: string,
+  ): Promise<number> {
+    const batches =
+      await this.inventoryRepository.findBatchesForAtpFefo(
+        productId,
+        centralWarehouseId,
+        safetyMinimumExpiryDateStr,
+      );
+    let sum = 0;
+    for (const b of batches) {
+      const phys = invFromDb(b.quantity);
+      const res = invFromDb(b.reservedQuantity);
+      const available = invRound2(phys - res);
+      if (available > 0) sum = invRound2(sum + available);
+    }
+    return sum;
   }
 
   /**

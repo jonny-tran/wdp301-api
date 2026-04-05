@@ -21,7 +21,8 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "db:seed": "ts-node src/database/seed.ts",
-    "db:seed:order": "ts-node src/database/seed-order-module.ts"
+    "db:seed:order": "ts-node src/database/seed-order-module.ts",
+    "db:seed:logistics": "ts-node src/database/seed-logistics.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -40,6 +41,7 @@
     "class-validator": "^0.14.3",
     "cloudinary": "^2.9.0",
     "dayjs": "^1.11.13",
+    "decimal.js": "^10.6.0",
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.1",
     "passport": "^0.7.0",

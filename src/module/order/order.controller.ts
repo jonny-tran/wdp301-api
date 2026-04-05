@@ -121,6 +121,18 @@ export class OrderController {
     return this.orderService.reviewOrder(id);
   }
 
+  @Get('coordinator/:id/approval-suggestion')
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Gợi ý duyệt đơn (ATP / Smart Approval) [Admin, Supply Coordinator]',
+    description:
+      '**Quyền truy cập (Roles):** Admin, Supply Coordinator\n\n**Nghiệp vụ:** Tính ATP theo ngày giao + thời gian tuyến + buffer 2h, không ghi DB — dùng trước khi bấm duyệt.',
+  })
+  async getApprovalSuggestion(@Param('id') id: string) {
+    return this.orderService.getApprovalSuggestion(id);
+  }
+
   @Patch('coordinator/:id/approve')
   @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
   @ApiOperation({

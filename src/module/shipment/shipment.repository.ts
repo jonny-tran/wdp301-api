@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
 import {
   and,
   count,
@@ -114,7 +114,7 @@ export class ShipmentRepository {
     consolidationGroupId?: string | null,
   ) {
     const database = tx || this.db;
-    const [shipment] = await database
+    const inserted = await database
       .insert(schema.shipments)
       .values({
         orderId,
@@ -124,6 +124,13 @@ export class ShipmentRepository {
         consolidationGroupId: consolidationGroupId ?? null,
       })
       .returning();
+    const rows = Array.isArray(inserted) ? inserted : [];
+    const shipment = rows[0];
+    if (!shipment) {
+      throw new InternalServerErrorException(
+        'createShipment: insert did not return a row',
+      );
+    }
     return shipment;
   }
 
