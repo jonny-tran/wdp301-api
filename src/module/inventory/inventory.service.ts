@@ -966,7 +966,11 @@ export class InventoryService {
     warehouseId: number,
     items: OrderItemLockLine[],
     tx: NodePgDatabase<typeof schema>,
-    createdBy?: string | null,
+    options?: {
+      createdBy?: string | null;
+      /** Ngày tối đa (YYYY-MM-DD) mà HSD lô phải lớn hơn — ATP logistics */
+      safetyMinimumExpiryDateStr?: string;
+    },
   ): Promise<{
     shipmentItems: { batchId: number; quantity: number }[];
     results: {
@@ -975,6 +979,8 @@ export class InventoryService {
       requested: number;
       approved: number;
       missing: number;
+      /** Giá vốn lô FEFO đầu tiên có nhận phân bổ (snapshot duyệt đơn) */
+      fefoUnitCostAtImport: string | null;
     }[];
   }> {
     const shipmentItems: { batchId: number; quantity: number }[] = [];
@@ -984,17 +990,25 @@ export class InventoryService {
       requested: number;
       approved: number;
       missing: number;
+      fefoUnitCostAtImport: string | null;
     }[] = [];
+
+    const createdBy = options?.createdBy ?? null;
+    const shelfOpts = options?.safetyMinimumExpiryDateStr
+      ? { safetyMinimumExpiryDateStr: options.safetyMinimumExpiryDateStr }
+      : undefined;
 
     for (const line of items) {
       let remaining = line.quantityRequested;
       let approved = 0;
+      let fefoUnitCostAtImport: string | null = null;
 
       const batches =
         await this.inventoryRepository.findBatchesForFEFOWithShelfBuffer(
           line.productId,
           warehouseId,
           tx,
+          shelfOpts,
         );
 
       for (const batch of batches) {
@@ -1005,6 +1019,14 @@ export class InventoryService {
         if (available <= 0) continue;
 
         const takeNum = Math.min(available, remaining);
+
+        if (fefoUnitCostAtImport == null && takeNum > 0) {
+          const raw = batch.unitCostAtImport;
+          fefoUnitCostAtImport =
+            raw != null && String(raw).trim() !== ''
+              ? String(raw)
+              : null;
+        }
 
         await this.inventoryRepository.reserveInventoryQuantity(
           batch.inventoryId,
@@ -1039,10 +1061,33 @@ export class InventoryService {
         requested: line.quantityRequested,
         approved,
         missing: Math.max(0, line.quantityRequested - approved),
+        fefoUnitCostAtImport,
       });
     }
 
     return { shipmentItems, results };
+  }
+
+  /** Tổng ATP (khả dụng) theo lô thỏa mốc HSD — chỉ đọc, không khóa */
+  async sumAtpAvailableForProduct(
+    productId: number,
+    centralWarehouseId: number,
+    safetyMinimumExpiryDateStr: string,
+  ): Promise<number> {
+    const batches =
+      await this.inventoryRepository.findBatchesForAtpFefo(
+        productId,
+        centralWarehouseId,
+        safetyMinimumExpiryDateStr,
+      );
+    let sum = 0;
+    for (const b of batches) {
+      const phys = invFromDb(b.quantity);
+      const res = invFromDb(b.reservedQuantity);
+      const available = invRound2(phys - res);
+      if (available > 0) sum = invRound2(sum + available);
+    }
+    return sum;
   }
 
   /**

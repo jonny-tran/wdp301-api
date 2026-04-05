@@ -7,6 +7,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
 import {
   isPastClosingTime,
   nextTruckDeparture,
@@ -14,6 +17,9 @@ import {
   parseToStartOfDayVn,
   VN_TZ,
 } from '../../common/time/vn-time';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 import * as schema from '../../database/schema';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { IJwtPayload } from '../auth/types/auth.types';
@@ -37,6 +43,39 @@ import { InventoryService } from '../inventory/inventory.service';
 import { OrderRepository } from './order.repository';
 
 const FALLBACK_TIMING_HOURS = 24;
+
+const ATP_BUFFER_HOURS = 2;
+
+function resolveTravelHoursForAtp(store: {
+  route?: { estimatedHours: string | null } | null;
+  transitTimeHours?: number | null;
+}): number {
+  const fromRoute = store.route?.estimatedHours;
+  const n =
+    fromRoute != null && String(fromRoute).trim() !== ''
+      ? Number(String(fromRoute).trim())
+      : NaN;
+  if (Number.isFinite(n) && n >= 0) {
+    return n;
+  }
+  const t = store.transitTimeHours;
+  if (t != null && Number.isFinite(t) && t >= 0) {
+    return t;
+  }
+  return 24;
+}
+
+/** Mốc ngày HSD tối thiểu: lô phải có expiry_date > chuỗi YYYY-MM-DD này (ATP logistics). */
+function computeSafetyMinimumExpiryDateStr(
+  deliveryDate: Date,
+  travelHours: number,
+  bufferHours: number = ATP_BUFFER_HOURS,
+): string {
+  return dayjs(deliveryDate)
+    .tz(VN_TZ)
+    .add(travelHours + bufferHours, 'hour')
+    .format('YYYY-MM-DD');
+}
 
 function describeConfigHours(
   raw: string | null,
@@ -402,6 +441,15 @@ export class OrderService {
             }
           }
 
+          const travelH = resolveTravelHoursForAtp(
+            order.store ?? { route: null, transitTimeHours: 24 },
+          );
+          const safetyMinimumExpiryDateStr = computeSafetyMinimumExpiryDateStr(
+            order.deliveryDate,
+            travelH,
+            ATP_BUFFER_HOURS,
+          );
+
           const lock = await this.inventoryService.lockStockForOrder(
             order.id,
             centralWarehouseId,
@@ -411,6 +459,7 @@ export class OrderService {
               quantityRequested: parseFloat(String(item.quantityRequested)),
             })),
             tx,
+            { safetyMinimumExpiryDateStr },
           );
 
           const shipmentItems = lock.shipmentItems;
@@ -420,14 +469,6 @@ export class OrderService {
             approved: r.approved,
             missing: r.missing,
           }));
-
-          for (const r of lock.results) {
-            await this.orderRepository.updateOrderItemApprovedQuantity(
-              r.orderItemId,
-              r.approved.toString(),
-              tx,
-            );
-          }
 
           const totalRequested = results.reduce(
             (sum, item) => sum + item.requested,
@@ -439,6 +480,13 @@ export class OrderService {
           );
 
           if (totalRequested > 0 && totalApproved === 0) {
+            for (const r of lock.results) {
+              await this.orderRepository.updateOrderItemApprovedQuantity(
+                r.orderItemId,
+                '0',
+                tx,
+              );
+            }
             await this.orderRepository.updateStatusWithReason(
               order.id,
               OrderStatus.REJECTED,
@@ -506,7 +554,38 @@ export class OrderService {
             });
           }
 
-          await this.orderRepository.updateOrderApproved(order.id, tx);
+          const shortfallParts: string[] = [];
+          let newTotal = 0;
+          const itemRows = lock.results.map((r) => {
+            const unitPrice = priceById.get(r.productId) ?? 0;
+            if (r.missing > 0) {
+              shortfallParts.push(
+                `SP#${r.productId}: hủy ${r.missing} (CANCELED_BY_STOCK)`,
+              );
+            }
+            newTotal += unitPrice * r.approved;
+            const priceSnap = unitPrice.toFixed(4);
+            return {
+              orderItemId: r.orderItemId,
+              quantityApproved: r.approved.toFixed(2),
+              unitPriceAtOrder: priceSnap,
+              unitCostAtImport: r.fefoUnitCostAtImport,
+            };
+          });
+
+          let mergedNote: string | null = order.note ?? null;
+          if (shortfallParts.length > 0) {
+            const block = `[CANCELED_BY_STOCK] ${shortfallParts.join('; ')}`;
+            mergedNote = mergedNote ? `${mergedNote}\n${block}` : block;
+          }
+
+          await this.orderRepository.applySmartOrderApproval(tx, {
+            orderId: order.id,
+            status: OrderStatus.APPROVED,
+            orderNote: mergedNote,
+            totalAmount: newTotal.toFixed(2),
+            itemRows,
+          });
 
           const storeWarehouseId =
             await this.orderRepository.getStoreWarehouseId(order.storeId, tx);
@@ -758,30 +837,33 @@ export class OrderService {
     const centralWarehouseId =
       await this.orderRepository.getCentralWarehouseId();
 
+    const travelH = resolveTravelHoursForAtp(
+      order.store ?? { route: null, transitTimeHours: 24 },
+    );
+    const safetyMinimumExpiryDateStr = computeSafetyMinimumExpiryDateStr(
+      order.deliveryDate,
+      travelH,
+      ATP_BUFFER_HOURS,
+    );
+
     const itemsWithReviewData = await Promise.all(
       order.items.map(async (item) => {
-        // Calculate Total Available Stock (Physical - Reserved)
-        // We use getBatchesForFEFO which returns batches where qty > reserved.
-        const batches = centralWarehouseId
-          ? await this.orderRepository.getBatchesForFEFO(
-              item.productId,
-              centralWarehouseId,
-            )
-          : [];
-
-        // Sum up available quantities
-        const currentStock = batches.reduce((sum, batch) => {
-          const available =
-            parseFloat(batch.quantity) - parseFloat(batch.reservedQuantity);
-          return sum + (available > 0 ? available : 0);
-        }, 0);
+        const currentStock =
+          centralWarehouseId != null
+            ? await this.inventoryService.sumAtpAvailableForProduct(
+                item.productId,
+                centralWarehouseId,
+                safetyMinimumExpiryDateStr,
+              )
+            : 0;
 
         return {
           productId: item.productId,
           productName: item.product.name,
           requestedQty: parseFloat(item.quantityRequested),
-          currentStock: currentStock,
+          currentStock,
           canFulfill: currentStock >= parseFloat(item.quantityRequested),
+          safetyMinimumExpiryDate: safetyMinimumExpiryDateStr,
         };
       }),
     );
@@ -791,6 +873,76 @@ export class OrderService {
       storeName: order.store.name,
       status: order.status,
       items: itemsWithReviewData,
+    };
+  }
+
+  /**
+   * Gợi ý duyệt đơn theo ATP (không ghi DB): so sánh requested với tồn khả dụng sau mốc HSD an toàn.
+   */
+  async getApprovalSuggestion(orderId: string) {
+    const order = await this.orderRepository.getOrderById(orderId);
+    if (!order) {
+      throw new NotFoundException('Không tìm thấy đơn hàng');
+    }
+
+    const centralWarehouseId =
+      await this.orderRepository.getCentralWarehouseId();
+    if (!centralWarehouseId) {
+      throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
+    }
+
+    const travelH = resolveTravelHoursForAtp(
+      order.store ?? { route: null, transitTimeHours: 24 },
+    );
+    const safetyMinimumExpiryDateStr = computeSafetyMinimumExpiryDateStr(
+      order.deliveryDate,
+      travelH,
+      ATP_BUFFER_HOURS,
+    );
+
+    const lines = await Promise.all(
+      order.items.map(async (item) => {
+        const requested = parseFloat(String(item.quantityRequested));
+        const atp = await this.inventoryService.sumAtpAvailableForProduct(
+          item.productId,
+          centralWarehouseId,
+          safetyMinimumExpiryDateStr,
+        );
+        const suggestedApprove = Math.min(requested, atp);
+        const canceledByStock = Math.max(0, requested - suggestedApprove);
+        return {
+          orderItemId: item.id,
+          productId: item.productId,
+          productName: item.product.name,
+          requested,
+          atpAvailable: atp,
+          suggestedApprove,
+          canceledByStock,
+          mode:
+            suggestedApprove >= requested
+              ? ('FULL_APPROVE' as const)
+              : suggestedApprove > 0
+                ? ('PARTIAL_FULFILLMENT' as const)
+                : ('NO_STOCK' as const),
+        };
+      }),
+    );
+
+    const allNoStock = lines.every((l) => l.mode === 'NO_STOCK');
+    const allFull = lines.every((l) => l.mode === 'FULL_APPROVE');
+
+    return {
+      orderId: order.id,
+      status: order.status,
+      safetyMinimumExpiryDate: safetyMinimumExpiryDateStr,
+      travelHoursUsed: travelH,
+      bufferHours: ATP_BUFFER_HOURS,
+      summarySuggestion: allNoStock
+        ? 'REJECT_ALL'
+        : allFull
+          ? 'FULL_APPROVE'
+          : 'PARTIAL_FULFILLMENT',
+      lines,
     };
   }
 

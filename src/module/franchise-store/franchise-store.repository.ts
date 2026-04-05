@@ -40,6 +40,16 @@ export class FranchiseStoreRepository {
     });
   }
 
+  async findByIdWithRoute(id: string) {
+    return this.db.query.stores.findFirst({
+      where: eq(schema.stores.id, id),
+      with: {
+        route: true,
+        warehouses: true,
+      },
+    });
+  }
+
   async create(dto: CreateStoreDto, tx?: NodePgDatabase<typeof schema>) {
     const db = tx ?? this.db;
     const inserted = await db

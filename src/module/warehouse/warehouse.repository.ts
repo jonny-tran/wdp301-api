@@ -13,16 +13,25 @@ import {
   SQL,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
+import { VN_TZ } from '../../common/time/vn-time';
 import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
+import { InventoryRepository } from '../inventory/inventory.repository';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { GetPickingTasksDto } from './dto/get-picking-tasks.dto';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 @Injectable()
 export class WarehouseRepository {
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
+    private readonly inventoryRepository: InventoryRepository,
   ) {}
 
   // --- Helpers ---
@@ -36,6 +45,27 @@ export class WarehouseRepository {
     return this.db.query.warehouses.findFirst({
       where: eq(schema.warehouses.type, 'central'),
     });
+  }
+
+  /**
+   * Lô hàng tại kho trung tâm: HSD (ngày) > mốc an toàn, kèm quantity / reserved từ inventory, FEFO.
+   */
+  async findValidBatches(
+    productId: number,
+    safetyThreshold: Date,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    const central = await this.findCentralWarehouseId();
+    if (!central) return [];
+    const safetyMinimumExpiryDateStr = dayjs(safetyThreshold)
+      .tz(VN_TZ)
+      .format('YYYY-MM-DD');
+    return this.inventoryRepository.findBatchesForAtpFefo(
+      productId,
+      central.id,
+      safetyMinimumExpiryDateStr,
+      tx,
+    );
   }
 
   async createWarehouse(

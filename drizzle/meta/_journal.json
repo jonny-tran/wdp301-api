@@ -225,6 +225,13 @@
       "when": 1775316222070,
       "tag": "0032_logistics_manifest_finance_waste",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1775365872673,
+      "tag": "0033_moaning_juggernaut",
+      "breakpoints": true
     }
   ]
 }

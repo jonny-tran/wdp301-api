@@ -412,8 +412,14 @@ export class InventoryRepository {
     productId: number,
     warehouseId: number,
     tx?: NodePgDatabase<typeof schema>,
+    options?: { safetyMinimumExpiryDateStr?: string },
   ) {
     const database = tx || this.db;
+
+    const expiryFilter = options?.safetyMinimumExpiryDateStr
+      ? sql`${schema.batches.expiryDate}::date > ${options.safetyMinimumExpiryDateStr}::date`
+      : sql`${schema.batches.expiryDate}::date > CURRENT_DATE + (COALESCE(${schema.products.minShelfLife}, 0)::int * interval '1 day')`;
+
     const base = database
       .select({
         inventoryId: schema.inventory.id,
@@ -422,6 +428,7 @@ export class InventoryRepository {
         expiryDate: schema.batches.expiryDate,
         quantity: schema.inventory.quantity,
         reservedQuantity: schema.inventory.reservedQuantity,
+        unitCostAtImport: schema.batches.unitCostAtImport,
       })
       .from(schema.inventory)
       .innerJoin(
@@ -437,12 +444,27 @@ export class InventoryRepository {
           eq(schema.inventory.warehouseId, warehouseId),
           eq(schema.batches.productId, productId),
           sql`${schema.inventory.quantity}::numeric > ${schema.inventory.reservedQuantity}::numeric`,
-          sql`${schema.batches.expiryDate}::date > CURRENT_DATE + (COALESCE(${schema.products.minShelfLife}, 0)::int * interval '1 day')`,
+          expiryFilter,
           sql`${schema.batches.status}::text NOT IN ('expired', 'damaged', 'empty')`,
         ),
       )
       .orderBy(asc(schema.batches.expiryDate));
     return tx ? base.for('update') : base;
+  }
+
+  /** Lô đủ điều kiện ATP: HSD (ngày) > mốc an toàn logistics (YYYY-MM-DD), FEFO */
+  async findBatchesForAtpFefo(
+    productId: number,
+    warehouseId: number,
+    safetyMinimumExpiryDateStr: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ) {
+    return this.findBatchesForFEFOWithShelfBuffer(
+      productId,
+      warehouseId,
+      tx,
+      { safetyMinimumExpiryDateStr },
+    );
   }
 
   async reserveInventoryQuantity(

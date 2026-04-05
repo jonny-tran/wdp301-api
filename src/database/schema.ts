@@ -641,6 +641,11 @@ export const orderItems = pgTable('order_items', {
     precision: 12,
     scale: 4,
   }),
+  /** Giá vốn đơn vị chốt lúc duyệt (theo lô FEFO đầu tiên được phân bổ) */
+  unitCostAtImport: decimal('unit_cost_at_import', {
+    precision: 12,
+    scale: 4,
+  }),
   packagingInfoSnapshot: text('packaging_info_snapshot'),
 });
 
