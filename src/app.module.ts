@@ -11,6 +11,7 @@ import { CloudinaryModule } from './module/cloudinary/cloudinary.module';
 import { FranchiseStoreModule } from './module/franchise-store/franchise-store.module';
 import { InboundModule } from './module/inbound/inbound.module';
 import { InventoryModule } from './module/inventory/inventory.module';
+import { LogisticsModule } from './module/logistics/logistics.module';
 import { OrderModule } from './module/order/order.module';
 import { ProductionModule } from './module/production/production.module';
 import { ProductModule } from './module/product/product.module';
@@ -49,6 +50,7 @@ import { WarehouseModule } from './module/warehouse/warehouse.module';
     SupplierModule,
     CloudinaryModule,
     SystemConfigModule,
+    LogisticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
