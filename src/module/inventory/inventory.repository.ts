@@ -32,10 +32,7 @@ import { DATABASE_CONNECTION } from '../../database/database.constants';
 import * as schema from '../../database/schema';
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
-import {
-  invFromDb,
-  invToDbString,
-} from './utils/inventory-decimal.util';
+import { invFromDb, invToDbString } from './utils/inventory-decimal.util';
 
 @Injectable()
 export class InventoryRepository {
@@ -465,12 +462,9 @@ export class InventoryRepository {
     safetyMinimumExpiryDateStr: string,
     tx?: NodePgDatabase<typeof schema>,
   ) {
-    return this.findBatchesForFEFOWithShelfBuffer(
-      productId,
-      warehouseId,
-      tx,
-      { safetyMinimumExpiryDateStr },
-    );
+    return this.findBatchesForFEFOWithShelfBuffer(productId, warehouseId, tx, {
+      safetyMinimumExpiryDateStr,
+    });
   }
 
   async reserveInventoryQuantity(
@@ -585,8 +579,7 @@ export class InventoryRepository {
       conditions.push(ilike(schema.products.name, `%${filters.searchTerm}%`));
     }
 
-    const whereClause =
-      conditions.length > 0 ? and(...conditions)! : undefined;
+    const whereClause = conditions.length > 0 ? and(...conditions)! : undefined;
 
     const summaryBase = this.db
       .select({
@@ -595,9 +588,10 @@ export class InventoryRepository {
         sku: schema.products.sku,
         warehouseId: schema.inventory.warehouseId,
         warehouseName: schema.warehouses.name,
-        totalQuantity: sql<number>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.mapWith(
-          Number,
-        ),
+        totalQuantity:
+          sql<number>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.mapWith(
+            Number,
+          ),
         unit: sql<string>`coalesce(${schema.baseUnits.name}, '')`,
         minStockLevel: schema.products.minStockLevel,
       })
@@ -641,9 +635,10 @@ export class InventoryRepository {
     const sqBase = this.db
       .select({
         productId: schema.batches.productId,
-        totalQuantity: sql<number>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
-          'total_quantity',
-        ),
+        totalQuantity:
+          sql<number>`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
+            'total_quantity',
+          ),
       })
       .from(schema.inventory)
       .innerJoin(
@@ -664,9 +659,8 @@ export class InventoryRepository {
         productName: schema.products.name,
         sku: schema.products.sku,
         minStockLevel: schema.products.minStockLevel,
-        currentQuantity: sql<number>`coalesce(${sq.totalQuantity}, 0)::float8`.mapWith(
-          Number,
-        ),
+        currentQuantity:
+          sql<number>`coalesce(${sq.totalQuantity}, 0)::float8`.mapWith(Number),
         unit: sql<string>`coalesce(${schema.baseUnits.name}, '')`,
       })
       .from(schema.products)
@@ -690,6 +684,67 @@ export class InventoryRepository {
         eq(schema.inventory.batchId, batchId),
       ),
     });
+  }
+
+  /**
+   * Tìm Batch theo ID kèm thông tin Product.
+   * Dùng trong flow WASTE để lấy productId và kiểm tra tồn tại.
+   */
+  async findBatchById(batchId: number, tx?: NodePgDatabase<typeof schema>) {
+    const database = tx || this.db;
+    return database.query.batches.findFirst({
+      where: eq(schema.batches.id, batchId),
+      with: { product: true },
+    });
+  }
+
+  /**
+   * Lấy tổng `quantity` thực tế của một batch trong một warehouse (có FOR UPDATE lock).
+   * Trả về số lượng (dạng number) và danh sách inventory row ID để reset sau đó.
+   */
+  async lockAndReadInventoryForWaste(
+    warehouseId: number,
+    batchId: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    const rows = await tx
+      .select()
+      .from(schema.inventory)
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      )
+      .for('update');
+
+    const totalQty = rows.reduce((sum, r) => sum + Number(r.quantity), 0);
+
+    return { rows, totalQty };
+  }
+
+  /**
+   * Đặt `quantity = 0` và `reservedQuantity = 0` cho tất cả inventory rows của batch tại warehouse.
+   * Dùng sau khi đã ghi WASTE transaction (atomic).
+   */
+  async zeroOutInventoryForBatch(
+    warehouseId: number,
+    batchId: number,
+    tx: NodePgDatabase<typeof schema>,
+  ) {
+    await tx
+      .update(schema.inventory)
+      .set({
+        quantity: '0',
+        reservedQuantity: '0',
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          eq(schema.inventory.batchId, batchId),
+        ),
+      );
   }
 
   async adjustBatchQuantity(
@@ -853,12 +908,14 @@ export class InventoryRepository {
     const invAgg = this.db
       .select({
         productId: schema.batches.productId,
-        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
-          'totalPhysical',
-        ),
-        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)::float8`.as(
-          'totalReserved',
-        ),
+        totalPhysical:
+          sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
+            'totalPhysical',
+          ),
+        totalReserved:
+          sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)::float8`.as(
+            'totalReserved',
+          ),
       })
       .from(schema.inventory)
       .innerJoin(
@@ -876,12 +933,14 @@ export class InventoryRepository {
         sku: schema.products.sku,
         unitName: sql<string>`coalesce(${schema.baseUnits.name}, '')`,
         minStock: schema.products.minStockLevel,
-        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}::numeric, 0)::float8`.mapWith(
-          Number,
-        ),
-        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}::numeric, 0)::float8`.mapWith(
-          Number,
-        ),
+        totalPhysical:
+          sql<number>`coalesce(${invAgg.totalPhysical}::numeric, 0)::float8`.mapWith(
+            Number,
+          ),
+        totalReserved:
+          sql<number>`coalesce(${invAgg.totalReserved}::numeric, 0)::float8`.mapWith(
+            Number,
+          ),
       })
       .from(schema.products)
       .leftJoin(
@@ -1147,12 +1206,14 @@ export class InventoryRepository {
     const invAgg = this.db
       .select({
         productId: schema.batches.productId,
-        totalPhysical: sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
-          'totalPhysical',
-        ),
-        totalReserved: sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)::float8`.as(
-          'totalReserved',
-        ),
+        totalPhysical:
+          sql`coalesce(sum(${schema.inventory.quantity}::numeric), 0)::float8`.as(
+            'totalPhysical',
+          ),
+        totalReserved:
+          sql`coalesce(sum(${schema.inventory.reservedQuantity}::numeric), 0)::float8`.as(
+            'totalReserved',
+          ),
       })
       .from(schema.inventory)
       .innerJoin(
@@ -1168,12 +1229,14 @@ export class InventoryRepository {
         productId: schema.products.id,
         productName: schema.products.name,
         minStock: schema.products.minStockLevel,
-        totalPhysical: sql<number>`coalesce(${invAgg.totalPhysical}::numeric, 0)::float8`.mapWith(
-          Number,
-        ),
-        totalReserved: sql<number>`coalesce(${invAgg.totalReserved}::numeric, 0)::float8`.mapWith(
-          Number,
-        ),
+        totalPhysical:
+          sql<number>`coalesce(${invAgg.totalPhysical}::numeric, 0)::float8`.mapWith(
+            Number,
+          ),
+        totalReserved:
+          sql<number>`coalesce(${invAgg.totalReserved}::numeric, 0)::float8`.mapWith(
+            Number,
+          ),
       })
       .from(schema.products)
       .leftJoin(invAgg, eq(schema.products.id, invAgg.productId))

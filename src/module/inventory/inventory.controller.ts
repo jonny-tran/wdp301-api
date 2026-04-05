@@ -25,6 +25,7 @@ import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
 import { KitchenAdjustInventoryDto } from './dto/kitchen-adjust-inventory.dto';
 import { KitchenSummaryQueryDto } from './dto/kitchen-summary-query.dto';
+import { ReportWasteDto } from './dto/report-waste.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
 import {
@@ -153,11 +154,7 @@ export class InventoryController {
   }
 
   @Post('adjust')
-  @Roles(
-    UserRole.MANAGER,
-    UserRole.ADMIN,
-    UserRole.CENTRAL_KITCHEN_STAFF,
-  )
+  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
     summary:
       'Điều chỉnh kho bếp (kiểm kê / hỏng / sai số) — kho từ JWT [Admin, Manager, Kitchen]',
@@ -169,6 +166,45 @@ export class InventoryController {
     @Body() body: KitchenAdjustInventoryDto,
   ) {
     return this.inventoryService.adjustKitchenInventory(user, body);
+  }
+
+  @Post('waste')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary:
+      'Tiêu hủy toàn bộ lô hàng (WASTE) — kho từ JWT [Admin, Manager, Kitchen]',
+    description:
+      'Ghi nhận tiêu hủy **100% tồn kho** của một Lô tại kho bếp trung tâm.\n\n' +
+      '- `batch_id`: ID lô cần tiêu hủy.\n' +
+      '- `reason`: `EXPIRED` (hết hạn) hoặc `DAMAGED` (hỏng/dập).\n' +
+      '- `note` (optional): mô tả chi tiết.\n\n' +
+      '**Atomic:** Advisory lock → kiểm tra tồn tại → đọc & lock inventory → ghi `WASTE` transaction âm → reset `inventory.quantity = 0` → cập nhật `batch.status`.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Tiêu hủy thành công, trả về referenceId và thông tin lô',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'Success',
+        data: {
+          referenceId: 'WST-A1B2C3D4E5',
+          batchId: 1,
+          batchCode: 'BATCH-2024-001',
+          productId: 3,
+          wastedQuantity: 50,
+          reason: 'EXPIRED',
+          note: null,
+          newBatchStatus: 'empty',
+        },
+      },
+    },
+  })
+  async reportWaste(
+    @CurrentUser() user: IJwtPayload,
+    @Body() body: ReportWasteDto,
+  ) {
+    return this.inventoryService.reportWaste(user, body);
   }
 
   @Get('kitchen/summary')
