@@ -295,7 +295,7 @@ export class InventoryController {
     summary:
       'Báo cáo hao hụt & hủy (Waste) [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Thống kê khối lượng **WASTE** trong kỳ và KPI hủy hàng (`WasteReportQueryDto`).',
+      'Thống kê số lượng, giá trị thiệt hại và tỷ lệ % hao hụt của kho (nhớ truyen optional warehouseId). Trả về KPI tổng tiền bị mất và tỷ lệ so với tổng nhập.',
   })
   async getWasteReport(
     @CurrentUser() user: IJwtPayload,

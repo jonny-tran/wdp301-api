@@ -41,6 +41,17 @@ export class WasteReportQueryDto {
   @IsOptional()
   @IsDateString()
   toDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'ID kho cần lọc (warehouse_id). Nếu không truyền, dùng kho bếp trung tâm từ JWT.',
+    example: 1,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  warehouseId?: number;
 }
 export class FinancialLossQueryDto {
   @ApiPropertyOptional({ description: 'Từ ngày (YYYY-MM-DD)' })

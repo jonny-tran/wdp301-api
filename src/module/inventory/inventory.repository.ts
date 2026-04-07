@@ -353,6 +353,19 @@ export class InventoryRepository {
     },
   ) {
     const database = tx || this.db;
+
+    const batchInfo = await database.query.batches.findFirst({
+      where: eq(schema.batches.id, batchId),
+      columns: { unitCostAtImport: true },
+    });
+
+    let totalValueSnapshot: string | undefined = undefined;
+    if (batchInfo?.unitCostAtImport != null) {
+      const unitCost = Number(batchInfo.unitCostAtImport);
+      const absQty = Math.abs(quantityChange);
+      totalValueSnapshot = (absQty * unitCost).toFixed(4);
+    }
+
     const [transaction] = await database
       .insert(schema.inventoryTransactions)
       .values({
@@ -360,6 +373,7 @@ export class InventoryRepository {
         batchId,
         type,
         quantityChange: quantityChange.toString(),
+        totalValueSnapshot,
         referenceId,
         reason,
         evidenceImage: opts?.evidenceImage ?? undefined,
@@ -1305,8 +1319,8 @@ export class InventoryRepository {
   }
 
   // --- API 3: Waste Report ---
-  async getWasteReport(
-    warehouseId: number,
+  async getWasteAnalytics(
+    warehouseId?: number,
     fromDate?: string,
     toDate?: string,
   ) {
@@ -1319,10 +1333,12 @@ export class InventoryRepository {
       ),
     );
 
-    const conditions: SQL[] = [
-      eq(schema.inventoryTransactions.warehouseId, warehouseId),
-      wasteLike!,
-    ];
+    const conditions: SQL[] = [wasteLike!];
+    if (warehouseId) {
+      conditions.push(
+        eq(schema.inventoryTransactions.warehouseId, warehouseId),
+      );
+    }
 
     if (fromDate) {
       conditions.push(
@@ -1348,8 +1364,9 @@ export class InventoryRepository {
           productName: schema.products.name,
           sku: schema.products.sku,
           unitName: schema.baseUnits.name,
-          totalWasteQuantity: sql<number>`SUM(ABS(${schema.inventoryTransactions.quantityChange}::numeric))`,
+          totalWasteQuantity: sql<number>`SUM(ABS(${schema.inventoryTransactions.quantityChange}::numeric))::float8`,
           wasteEventsCount: sql<number>`COUNT(${schema.inventoryTransactions.id})::int`,
+          totalLossAmount: sql<number>`SUM(coalesce(${schema.inventoryTransactions.totalValueSnapshot}::numeric, 0))::float8`,
         })
         .from(schema.inventoryTransactions)
         .innerJoin(
@@ -1373,10 +1390,48 @@ export class InventoryRepository {
         )
         .orderBy(
           desc(
-            sql`SUM(ABS(${schema.inventoryTransactions.quantityChange}::numeric))`,
+            sql`SUM(coalesce(${schema.inventoryTransactions.totalValueSnapshot}::numeric, 0))`,
           ),
         ),
     );
+  }
+
+  async getImportRevenueInPeriod(
+    warehouseId?: number,
+    fromDate?: string,
+    toDate?: string,
+  ) {
+    const conditions: SQL[] = [eq(schema.inventoryTransactions.type, 'import')];
+    if (warehouseId) {
+      conditions.push(
+        eq(schema.inventoryTransactions.warehouseId, warehouseId),
+      );
+    }
+    if (fromDate) {
+      conditions.push(
+        gte(
+          schema.inventoryTransactions.createdAt,
+          parseToStartOfDayVn(fromDate).toDate(),
+        ),
+      );
+    }
+    if (toDate) {
+      conditions.push(
+        lte(
+          schema.inventoryTransactions.createdAt,
+          parseToEndOfDayVn(toDate).toDate(),
+        ),
+      );
+    }
+
+    const [result] = await this.db
+      .select({
+        totalRevenue: sql<number>`SUM(coalesce(${schema.inventoryTransactions.totalValueSnapshot}::numeric, 0))::float8`,
+      })
+      .from(schema.inventoryTransactions)
+      .where(and(...conditions));
+
+    return result?.totalRevenue || 0;
   }
 
   // --- Financial Loss Impact ---

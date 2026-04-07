@@ -495,16 +495,17 @@ export class InventoryService {
       const reasonText = [dto.reason, dto.note].filter(Boolean).join(' | ');
 
       // Bước 3: Tạo Inventory Transaction loại WASTE (quantity_change âm)
-      await this.inventoryRepository.createInventoryTransaction(
-        warehouseId,
-        dto.batchId,
-        'waste',
-        -totalQty, // âm vì xuất khỏi kho
-        referenceId,
-        reasonText,
-        tx,
-        { createdBy: user.sub },
-      );
+      const wasteTransaction =
+        await this.inventoryRepository.createInventoryTransaction(
+          warehouseId,
+          dto.batchId,
+          'waste',
+          -totalQty, // âm vì xuất khỏi kho
+          referenceId,
+          reasonText,
+          tx,
+          { createdBy: user.sub },
+        );
 
       // Bước 4: Reset inventory về 0
       await this.inventoryRepository.zeroOutInventoryForBatch(
@@ -539,6 +540,7 @@ export class InventoryService {
         batchCode: batch.batchCode,
         productId: batch.productId,
         wastedQuantity: totalQty,
+        lossAmount: Number(wasteTransaction.totalValueSnapshot || 0),
         reason: dto.reason,
         note: dto.note ?? null,
         newBatchStatus,
@@ -737,35 +739,49 @@ export class InventoryService {
 
   // --- API 3: Waste Report ---
   async getWasteReport(query: WasteReportQueryDto, user: IJwtPayload) {
-    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
+    const warehouseId = query.warehouseId; // Nếu không truyền thì liệt kê tất cả các kho
 
-    const wasteData = await this.inventoryRepository.getWasteReport(
+    const wasteData = await this.inventoryRepository.getWasteAnalytics(
       warehouseId,
       query.fromDate,
       query.toDate,
     );
 
-    let totalWasteQuantity = 0;
+    const importRevenue =
+      await this.inventoryRepository.getImportRevenueInPeriod(
+        warehouseId,
+        query.fromDate,
+        query.toDate,
+      );
+
+    let totalLossAmount = 0;
 
     const formattedData = wasteData.map((w) => {
-      const qty = parseFloat(String(w.totalWasteQuantity));
-      totalWasteQuantity += qty;
+      totalLossAmount += w.totalLossAmount || 0;
 
       return {
         productId: w.productId,
         productName: w.productName,
         sku: w.sku,
         unitName: w.unitName,
-        totalWasteQuantity: qty,
-        wasteEventsCount: Number(w.wasteEventsCount),
+        totalWasteQuantity: Number(w.totalWasteQuantity || 0),
+        wasteEventsCount: Number(w.wasteEventsCount || 0),
+        totalLossAmount: Number(w.totalLossAmount || 0),
       };
     });
 
+    const topCostlyProducts = formattedData.slice(0, 5);
+    const wastePercentage =
+      importRevenue > 0 ? (totalLossAmount / importRevenue) * 100 : 0;
+
     return {
       kpi: {
-        totalWastedQuantity: totalWasteQuantity,
+        totalLossAmount,
+        importRevenueInPeriod: importRevenue,
+        wastePercentage: Number(wastePercentage.toFixed(2)),
         period: `${query.fromDate || 'Tất cả'} đến ${query.toDate || 'Hiện tại'}`,
       },
+      topCostlyProducts,
       details: formattedData,
     };
   }

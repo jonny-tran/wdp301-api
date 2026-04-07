@@ -36,7 +36,8 @@ describe('InventoryService', () => {
       getKitchenBatchDetails: jest.fn(),
       getAnalyticsSummary: jest.fn(),
       getAgingReport: jest.fn(),
-      getWasteReport: jest.fn(),
+      getWasteAnalytics: jest.fn(),
+      getImportRevenueInPeriod: jest.fn(),
       getFinancialLoss: jest.fn(),
       syncBatchTotalsFromInventory: jest.fn(),
       findBatchesForFEFOWithShelfBuffer: jest.fn(),
@@ -435,31 +436,35 @@ describe('InventoryService', () => {
     });
 
     describe('getWasteReport', () => {
-      it('should sum wasted quantity efficiently and match layout', async () => {
-        inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
-          1 as never,
-        );
-        inventoryRepo.getWasteReport.mockResolvedValue([
+      it('should sum total loss amount efficiently and match layout', async () => {
+        inventoryRepo.getWasteAnalytics.mockResolvedValue([
           {
-            transactionId: 1,
+            productId: 1,
             productName: 'A',
-            batchCode: 'B',
-            quantityWasted: '-50',
-            reason: 'Hư',
-            createdAt: new Date(),
+            sku: 'AB',
+            unitName: 'kg',
+            totalWasteQuantity: 50,
+            wasteEventsCount: 1,
+            totalLossAmount: 100000,
           },
           {
-            transactionId: 2,
+            productId: 2,
             productName: 'B',
-            batchCode: 'C',
-            quantityWasted: '-30',
-            reason: 'Rot',
-            createdAt: new Date(),
+            sku: 'CD',
+            unitName: 'kg',
+            totalWasteQuantity: 30,
+            wasteEventsCount: 2,
+            totalLossAmount: 200000,
           },
         ] as never);
 
+        inventoryRepo.getImportRevenueInPeriod.mockResolvedValue(
+          1000000 as never,
+        );
+
         const result = await service.getWasteReport(
           {
+            warehouseId: 1,
             fromDate: '2026-01-01',
             toDate: '2026-06-01',
           } as WasteReportQueryDto,
@@ -471,12 +476,13 @@ describe('InventoryService', () => {
           } as IJwtPayload,
         );
 
-        expect(inventoryRepo.getWasteReport).toHaveBeenCalledWith(
+        expect(inventoryRepo.getWasteAnalytics).toHaveBeenCalledWith(
           1,
           '2026-01-01',
           '2026-06-01',
         );
-        expect(result.kpi.totalWastedQuantity).toBe(80);
+        expect(result.kpi.totalLossAmount).toBe(300000);
+        expect(result.kpi.wastePercentage).toBe(30);
         expect(result.details.length).toBe(2);
       });
     });
@@ -655,7 +661,9 @@ describe('InventoryService', () => {
 
   describe('Inventory Engine (audit / FEFO / atomicity)', () => {
     it('should not sync batch when audit insert fails (atomicity)', async () => {
-      inventoryRepo.adjustBatchQuantity.mockResolvedValue({ quantity: '95' } as never);
+      inventoryRepo.adjustBatchQuantity.mockResolvedValue({
+        quantity: '95',
+      } as never);
       inventoryRepo.createInventoryTransaction.mockRejectedValue(
         new Error('simulated insert failure'),
       );
@@ -689,8 +697,12 @@ describe('InventoryService', () => {
     });
 
     it('should create exactly one adjust_loss transaction with correct sign', async () => {
-      inventoryRepo.adjustBatchQuantity.mockResolvedValue({ quantity: '90' } as never);
-      inventoryRepo.createInventoryTransaction.mockResolvedValue({ id: 1 } as never);
+      inventoryRepo.adjustBatchQuantity.mockResolvedValue({
+        quantity: '90',
+      } as never);
+      inventoryRepo.createInventoryTransaction.mockResolvedValue({
+        id: 1,
+      } as never);
       inventoryRepo.syncBatchTotalsFromInventory.mockResolvedValue(undefined);
 
       await service.adjustStock({
@@ -758,9 +770,9 @@ describe('InventoryService', () => {
         limit: 20,
       });
 
-      expect(inventoryRepo.resolveCentralKitchenWarehouseId).toHaveBeenCalledWith(
-        'store-central-uuid',
-      );
+      expect(
+        inventoryRepo.resolveCentralKitchenWarehouseId,
+      ).toHaveBeenCalledWith('store-central-uuid');
       expect(inventoryRepo.getKitchenSummary).toHaveBeenCalledWith(77, {
         search: undefined,
         limit: 20,
@@ -803,7 +815,9 @@ describe('InventoryService', () => {
         reservedQuantity: '10.00',
       } as never);
       inventoryRepo.updateInventoryPhysicalOnly.mockResolvedValue(undefined);
-      inventoryRepo.createInventoryTransaction.mockResolvedValue({ id: 1 } as never);
+      inventoryRepo.createInventoryTransaction.mockResolvedValue({
+        id: 1,
+      } as never);
       inventoryRepo.syncBatchTotalsFromInventory.mockResolvedValue(undefined);
 
       const out = await service.adjustKitchenInventory(kitchenUser, {
