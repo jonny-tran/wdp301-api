@@ -32,6 +32,7 @@ import {
   AgingReportQueryDto,
   WasteReportQueryDto,
   FinancialLossQueryDto,
+  WasteReportDetailQueryDto,
 } from './dto/analytics-query.dto';
 
 @ApiTags('Inventory')
@@ -297,11 +298,25 @@ export class InventoryController {
     description:
       'Thống kê số lượng, giá trị thiệt hại và tỷ lệ % hao hụt của kho (nhớ truyen optional warehouseId). Trả về KPI tổng tiền bị mất và tỷ lệ so với tổng nhập.',
   })
-  async getWasteReport(
-    @CurrentUser() user: IJwtPayload,
-    @Query() query: WasteReportQueryDto,
-  ) {
-    return this.inventoryService.getWasteReport(query, user);
+  async getWasteReport(@Query() query: WasteReportQueryDto) {
+    return this.inventoryService.getWasteReport(query);
+  }
+
+  @Get('analytics/waste-report')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary:
+      'Lấy Top sản phẩm bị tiêu hủy nhiều nhất (Details spec) [Admin, Manager, Kitchen, Supply Coordinator]',
+    description:
+      'Sử dụng Query Builders thực thi groupBy để tính tổng wasteQuantity, eventsCount và tổng giá trị cho từng loại sản phẩm theo ngày tuỳ chọn (Đúng chuẩn Backend Engineer yêu cầu).',
+  })
+  async getWasteReportDetailed(@Query() query: WasteReportDetailQueryDto) {
+    return this.inventoryService.getWasteReportDetailed(query);
   }
 
   @Get('analytics/financial/loss-impact')

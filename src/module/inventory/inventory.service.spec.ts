@@ -90,7 +90,7 @@ describe('InventoryService', () => {
               },
             },
           };
-          return cb(tx);
+          return await cb(tx);
         },
       ),
     };
@@ -462,19 +462,11 @@ describe('InventoryService', () => {
           1000000 as never,
         );
 
-        const result = await service.getWasteReport(
-          {
-            warehouseId: 1,
-            fromDate: '2026-01-01',
-            toDate: '2026-06-01',
-          } as WasteReportQueryDto,
-          {
-            sub: 'a',
-            email: 'a@b.c',
-            role: 'admin',
-            storeId: null,
-          } as IJwtPayload,
-        );
+        const result = await service.getWasteReport({
+          warehouseId: 1,
+          fromDate: '2026-01-01',
+          toDate: '2026-06-01',
+        } as WasteReportQueryDto);
 
         expect(inventoryRepo.getWasteAnalytics).toHaveBeenCalledWith(
           1,
@@ -787,8 +779,9 @@ describe('InventoryService', () => {
       inventoryRepo.resolveCentralKitchenWarehouseId.mockResolvedValue(
         1 as never,
       );
-      mockUow.runInTransaction.mockImplementationOnce(async (cb) =>
-        cb({ execute: jest.fn().mockResolvedValue(undefined) }),
+      mockUow.runInTransaction.mockImplementationOnce(
+        async (cb: (tx: any) => Promise<unknown>) =>
+          await cb({ execute: jest.fn().mockResolvedValue(undefined) }),
       );
       inventoryRepo.lockInventoryRowForUpdate.mockResolvedValue(null as never);
 
@@ -808,7 +801,9 @@ describe('InventoryService', () => {
         5 as never,
       );
       const txStub = { execute: jest.fn().mockResolvedValue(undefined) };
-      mockUow.runInTransaction.mockImplementationOnce(async (cb) => cb(txStub));
+      mockUow.runInTransaction.mockImplementationOnce(
+        async (cb: (tx: any) => Promise<unknown>) => await cb(txStub),
+      );
       inventoryRepo.lockInventoryRowForUpdate.mockResolvedValue({
         id: 100,
         quantity: '50.00',

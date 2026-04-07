@@ -16,8 +16,8 @@ import * as schema from '../../database/schema';
 import {
   AgingReportQueryDto,
   FinancialLossQueryDto,
-  // InventorySummaryQueryDto,
   WasteReportQueryDto,
+  WasteReportDetailQueryDto,
 } from './dto/analytics-query.dto';
 import { KITCHEN_NEAR_EXPIRY_ALERT_DAYS } from './constants/kitchen-inventory.constants';
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
@@ -737,8 +737,51 @@ export class InventoryService {
     };
   }
 
+  // --- API GET /inventory/analytics/waste-report (Dedicated spec) ---
+  async getWasteReportDetailed(query: WasteReportDetailQueryDto) {
+    const wasteData = await this.inventoryRepository.getWasteReportDetailed(
+      query.startDate,
+      query.endDate,
+      query.warehouseId,
+    );
+
+    let totalWasteQuantity = 0;
+    let totalLossAmount = 0;
+
+    const formattedData = wasteData.map((w) => {
+      const qty = Number(w.wastedQuantity || 0);
+      const amt = Number(w.lossAmount || 0);
+      totalWasteQuantity += qty;
+      totalLossAmount += amt;
+
+      return {
+        transactionId: w.transactionId,
+        batchId: w.batchId,
+        batchCode: w.batchCode,
+        batchStatus: w.batchStatus,
+        productId: w.productId,
+        productName: w.productName,
+        sku: w.sku,
+        unitName: w.unitName,
+        wastedQuantity: qty,
+        lossAmount: amt,
+        wasteReason: w.wasteReason,
+        reasonNote: w.reasonNote,
+        createdAt: w.createdAt,
+      };
+    });
+
+    return {
+      kpi: {
+        totalWasteQuantity,
+        totalLossAmount,
+      },
+      data: formattedData,
+    };
+  }
+
   // --- API 3: Waste Report ---
-  async getWasteReport(query: WasteReportQueryDto, user: IJwtPayload) {
+  async getWasteReport(query: WasteReportQueryDto) {
     const warehouseId = query.warehouseId; // Nếu không truyền thì liệt kê tất cả các kho
 
     const wasteData = await this.inventoryRepository.getWasteAnalytics(

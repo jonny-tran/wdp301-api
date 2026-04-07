@@ -1434,6 +1434,70 @@ export class InventoryRepository {
     return result?.totalRevenue || 0;
   }
 
+  // --- API GET inventory/analytics/waste-report (Detail spec) ---
+  async getWasteReportDetailed(
+    startDate?: string,
+    endDate?: string,
+    warehouseId?: number,
+  ) {
+    const conditions: SQL[] = [eq(schema.inventoryTransactions.type, 'waste')];
+
+    if (warehouseId) {
+      conditions.push(
+        eq(schema.inventoryTransactions.warehouseId, warehouseId),
+      );
+    }
+
+    if (startDate) {
+      conditions.push(
+        gte(
+          schema.inventoryTransactions.createdAt,
+          parseToStartOfDayVn(startDate).toDate(),
+        ),
+      );
+    }
+    if (endDate) {
+      conditions.push(
+        lte(
+          schema.inventoryTransactions.createdAt,
+          parseToEndOfDayVn(endDate).toDate(),
+        ),
+      );
+    }
+
+    return await this.db
+      .select({
+        transactionId: schema.inventoryTransactions.id,
+        batchId: schema.batches.id,
+        batchCode: schema.batches.batchCode,
+        batchStatus: schema.batches.status,
+        productId: schema.products.id,
+        productName: schema.products.name,
+        sku: schema.products.sku,
+        unitName: schema.baseUnits.name,
+        wastedQuantity: sql<number>`ABS(${schema.inventoryTransactions.quantityChange}::numeric)::float8`,
+        lossAmount: sql<number>`coalesce(${schema.inventoryTransactions.totalValueSnapshot}::numeric, 0)::float8`,
+        wasteReason: schema.inventoryTransactions.wasteReason,
+        reasonNote: schema.inventoryTransactions.reason,
+        createdAt: schema.inventoryTransactions.createdAt,
+      })
+      .from(schema.inventoryTransactions)
+      .innerJoin(
+        schema.batches,
+        eq(schema.inventoryTransactions.batchId, schema.batches.id),
+      )
+      .innerJoin(
+        schema.products,
+        eq(schema.batches.productId, schema.products.id),
+      )
+      .leftJoin(
+        schema.baseUnits,
+        eq(schema.products.baseUnitId, schema.baseUnits.id),
+      )
+      .where(and(...conditions))
+      .orderBy(desc(schema.inventoryTransactions.createdAt));
+  }
+
   // --- Financial Loss Impact ---
   async getFinancialLoss(
     from?: string,
