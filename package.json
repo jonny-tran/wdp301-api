@@ -44,6 +44,7 @@
     "decimal.js": "^10.6.0",
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.1",
+    "multer": "^2.1.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "pg": "^8.17.1",
