@@ -32,7 +32,7 @@ describe('InboundController', () => {
   });
 
   it('removeDraftReceipt should delegate to service', async () => {
-    inboundService.removeDraftReceipt!.mockResolvedValue({ message: 'Success' });
+    (inboundService.removeDraftReceipt as jest.Mock).mockResolvedValue({ message: 'Success' });
     await expect(
       controller.removeDraftReceipt('rid-1'),
     ).resolves.toEqual({ message: 'Success' });

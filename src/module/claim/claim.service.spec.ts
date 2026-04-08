@@ -391,9 +391,9 @@ describe('ClaimService', () => {
         'claim-123',
         ClaimStatus.APPROVED,
       );
-      expect(result.status).toBe('approved');
-      expect(result).toHaveProperty('store');
-      expect(result).toHaveProperty('shipment');
+      expect(result!.status).toBe('approved');
+      expect(result!).toHaveProperty('store');
+      expect(result!).toHaveProperty('shipment');
     });
   });
 });

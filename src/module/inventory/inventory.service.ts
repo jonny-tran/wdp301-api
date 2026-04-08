@@ -16,8 +16,8 @@ import * as schema from '../../database/schema';
 import {
   AgingReportQueryDto,
   FinancialLossQueryDto,
-  // InventorySummaryQueryDto,
   WasteReportQueryDto,
+  WasteReportDetailQueryDto,
 } from './dto/analytics-query.dto';
 import { KITCHEN_NEAR_EXPIRY_ALERT_DAYS } from './constants/kitchen-inventory.constants';
 import { GetInventoryTransactionsDto } from './dto/get-inventory-transactions.dto';
@@ -25,6 +25,7 @@ import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
 import { KitchenAdjustInventoryDto } from './dto/kitchen-adjust-inventory.dto';
 import { KitchenSummaryQueryDto } from './dto/kitchen-summary-query.dto';
+import { ReportWasteDto, WasteReason } from './dto/report-waste.dto';
 import { AdjustmentDto, OrderItemLockLine } from './dto/adjustment.dto';
 import type { IJwtPayload } from '../auth/types/auth.types';
 import { InventoryDto } from './inventory.dto';
@@ -218,10 +219,9 @@ export class InventoryService {
    * Kho bếp theo JWT: central + `storeId` token; nếu không khớp thì chọn central có nhiều inventory nhất.
    */
   async resolveKitchenWarehouseIdFromJwt(user: IJwtPayload): Promise<number> {
-    const id =
-      await this.inventoryRepository.resolveCentralKitchenWarehouseId(
-        user.storeId,
-      );
+    const id = await this.inventoryRepository.resolveCentralKitchenWarehouseId(
+      user.storeId,
+    );
     if (id == null) {
       throw new NotFoundException(
         'Không tìm thấy kho bếp trung tâm (central theo store_id JWT, hoặc kho central hub store_id null)',
@@ -308,11 +308,10 @@ export class InventoryService {
   /** GET /inventory/product/:productId/batches — FEFO, isNextFEFO */
   async getKitchenProductBatches(user: IJwtPayload, productId: number) {
     const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
-    const rows =
-      await this.inventoryRepository.getKitchenProductBatchesFefo(
-        warehouseId,
-        productId,
-      );
+    const rows = await this.inventoryRepository.getKitchenProductBatchesFefo(
+      warehouseId,
+      productId,
+    );
 
     this.logger.debug(
       `[getKitchenProductBatches] warehouseId=${warehouseId} productId=${productId} dbLines=${rows.length} first=${JSON.stringify(rows[0] ?? null)}`,
@@ -448,8 +447,103 @@ export class InventoryService {
         availableQty: availNum,
         reservedQty: invCentsToNumber(resCents),
         referenceId,
-        quantityChange:
-          diffCents === 0n ? 0 : invCentsToNumber(diffCents),
+        quantityChange: diffCents === 0n ? 0 : invCentsToNumber(diffCents),
+      };
+    });
+  }
+
+  /**
+   * POST /inventory/waste
+   * Tiêu hủy TOÀN BỘ tồn kho của một Lô (Batch) tại kho bếp trung tâm.
+   * Atomic: advisory_lock → tìm batch → lock inventory → ghi WASTE tx → zero out → update batch status.
+   */
+  async reportWaste(user: IJwtPayload, dto: ReportWasteDto) {
+    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
+    const referenceId = `WST-${randomUUID().replace(/-/g, '').slice(0, 10).toUpperCase()}`;
+
+    return this.uow.runInTransaction(async (tx) => {
+      // Khóa advisory theo warehouse để tránh race condition
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(90210, ${warehouseId})`,
+      );
+
+      // Bước 1: Kiểm tra tồn tại Batch
+      const batch = await this.inventoryRepository.findBatchById(
+        dto.batchId,
+        tx,
+      );
+      if (!batch) {
+        throw new NotFoundException(
+          `Không tìm thấy lô hàng với ID ${dto.batchId}`,
+        );
+      }
+
+      // Bước 2: Lock và đọc số lượng hiện tại
+      const { totalQty } =
+        await this.inventoryRepository.lockAndReadInventoryForWaste(
+          warehouseId,
+          dto.batchId,
+          tx,
+        );
+
+      if (totalQty <= 0) {
+        throw new BadRequestException(
+          'Lô hàng không còn tồn kho để tiêu hủy (số lượng = 0)',
+        );
+      }
+
+      const reasonText = [dto.reason, dto.note].filter(Boolean).join(' | ');
+
+      // Bước 3: Tạo Inventory Transaction loại WASTE (quantity_change âm)
+      const wasteTransaction =
+        await this.inventoryRepository.createInventoryTransaction(
+          warehouseId,
+          dto.batchId,
+          'waste',
+          -totalQty, // âm vì xuất khỏi kho
+          referenceId,
+          reasonText,
+          tx,
+          { createdBy: user.sub },
+        );
+
+      // Bước 4: Reset inventory về 0
+      await this.inventoryRepository.zeroOutInventoryForBatch(
+        warehouseId,
+        dto.batchId,
+        tx,
+      );
+
+      // Bước 5 (Optional): Cập nhật trạng thái Batch → 'empty' (lô đã hết)
+      // Schema không có 'wasted'; dùng 'empty' để đánh dấu lô đã tiêu hủy
+      const newBatchStatus: (typeof schema.batches.$inferSelect)['status'] =
+        dto.reason === WasteReason.DAMAGED ? 'damaged' : 'empty';
+      await this.inventoryRepository.updateBatchStatus(
+        tx,
+        dto.batchId,
+        newBatchStatus,
+      );
+
+      // Đồng bộ totals trên bảng batches
+      await this.inventoryRepository.syncBatchTotalsFromInventory(
+        tx,
+        dto.batchId,
+      );
+
+      this.logger.log(
+        `[reportWaste] userId=${user.sub} batchId=${dto.batchId} qty=${totalQty} reason=${dto.reason} ref=${referenceId} warehouseId=${warehouseId}`,
+      );
+
+      return {
+        referenceId,
+        batchId: Number(dto.batchId),
+        batchCode: batch.batchCode,
+        productId: batch.productId,
+        wastedQuantity: totalQty,
+        lossAmount: Number(wasteTransaction.totalValueSnapshot || 0),
+        reason: dto.reason,
+        note: dto.note ?? null,
+        newBatchStatus,
       };
     });
   }
@@ -481,35 +575,19 @@ export class InventoryService {
   }
 
   /** Gộp các loại điều chỉnh thành nhãn ADJUSTMENT cho FE */
-  private mapInventoryTxTypeForKitchenApi(
-    type: string,
-  ):
-    | 'ADJUSTMENT'
-    | 'IMPORT'
-    | 'EXPORT'
-    | 'WASTE'
-    | 'RESERVATION'
-    | 'RELEASE'
-    | string {
-    if (type === 'adjust_loss' || type === 'adjust_surplus' || type === 'adjustment') {
+  private mapInventoryTxTypeForKitchenApi(type: string): string {
+    if (
+      type === 'adjust_loss' ||
+      type === 'adjust_surplus' ||
+      type === 'adjustment'
+    ) {
       return 'ADJUSTMENT';
     }
-    const upper = type.toUpperCase();
-    return upper as
-      | 'ADJUSTMENT'
-      | 'IMPORT'
-      | 'EXPORT'
-      | 'WASTE'
-      | 'RESERVATION'
-      | 'RELEASE'
-      | string;
+    return type.toUpperCase();
   }
 
   //  Group theo Product để xem tổng quan (legacy path /kitchen/summary)
-  async getKitchenSummary(
-    query: GetKitchenInventoryDto,
-    user: IJwtPayload,
-  ) {
+  async getKitchenSummary(query: GetKitchenInventoryDto, user: IJwtPayload) {
     const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
 
     const { items, meta } = await this.inventoryRepository.getKitchenSummary(
@@ -659,37 +737,94 @@ export class InventoryService {
     };
   }
 
-  // --- API 3: Waste Report ---
-  async getWasteReport(query: WasteReportQueryDto, user: IJwtPayload) {
-    const warehouseId = await this.resolveKitchenWarehouseIdFromJwt(user);
-
-    const wasteData = await this.inventoryRepository.getWasteReport(
-      warehouseId,
-      query.fromDate,
-      query.toDate,
+  // --- API GET /inventory/analytics/waste-report (Dedicated spec) ---
+  async getWasteReportDetailed(query: WasteReportDetailQueryDto) {
+    const wasteData = await this.inventoryRepository.getWasteReportDetailed(
+      query.startDate,
+      query.endDate,
+      query.warehouseId,
     );
 
     let totalWasteQuantity = 0;
+    let totalLossAmount = 0;
 
     const formattedData = wasteData.map((w) => {
-      const qty = Math.abs(parseFloat(w.quantityWasted));
+      const qty = Number(w.wastedQuantity || 0);
+      const amt = Number(w.lossAmount || 0);
       totalWasteQuantity += qty;
+      totalLossAmount += amt;
 
       return {
         transactionId: w.transactionId,
-        productName: w.productName,
+        batchId: w.batchId,
         batchCode: w.batchCode,
+        batchStatus: w.batchStatus,
+        productId: w.productId,
+        productName: w.productName,
+        sku: w.sku,
+        unitName: w.unitName,
         wastedQuantity: qty,
-        reason: w.reason,
-        date: w.createdAt,
+        lossAmount: amt,
+        wasteReason: w.wasteReason,
+        reasonNote: w.reasonNote,
+        createdAt: w.createdAt,
       };
     });
 
     return {
       kpi: {
-        totalWastedQuantity: totalWasteQuantity,
+        totalWasteQuantity,
+        totalLossAmount,
+      },
+      data: formattedData,
+    };
+  }
+
+  // --- API 3: Waste Report ---
+  async getWasteReport(query: WasteReportQueryDto) {
+    const warehouseId = query.warehouseId; // Nếu không truyền thì liệt kê tất cả các kho
+
+    const wasteData = await this.inventoryRepository.getWasteAnalytics(
+      warehouseId,
+      query.fromDate,
+      query.toDate,
+    );
+
+    const importRevenue =
+      await this.inventoryRepository.getImportRevenueInPeriod(
+        warehouseId,
+        query.fromDate,
+        query.toDate,
+      );
+
+    let totalLossAmount = 0;
+
+    const formattedData = wasteData.map((w) => {
+      totalLossAmount += w.totalLossAmount || 0;
+
+      return {
+        productId: w.productId,
+        productName: w.productName,
+        sku: w.sku,
+        unitName: w.unitName,
+        totalWasteQuantity: Number(w.totalWasteQuantity || 0),
+        wasteEventsCount: Number(w.wasteEventsCount || 0),
+        totalLossAmount: Number(w.totalLossAmount || 0),
+      };
+    });
+
+    const topCostlyProducts = formattedData.slice(0, 5);
+    const wastePercentage =
+      importRevenue > 0 ? (totalLossAmount / importRevenue) * 100 : 0;
+
+    return {
+      kpi: {
+        totalLossAmount,
+        importRevenueInPeriod: importRevenue,
+        wastePercentage: Number(wastePercentage.toFixed(2)),
         period: `${query.fromDate || 'Tất cả'} đến ${query.toDate || 'Hiện tại'}`,
       },
+      topCostlyProducts,
       details: formattedData,
     };
   }
@@ -955,7 +1090,10 @@ export class InventoryService {
         },
       );
 
-      await this.inventoryRepository.syncBatchTotalsFromInventory(tx, dto.batchId);
+      await this.inventoryRepository.syncBatchTotalsFromInventory(
+        tx,
+        dto.batchId,
+      );
     });
   }
 
@@ -1072,9 +1210,7 @@ export class InventoryService {
         if (fefoUnitCostAtImport == null && takeNum > 0) {
           const raw = batch.unitCostAtImport;
           fefoUnitCostAtImport =
-            raw != null && String(raw).trim() !== ''
-              ? String(raw)
-              : null;
+            raw != null && String(raw).trim() !== '' ? String(raw) : null;
         }
 
         await this.inventoryRepository.reserveInventoryQuantity(
@@ -1123,12 +1259,11 @@ export class InventoryService {
     centralWarehouseId: number,
     safetyMinimumExpiryDateStr: string,
   ): Promise<number> {
-    const batches =
-      await this.inventoryRepository.findBatchesForAtpFefo(
-        productId,
-        centralWarehouseId,
-        safetyMinimumExpiryDateStr,
-      );
+    const batches = await this.inventoryRepository.findBatchesForAtpFefo(
+      productId,
+      centralWarehouseId,
+      safetyMinimumExpiryDateStr,
+    );
     let sum = 0;
     for (const b of batches) {
       const phys = invFromDb(b.quantity);
@@ -1193,9 +1328,9 @@ export class InventoryService {
         return;
       }
 
-      const shipment = await db.query.shipments.findFirst({
-        where: eq(schema.shipments.orderId, orderId),
-      });
+      const shipment = (await db.query.shipments.findFirst({
+        where: sql`order_id = ${orderId}`,
+      })) as unknown as { id: string; fromWarehouseId: number } | undefined;
       if (shipment) {
         await this.releaseStockForShipment(
           shipment.id,
@@ -1215,13 +1350,23 @@ export class InventoryService {
     centralWarehouseId: number,
     tx: NodePgDatabase<typeof schema>,
   ): Promise<void> {
-    const items = await tx.query.shipmentItems.findMany({
-      where: eq(schema.shipmentItems.shipmentId, shipmentId),
-    });
-    const shipment = await tx.query.shipments.findFirst({
-      where: eq(schema.shipments.id, shipmentId),
-    });
-    const orderId = shipment?.orderId;
+    interface LocalShipmentItem {
+      batchId: number;
+      quantity: string | number;
+    }
+    interface LocalShipment {
+      orderId: string | null;
+    }
+
+    const items = (await tx.query.shipmentItems.findMany({
+      where: sql`shipment_id = ${shipmentId}`,
+    })) as unknown as LocalShipmentItem[];
+
+    const shipment = (await tx.query.shipments.findFirst({
+      where: sql`id = ${shipmentId}`,
+    })) as unknown as LocalShipment | undefined;
+
+    const orderId: string | undefined = shipment?.orderId ?? undefined;
 
     for (const line of items) {
       const qty = parseFloat(String(line.quantity));
@@ -1245,7 +1390,7 @@ export class InventoryService {
         line.batchId,
         'release',
         qty,
-        orderId ?? undefined,
+        orderId,
         'Hoàn chỗ theo shipment (RELEASE)',
         tx,
       );
@@ -1264,17 +1409,30 @@ export class InventoryService {
     shipmentId: string,
     tx?: NodePgDatabase<typeof schema>,
   ): Promise<void> {
+    interface LocalShipmentItem {
+      batchId: number;
+      quantity: string | number;
+    }
+    interface LocalShipment {
+      id: string;
+      fromWarehouseId: number;
+    }
+
     const run = async (db: NodePgDatabase<typeof schema>) => {
-      const shipment = await db.query.shipments.findFirst({
-        where: eq(schema.shipments.id, shipmentId),
-        with: { items: true },
-      });
+      const shipment = (await db.query.shipments.findFirst({
+        where: sql`id = ${shipmentId}`,
+      })) as unknown as LocalShipment | undefined;
+
       if (!shipment) {
         throw new NotFoundException('Không tìm thấy chuyến hàng');
       }
-      const fromWarehouseId = shipment.fromWarehouseId;
+      const fromWarehouseId: number = shipment.fromWarehouseId;
 
-      for (const it of shipment.items ?? []) {
+      const items = (await db.query.shipmentItems.findMany({
+        where: sql`shipment_id = ${shipmentId}`,
+      })) as unknown as LocalShipmentItem[];
+
+      for (const it of items) {
         const qty = parseFloat(String(it.quantity));
         if (qty <= 0) continue;
 
