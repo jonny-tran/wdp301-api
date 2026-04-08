@@ -1,3 +1,4 @@
+import 'multer';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { UploadApiResponse, v2 as cloudinary } from 'cloudinary';
 import { Readable } from 'stream';

@@ -25,12 +25,14 @@ import { GetKitchenInventoryDto } from './dto/get-kitchen-inventory.dto';
 import { GetStoreInventoryDto } from './dto/get-store-inventory.dto';
 import { KitchenAdjustInventoryDto } from './dto/kitchen-adjust-inventory.dto';
 import { KitchenSummaryQueryDto } from './dto/kitchen-summary-query.dto';
+import { ReportWasteDto } from './dto/report-waste.dto';
 import { InventoryDto } from './inventory.dto';
 import { InventoryService } from './inventory.service';
 import {
   AgingReportQueryDto,
   WasteReportQueryDto,
   FinancialLossQueryDto,
+  WasteReportDetailQueryDto,
 } from './dto/analytics-query.dto';
 
 @ApiTags('Inventory')
@@ -153,11 +155,7 @@ export class InventoryController {
   }
 
   @Post('adjust')
-  @Roles(
-    UserRole.MANAGER,
-    UserRole.ADMIN,
-    UserRole.CENTRAL_KITCHEN_STAFF,
-  )
+  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.CENTRAL_KITCHEN_STAFF)
   @ApiOperation({
     summary:
       'Điều chỉnh kho bếp (kiểm kê / hỏng / sai số) — kho từ JWT [Admin, Manager, Kitchen]',
@@ -169,6 +167,45 @@ export class InventoryController {
     @Body() body: KitchenAdjustInventoryDto,
   ) {
     return this.inventoryService.adjustKitchenInventory(user, body);
+  }
+
+  @Post('waste')
+  @Roles(UserRole.MANAGER, UserRole.ADMIN, UserRole.CENTRAL_KITCHEN_STAFF)
+  @ApiOperation({
+    summary:
+      'Tiêu hủy toàn bộ lô hàng (WASTE) — kho từ JWT [Admin, Manager, Kitchen]',
+    description:
+      'Ghi nhận tiêu hủy **100% tồn kho** của một Lô tại kho bếp trung tâm.\n\n' +
+      '- `batch_id`: ID lô cần tiêu hủy.\n' +
+      '- `reason`: `EXPIRED` (hết hạn) hoặc `DAMAGED` (hỏng/dập).\n' +
+      '- `note` (optional): mô tả chi tiết.\n\n' +
+      '**Atomic:** Advisory lock → kiểm tra tồn tại → đọc & lock inventory → ghi `WASTE` transaction âm → reset `inventory.quantity = 0` → cập nhật `batch.status`.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Tiêu hủy thành công, trả về referenceId và thông tin lô',
+    schema: {
+      example: {
+        statusCode: 200,
+        message: 'Success',
+        data: {
+          referenceId: 'WST-A1B2C3D4E5',
+          batchId: 1,
+          batchCode: 'BATCH-2024-001',
+          productId: 3,
+          wastedQuantity: 50,
+          reason: 'EXPIRED',
+          note: null,
+          newBatchStatus: 'empty',
+        },
+      },
+    },
+  })
+  async reportWaste(
+    @CurrentUser() user: IJwtPayload,
+    @Body() body: ReportWasteDto,
+  ) {
+    return this.inventoryService.reportWaste(user, body);
   }
 
   @Get('kitchen/summary')
@@ -259,13 +296,27 @@ export class InventoryController {
     summary:
       'Báo cáo hao hụt & hủy (Waste) [Admin, Manager, Kitchen, Supply Coordinator]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager, Central Kitchen Staff, Supply Coordinator\n\n**Nghiệp vụ:** Thống kê khối lượng **WASTE** trong kỳ và KPI hủy hàng (`WasteReportQueryDto`).',
+      'Thống kê số lượng, giá trị thiệt hại và tỷ lệ % hao hụt của kho (nhớ truyen optional warehouseId). Trả về KPI tổng tiền bị mất và tỷ lệ so với tổng nhập.',
   })
-  async getWasteReport(
-    @CurrentUser() user: IJwtPayload,
-    @Query() query: WasteReportQueryDto,
-  ) {
-    return this.inventoryService.getWasteReport(query, user);
+  async getWasteReport(@Query() query: WasteReportQueryDto) {
+    return this.inventoryService.getWasteReport(query);
+  }
+
+  @Get('analytics/waste-report')
+  @Roles(
+    UserRole.MANAGER,
+    UserRole.ADMIN,
+    UserRole.CENTRAL_KITCHEN_STAFF,
+    UserRole.SUPPLY_COORDINATOR,
+  )
+  @ApiOperation({
+    summary:
+      'Lấy Top sản phẩm bị tiêu hủy nhiều nhất (Details spec) [Admin, Manager, Kitchen, Supply Coordinator]',
+    description:
+      'Sử dụng Query Builders thực thi groupBy để tính tổng wasteQuantity, eventsCount và tổng giá trị cho từng loại sản phẩm theo ngày tuỳ chọn (Đúng chuẩn Backend Engineer yêu cầu).',
+  })
+  async getWasteReportDetailed(@Query() query: WasteReportDetailQueryDto) {
+    return this.inventoryService.getWasteReportDetailed(query);
   }
 
   @Get('analytics/financial/loss-impact')

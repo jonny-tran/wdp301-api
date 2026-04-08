@@ -41,6 +41,17 @@ export class WasteReportQueryDto {
   @IsOptional()
   @IsDateString()
   toDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'ID kho cần lọc (warehouse_id). Nếu không truyền, dùng kho bếp trung tâm từ JWT.',
+    example: 1,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  warehouseId?: number;
 }
 export class FinancialLossQueryDto {
   @ApiPropertyOptional({ description: 'Từ ngày (YYYY-MM-DD)' })
@@ -52,4 +63,32 @@ export class FinancialLossQueryDto {
   @IsOptional()
   @IsDateString()
   to?: string;
+}
+
+export class WasteReportDetailQueryDto {
+  @ApiPropertyOptional({
+    description: 'Từ ngày (YYYY-MM-DD)',
+    example: '2026-01-01',
+  })
+  @IsOptional()
+  @IsDateString()
+  startDate?: string;
+
+  @ApiPropertyOptional({
+    description: 'Đến ngày (YYYY-MM-DD)',
+    example: '2026-12-31',
+  })
+  @IsOptional()
+  @IsDateString()
+  endDate?: string;
+
+  @ApiPropertyOptional({
+    description: 'ID kho cần lọc (warehouse_id)',
+    example: 2,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  warehouseId?: number;
 }
