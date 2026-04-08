@@ -155,7 +155,7 @@ Bảng **`order_items`** (API detail đơn thường trả về các field tươ
 
 ## 4. Trạng thái đơn hàng & shipment
 
-### 4.1. Order (`OrderStatus`)
+### 4.1. Order (`OrderStat`)
 
 | Giá trị | Gợi ý nghĩa trên UI |
 |---------|---------------------|
