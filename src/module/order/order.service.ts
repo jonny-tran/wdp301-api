@@ -114,6 +114,22 @@ export class OrderService {
   ) {}
 
   /**
+   * `@CurrentUser()` trong project hiện có 2 shape:
+   * - JWT payload gốc: `{ sub, ... }`
+   * - request.user đã map bởi strategy: `{ userId, ... }`
+   * Chuẩn hóa để luôn lấy được actor id phục vụ audit / createdBy.
+   */
+  private resolveActorId(user: IJwtPayload): string {
+    const actorId = (user as unknown as { userId?: string }).userId ?? user.sub;
+    if (!actorId) {
+      throw new BadRequestException(
+        'Không xác định được user id từ token (sub/userId)',
+      );
+    }
+    return actorId;
+  }
+
+  /**
    * Coordination Hub: tổng hợp tổng cầu (pending) + ATP kho trung tâm để ra shortage theo ngày giao.
    *
    * Đây là API “dashboard” để điều phối nhìn bức tranh tổng thể trước khi duyệt đơn lẻ.
@@ -170,6 +186,7 @@ export class OrderService {
     }
 
     const deliveryDate = dto.deliveryDate;
+    const actorId = this.resolveActorId(user);
 
     return this.orderRepository.runTransaction(async (tx) => {
       const centralWarehouseId = await this.orderRepository.getCentralWarehouseId(
@@ -227,7 +244,7 @@ export class OrderService {
                 productId: l.productId,
                 plannedQuantity: l.quantity,
                 warehouseId: centralWarehouseId,
-                createdBy: user.sub,
+                createdBy: actorId,
                 referenceId,
                 note:
                   dto.note?.trim() ||
@@ -266,6 +283,7 @@ export class OrderService {
     }
 
     const deliveryDateYmd = dto.deliveryDate;
+    const actorId = this.resolveActorId(user);
     const centralWarehouseId = await this.orderRepository.getCentralWarehouseId();
     if (!centralWarehouseId) {
       throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
@@ -338,7 +356,7 @@ export class OrderService {
           centralWarehouseId,
           lockLines,
           tx,
-          { safetyMinimumExpiryDateStr: deliveryDateYmd, createdBy: user.sub },
+          { safetyMinimumExpiryDateStr: deliveryDateYmd, createdBy: actorId },
         );
 
         // Tính lại tổng tiền theo approved thực tế (trong trường hợp thiếu kho vẫn có thể bị hụt)
@@ -704,6 +722,7 @@ export class OrderService {
       price_acknowledged: dto.price_acknowledged,
       production_confirm: dto.production_confirm,
     };
+    const actorId = this.resolveActorId(user);
 
     try {
       return await this.orderRepository
@@ -895,7 +914,7 @@ export class OrderService {
                     productId: pr.productId,
                     plannedQuantity: (missingByProductId.get(pr.productId) ?? 0),
                     warehouseId: centralWarehouseId,
-                    createdBy: user.sub,
+                    createdBy: actorId,
                     note: `Yêu cầu từ đơn hàng [${order.id}]`,
                     referenceId: order.id,
                   },
