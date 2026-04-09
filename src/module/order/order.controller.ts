@@ -25,6 +25,9 @@ import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
 import { ProductionConfirmDto } from './dto/production-confirm.dto';
 import { RejectOrderDto } from './dto/reject-order.dto';
+import { CoordinationSummaryQueryDto } from './dto/coordination-summary.dto';
+import { CoordinationInquiryDto } from './dto/coordination-inquiry.dto';
+import { CoordinationBatchApproveDto } from './dto/coordination-batch-approve.dto';
 import { OrderService } from './order.service';
 
 @ApiTags('Order')
@@ -131,6 +134,49 @@ export class OrderController {
   })
   async getApprovalSuggestion(@Param('id') id: string) {
     return this.orderService.getApprovalSuggestion(id);
+  }
+
+  @Get('coordination/summary')
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Coordination Hub: Tổng hợp tổng cầu & shortage theo ngày giao [Admin, Supply Coordinator]',
+    description:
+      '**Mục tiêu:** nhìn tổng cầu (Total Demand) theo ngày giao để ra quyết định chủ động.\n' +
+      '**Input:** deliveryDate.\n' +
+      '**Output:** mỗi sản phẩm gồm tổng cầu (pending), ATP kho trung tâm, và shortage = max(0, demand - atp).',
+  })
+  async coordinationSummary(@Query() q: CoordinationSummaryQueryDto) {
+    return this.orderService.getCoordinationSummary(q);
+  }
+
+  @Post('coordination/inquiry')
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Coordination Hub: Gửi Inquiry sang bếp (khóa đơn + tạo lệnh sản xuất pending) [Admin, Supply Coordinator]',
+    description:
+      '**Luồng:** pending orders (ngày giao) -> coordinating (khóa) và tạo production orders `pending` với `reference_id`/`note` để bếp phản hồi.\n' +
+      '**Lưu ý:** Inquiry là độc lập, **không** duyệt đơn và **không** tạo shipment.',
+  })
+  async sendInquiry(
+    @CurrentUser() user: IJwtPayload,
+    @Body() dto: CoordinationInquiryDto,
+  ) {
+    return this.orderService.sendCoordinationInquiry(user, dto);
+  }
+
+  @Patch('coordination/batch-approve')
+  @Roles(UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Coordination Hub: Duyệt hàng loạt theo Allocation (reserve FEFO + tạo shipment) [Admin, Supply Coordinator]',
+    description:
+      '**Input:** danh sách phân bổ `quantityApproved` theo từng order_item.\n' +
+      '**Nghiệp vụ:** chỉ xử lý đơn `coordinating` đúng ngày giao; mỗi đơn được duyệt atomically (reserve FEFO + update approved + tạo shipment).',
+  })
+  async batchApprove(
+    @CurrentUser() user: IJwtPayload,
+    @Body() dto: CoordinationBatchApproveDto,
+  ) {
+    return this.orderService.batchApproveByAllocation(user, dto);
   }
 
   @Patch('coordinator/:id/approve')

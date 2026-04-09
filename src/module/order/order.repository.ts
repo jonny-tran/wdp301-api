@@ -474,6 +474,80 @@ export class OrderRepository {
     });
   }
 
+  /**
+   * Coordination Hub: tổng hợp nhu cầu theo ngày giao hàng (DATE(delivery_date)).
+   * Chỉ tính đơn ở trạng thái `pending` (chưa khóa điều phối).
+   */
+  async aggregateDemandByDeliveryDate(
+    deliveryDateYmd: string,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<Array<{ productId: number; totalRequested: number }>> {
+    const db = tx ?? this.db;
+    const rows = await db
+      .select({
+        productId: schema.orderItems.productId,
+        totalRequested:
+          sql<number>`CAST(SUM(${schema.orderItems.quantityRequested}) AS FLOAT)`,
+      })
+      .from(schema.orderItems)
+      .innerJoin(schema.orders, eq(schema.orderItems.orderId, schema.orders.id))
+      .where(
+        and(
+          eq(schema.orders.status, OrderStatus.PENDING),
+          sql`DATE(${schema.orders.deliveryDate}) = DATE(${deliveryDateYmd})`,
+        ),
+      )
+      .groupBy(schema.orderItems.productId)
+      .orderBy(asc(schema.orderItems.productId));
+    return rows.map((r) => ({
+      productId: r.productId,
+      totalRequested: Number(r.totalRequested ?? 0),
+    }));
+  }
+
+  /** Coordination Hub: lấy danh sách orderId theo ngày giao và trạng thái. */
+  async listOrderIdsByDeliveryDateAndStatus(
+    deliveryDateYmd: string,
+    status: OrderStatus,
+    tx?: NodePgDatabase<typeof schema>,
+  ): Promise<string[]> {
+    const db = tx ?? this.db;
+    const rows = await db
+      .select({ id: schema.orders.id })
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.status, status),
+          sql`DATE(${schema.orders.deliveryDate}) = DATE(${deliveryDateYmd})`,
+        ),
+      );
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Coordination Hub: khóa đơn sang `coordinating` theo ngày giao (pending -> coordinating).
+   * Trả về số lượng đơn đã khóa.
+   */
+  async lockPendingOrdersForCoordination(
+    deliveryDateYmd: string,
+    tx: NodePgDatabase<typeof schema>,
+  ): Promise<number> {
+    const updated = await tx
+      .update(schema.orders)
+      .set({
+        status: OrderStatus.COORDINATING,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.orders.status, OrderStatus.PENDING),
+          sql`DATE(${schema.orders.deliveryDate}) = DATE(${deliveryDateYmd})`,
+        ),
+      )
+      .returning({ id: schema.orders.id });
+    return updated.length;
+  }
+
   async getCentralWarehouseId(tx?: NodePgDatabase<typeof schema>) {
     const database = tx || this.db;
     const warehouse = await database.query.warehouses.findFirst({

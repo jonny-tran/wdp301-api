@@ -45,6 +45,11 @@ export const productTypeEnum = pgEnum('product_type', [
 ]);
 export const orderStatusEnum = pgEnum('order_status', [
   'pending',
+  /**
+   * Đang trong quá trình điều phối (Coordination Hub): khóa đơn để chờ hỏi bếp / phân bổ.
+   * Store không nên sửa/hủy trong giai đoạn này (theo nghiệp vụ).
+   */
+  'coordinating',
   'approved',
   'rejected',
   'cancelled',

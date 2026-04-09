@@ -44,6 +44,9 @@ import { InventoryService } from '../inventory/inventory.service';
 import { ProductionService } from '../production/production.service';
 import { OrderRepository } from './order.repository';
 import { ApproveOrderDto } from './dto/approve-order.dto';
+import { CoordinationSummaryQueryDto } from './dto/coordination-summary.dto';
+import { CoordinationInquiryDto } from './dto/coordination-inquiry.dto';
+import { CoordinationBatchApproveDto } from './dto/coordination-batch-approve.dto';
 
 const FALLBACK_TIMING_HOURS = 24;
 
@@ -109,6 +112,293 @@ export class OrderService {
     private readonly inventoryService: InventoryService,
     private readonly productionService: ProductionService,
   ) {}
+
+  /**
+   * Coordination Hub: tổng hợp tổng cầu (pending) + ATP kho trung tâm để ra shortage theo ngày giao.
+   *
+   * Đây là API “dashboard” để điều phối nhìn bức tranh tổng thể trước khi duyệt đơn lẻ.
+   */
+  async getCoordinationSummary(q: CoordinationSummaryQueryDto) {
+    const deliveryDate = q.deliveryDate;
+    const demand = await this.orderRepository.aggregateDemandByDeliveryDate(
+      deliveryDate,
+    );
+    const centralWarehouseId = await this.orderRepository.getCentralWarehouseId();
+    if (!centralWarehouseId) {
+      throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
+    }
+
+    // Với coordination dashboard, dùng mốc HSD an toàn “tối thiểu” theo ngày giao (00:00 VN).
+    // Ở đây tạm dùng chính YYYY-MM-DD (rule ATP logistics phức tạp hơn đã có trong approveOrder).
+    const safetyMinimumExpiryDateStr = deliveryDate;
+
+    const lines = await Promise.all(
+      demand.map(async (d) => {
+        const atp = await this.inventoryService.sumAtpAvailableForProduct(
+          d.productId,
+          centralWarehouseId,
+          safetyMinimumExpiryDateStr,
+        );
+        const shortage = Math.max(0, d.totalRequested - atp);
+        return {
+          productId: d.productId,
+          totalDemand: d.totalRequested,
+          atpAvailable: atp,
+          shortage,
+        };
+      }),
+    );
+
+    return {
+      deliveryDate,
+      centralWarehouseId,
+      items: lines,
+    };
+  }
+
+  /**
+   * Coordination Hub: gửi inquiry sang bếp.
+   *
+   * - Khóa tất cả đơn `pending` của ngày giao -> `coordinating`
+   * - Tạo production orders `pending` (traceable) cho các dòng thiếu (shortage)
+   * - Không duyệt đơn, không tạo shipment (chỉ “hỏi bếp”)
+   */
+  async sendCoordinationInquiry(user: IJwtPayload, dto: CoordinationInquiryDto) {
+    const allowed = [UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN];
+    if (!allowed.includes(user.role as UserRole)) {
+      throw new ForbiddenException();
+    }
+
+    const deliveryDate = dto.deliveryDate;
+
+    return this.orderRepository.runTransaction(async (tx) => {
+      const centralWarehouseId = await this.orderRepository.getCentralWarehouseId(
+        tx,
+      );
+      if (!centralWarehouseId) {
+        throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
+      }
+
+      // 1) Khóa đơn ngày giao từ pending -> coordinating
+      const lockedCount =
+        await this.orderRepository.lockPendingOrdersForCoordination(
+          deliveryDate,
+          tx,
+        );
+
+      // 2) Xác định danh sách cần hỏi bếp
+      let inquiryLines =
+        dto.lines?.map((l) => ({
+          productId: l.productId,
+          quantity: l.quantity,
+        })) ?? null;
+
+      if (!inquiryLines || inquiryLines.length === 0) {
+        // Nếu FE không gửi lines, BE tự tính shortage dựa trên tổng cầu pending & ATP.
+        const demand = await this.orderRepository.aggregateDemandByDeliveryDate(
+          deliveryDate,
+          tx,
+        );
+        const safetyMinimumExpiryDateStr = deliveryDate;
+        inquiryLines = [];
+        for (const d of demand) {
+          const atp = await this.inventoryService.sumAtpAvailableForProduct(
+            d.productId,
+            centralWarehouseId,
+            safetyMinimumExpiryDateStr,
+          );
+          const shortage = Math.max(0, d.totalRequested - atp);
+          if (shortage > 0) {
+            inquiryLines.push({ productId: d.productId, quantity: shortage });
+          }
+        }
+      }
+
+      // 3) Tạo production order pending (traceability theo ngày giao)
+      const referenceId = `COORDINATION:${deliveryDate}`;
+      const dbTx = tx as unknown as NodePgDatabase<typeof schema>;
+
+      const created = await Promise.all(
+        inquiryLines
+          .filter((l) => l.quantity > 0)
+          .map((l) =>
+            this.productionService.createOrder(
+              {
+                productId: l.productId,
+                plannedQuantity: l.quantity,
+                warehouseId: centralWarehouseId,
+                createdBy: user.sub,
+                referenceId,
+                note: `Inquiry năng lực bếp cho ngày giao ${deliveryDate} (thiếu theo tổng cầu)`,
+              },
+              dbTx,
+            ),
+          ),
+      );
+
+      return {
+        deliveryDate,
+        lockedOrders: lockedCount,
+        productionOrdersCreated: created.length,
+        referenceId,
+      };
+    });
+  }
+
+  /**
+   * Coordination Hub: duyệt hàng loạt theo allocation do FE tính.
+   *
+   * FE gửi `quantityApproved` cho từng `order_item` (theo quyết định phân bổ).
+   * BE sẽ:
+   * - lock tồn kho theo FEFO (reservation + inventory_transactions)
+   * - cập nhật approved/giá snapshot như approve lẻ
+   * - tạo shipment như approve lẻ
+   */
+  async batchApproveByAllocation(
+    user: IJwtPayload,
+    dto: CoordinationBatchApproveDto,
+  ) {
+    const allowed = [UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN];
+    if (!allowed.includes(user.role as UserRole)) {
+      throw new ForbiddenException();
+    }
+
+    const deliveryDateYmd = dto.deliveryDate;
+    const centralWarehouseId = await this.orderRepository.getCentralWarehouseId();
+    if (!centralWarehouseId) {
+      throw new InternalServerErrorException('Không tìm thấy kho trung tâm');
+    }
+
+    const results: Array<{
+      orderId: string;
+      status: OrderStatus;
+      lines: Array<{ orderItemId: number; productId: number; requested: number; approved: number; missing: number }>;
+    }> = [];
+
+    // Mỗi đơn duyệt trong transaction riêng để đảm bảo atomicity theo đơn (giống approve lẻ).
+    for (const oa of dto.orderApprovals) {
+      const res = await this.orderRepository.runTransaction(async (tx) => {
+        const order = await this.orderRepository.getOrderById(oa.orderId, tx);
+        if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+
+        if (
+          (order.status as OrderStatus) !== OrderStatus.COORDINATING &&
+          (order.status as OrderStatus) !== OrderStatus.PENDING
+        ) {
+          throw new BadRequestException(
+            'Chỉ duyệt hàng loạt cho đơn pending/coordinating',
+          );
+        }
+        if (
+          String(dayjs(order.deliveryDate).format('YYYY-MM-DD')) !==
+          deliveryDateYmd
+        ) {
+          throw new BadRequestException('Đơn không thuộc ngày giao đã chọn');
+        }
+
+        const storeWarehouseId = await this.orderRepository.getStoreWarehouseId(
+          order.storeId,
+          tx,
+        );
+        if (!storeWarehouseId) {
+          throw new InternalServerErrorException('Không tìm thấy kho cửa hàng');
+        }
+
+        // Map allocation theo orderItemId
+        const allocByItemId = new Map(
+          oa.items.map((i) => [i.orderItemId, i.quantityApproved]),
+        );
+
+        // Validate allocation không vượt requested gốc
+        const lockLines = order.items.map((it) => {
+          const requested = parseFloat(String(it.quantityRequested));
+          const approvedTarget = allocByItemId.get(it.id);
+          if (approvedTarget == null) {
+            throw new BadRequestException(
+              `Thiếu allocation cho orderItemId=${it.id}`,
+            );
+          }
+          if (approvedTarget < 0 || approvedTarget > requested) {
+            throw new BadRequestException(
+              `Allocation không hợp lệ cho orderItemId=${it.id} (approved=${approvedTarget}, requested=${requested})`,
+            );
+          }
+          return {
+            orderItemId: it.id,
+            productId: it.productId,
+            quantityRequested: approvedTarget,
+          };
+        });
+
+        // lock tồn theo FEFO đúng theo “approvedTarget” (đây là quantityRequested của lock)
+        const lock = await this.inventoryService.lockStockForOrder(
+          order.id,
+          centralWarehouseId,
+          lockLines,
+          tx,
+          { safetyMinimumExpiryDateStr: deliveryDateYmd, createdBy: user.sub },
+        );
+
+        // Tính lại tổng tiền theo approved thực tế (trong trường hợp thiếu kho vẫn có thể bị hụt)
+        const productIds = order.items.map((i) => i.productId);
+        const catalogRows =
+          await this.orderRepository.findProductsWithSnapshotByIds(productIds);
+        const priceById = new Map(
+          catalogRows.map((r) => [r.id, parseFloat(String(r.unitPrice ?? '0'))]),
+        );
+
+        const itemRows = lock.results.map((r) => {
+          const unitPrice = priceById.get(r.productId) ?? 0;
+          return {
+            orderItemId: r.orderItemId,
+            quantityApproved: r.approved.toFixed(2),
+            unitPriceAtOrder: unitPrice.toFixed(4),
+            unitCostAtImport: r.fefoUnitCostAtImport,
+          };
+        });
+        const newTotal = lock.results.reduce((sum, r) => {
+          const unitPrice = priceById.get(r.productId) ?? 0;
+          return sum + unitPrice * r.approved;
+        }, 0);
+
+        await this.orderRepository.applySmartOrderApproval(tx, {
+          orderId: order.id,
+          status: OrderStatus.APPROVED,
+          orderNote: order.note ?? null,
+          totalAmount: newTotal.toFixed(2),
+          itemRows,
+        });
+
+        await this.shipmentService.createShipmentForOrder(
+          order.id,
+          centralWarehouseId,
+          storeWarehouseId,
+          lock.shipmentItems,
+          tx,
+          { consolidationGroupId: order.consolidationGroupId ?? null },
+        );
+
+        return {
+          orderId: order.id,
+          status: OrderStatus.APPROVED,
+          lines: lock.results.map((r) => ({
+            orderItemId: r.orderItemId,
+            productId: r.productId,
+            requested: r.requested,
+            approved: r.approved,
+            missing: r.missing,
+          })),
+        };
+      });
+      results.push(res);
+    }
+
+    return {
+      deliveryDate: deliveryDateYmd,
+      approvedCount: results.length,
+      items: results,
+    };
+  }
 
   async getCatalog(query: GetCatalogDto) {
     return this.orderRepository.getOrderCatalogProducts(query);
