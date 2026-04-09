@@ -1528,9 +1528,12 @@ export class OrderService {
       throw new NotFoundException('Không tìm thấy đơn hàng');
     }
 
-    if ((order.status as OrderStatus) !== OrderStatus.PENDING) {
+    if (
+      (order.status as OrderStatus) !== OrderStatus.COORDINATING &&
+      (order.status as OrderStatus) !== OrderStatus.PENDING
+    ) {
       throw new BadRequestException(
-        'Đơn không ở trạng thái chờ xử lý',
+        'Đơn phải ở trạng thái coordinating hoặc pending để bếp xác nhận',
       );
     }
 
@@ -1538,35 +1541,49 @@ export class OrderService {
       throw new BadRequestException('Đơn không yêu cầu xác nhận bếp.');
     }
 
-    if (!dto.isAccepted) {
-      return this.approveOrder(orderId, user, {
-        force_approve: true,
-        production_confirm: true,
-      });
-    }
-
     return this.orderRepository.runTransaction(async (tx) => {
+      if (!dto.isAccepted) {
+        // Bếp từ chối: đóng đơn ngay ở trạng thái rejected, đồng thời hoàn giữ chỗ nếu có.
+        await this.inventoryService.releaseStock(orderId, tx);
+        await tx
+          .update(schema.orders)
+          .set({
+            status: OrderStatus.REJECTED,
+            requiresProductionConfirm: false,
+            note: [order.note, 'Kitchen từ chối phối hợp sản xuất']
+              .filter(Boolean)
+              .join(' | '),
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.orders.id, orderId));
+
+        return {
+          orderId,
+          status: OrderStatus.REJECTED,
+        };
+      }
+
       const note = dto.expectedBatchCode
-        ? [order.note, `Lô dự kiến: ${dto.expectedBatchCode}`]
+        ? [order.note, `Bếp đồng ý phối hợp. Lô dự kiến: ${dto.expectedBatchCode}`]
             .filter(Boolean)
             .join(' | ')
-        : order.note;
+        : [order.note, 'Bếp đồng ý phối hợp sản xuất']
+            .filter(Boolean)
+            .join(' | ');
 
       await tx
         .update(schema.orders)
         .set({
-          status: OrderStatus.WAITING_FOR_PRODUCTION,
+          status: OrderStatus.APPROVED,
           requiresProductionConfirm: false,
           note,
           updatedAt: new Date(),
         })
         .where(eq(schema.orders.id, orderId));
 
-      await this.orderRepository.insertRestockTask(orderId, null, tx);
-
       return {
         orderId,
-        status: OrderStatus.WAITING_FOR_PRODUCTION,
+        status: OrderStatus.APPROVED,
       };
     });
   }

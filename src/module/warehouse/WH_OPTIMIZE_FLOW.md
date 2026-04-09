@@ -51,13 +51,16 @@ Tài liệu này mô tả chính xác endpoint, role, và luồng nghiệp vụ 
     - order `cancelled` + `cancel_reason`
 
 - `POST /warehouse/manifest/consolidate`
-  - Body: `ConsolidateManifestDto` (`orderIds[]`, `vehicleId`, `driverName?`)
+  - Body: `ConsolidateManifestDto` (`orderIds[]`, `vehicleId`, `driverName?`, `driverPhone?`)
   - Rule:
     - đơn phải `approved`, chưa gán shipment chính
     - cùng route
-    - tổng tải không vượt payload xe
+    - xe phải ở trạng thái `available`
+    - tải trọng tính theo `quantity_approved` (không dùng `quantity_requested`)
   - Tác động:
     - tạo manifest
+    - lưu `vehicle_id`, `vehicle_plate`, `driver_name`, `driver_phone`
+    - tính `totalWeightKg` + `totalVolumeM3`; nếu vượt ngưỡng thì gắn `manifest.overload_warning = true` (không chặn tạo)
     - shipment status -> `consolidated`
     - đơn -> `picking`
     - tạo picking list gộp
@@ -72,6 +75,7 @@ Tài liệu này mô tả chính xác endpoint, role, và luồng nghiệp vụ 
     - shipment -> `in_transit`
     - order -> `delivering`
     - manifest -> `departed`
+    - vehicle -> `in_transit` (được khóa trạng thái ở logistics service)
 
 ## 5) FE lưu ý triển khai
 

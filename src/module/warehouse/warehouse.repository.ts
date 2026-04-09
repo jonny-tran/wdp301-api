@@ -420,14 +420,21 @@ export class WarehouseRepository {
   }
 
   /**
-   * Tổng khối lượng gom đơn: Σ(quantity_approved × product.weight_kg) theo từng order;
+   * Tổng tải trọng/ thể tích gom đơn theo từng order:
+   * - totalWeightKg = Σ(quantity_approved × product.weight_kg)
+   * - totalVolumeM3 = Σ(quantity_approved × product.volume_m3)
    * route_id lấy từ store.
    */
-  async findOrderWeightsAndRoutes(
+  async findOrderLoadsAndRoutes(
     orderIds: string[],
     tx?: NodePgDatabase<typeof schema>,
   ): Promise<
-    Array<{ orderId: string; routeId: number | null; totalWeightKg: number }>
+    Array<{
+      orderId: string;
+      routeId: number | null;
+      totalWeightKg: number;
+      totalVolumeM3: number;
+    }>
   > {
     if (orderIds.length === 0) return [];
     const rows = await this.getDb(tx)
@@ -435,6 +442,7 @@ export class WarehouseRepository {
         orderId: schema.orders.id,
         routeId: schema.stores.routeId,
         totalWeightKg: sql<string>`COALESCE(SUM(COALESCE(${schema.orderItems.quantityApproved}, 0)::numeric * COALESCE(${schema.products.weightKg}, 0)), 0)`,
+        totalVolumeM3: sql<string>`COALESCE(SUM(COALESCE(${schema.orderItems.quantityApproved}, 0)::numeric * COALESCE(${schema.products.volumeM3}, 0)), 0)`,
       })
       .from(schema.orders)
       .innerJoin(schema.stores, eq(schema.orders.storeId, schema.stores.id))
@@ -453,6 +461,7 @@ export class WarehouseRepository {
       orderId: r.orderId,
       routeId: r.routeId,
       totalWeightKg: Number(r.totalWeightKg),
+      totalVolumeM3: Number(r.totalVolumeM3),
     }));
   }
 

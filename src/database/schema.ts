@@ -151,7 +151,10 @@ export const manifests = pgTable(
     id: serial('id').primaryKey(),
     code: text('code').notNull().unique(),
     driverName: text('driver_name'),
+    driverPhone: text('driver_phone'),
+    vehicleId: integer('vehicle_id').references(() => vehicles.id),
     vehiclePlate: text('vehicle_plate'),
+    overloadWarning: boolean('overload_warning').default(false).notNull(),
     status: manifestStatusEnum('status').default('preparing').notNull(),
     departureAt: timestamp('departure_at'),
     createdAt: timestamp('created_at').defaultNow(),
@@ -954,6 +957,10 @@ export const manifestRelations = relations(manifests, ({ one, many }) => ({
   pickingList: one(pickingLists, {
     fields: [manifests.id],
     references: [pickingLists.manifestId],
+  }),
+  vehicle: one(vehicles, {
+    fields: [manifests.vehicleId],
+    references: [vehicles.id],
   }),
   shipments: many(shipments),
 }));

@@ -8,6 +8,7 @@ import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateRouteDto } from './dto/update-route.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { LogisticsRepository } from './logistics.repository';
+import { VehicleStatusValue } from './dto/create-vehicle.dto';
 
 const PG_UNIQUE_VIOLATION = '23505';
 const PG_FK_VIOLATION = '23503';
@@ -34,6 +35,13 @@ export class LogisticsService {
       throw new NotFoundException(`Không tìm thấy xe #${id}`);
     }
     return row;
+  }
+
+  /**
+   * Alias dùng cho các module tích hợp (Warehouse/Shipment) để đọc thông tin xe.
+   */
+  async getVehicleById(id: number) {
+    return this.findVehicleById(id);
   }
 
   async createVehicle(dto: CreateVehicleDto) {
@@ -90,6 +98,19 @@ export class LogisticsService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Cập nhật trạng thái xe nhanh cho luồng nghiệp vụ vận hành kho.
+   * Hỗ trợ input "delivering" từ flow kho và map về enum hợp lệ "in_transit".
+   */
+  async updateVehicleStatus(
+    id: number,
+    status: VehicleStatusValue | 'delivering',
+  ) {
+    const normalized: VehicleStatusValue =
+      status === 'delivering' ? 'in_transit' : status;
+    return this.updateVehicle(id, { status: normalized });
   }
 
   async removeVehicle(id: number) {

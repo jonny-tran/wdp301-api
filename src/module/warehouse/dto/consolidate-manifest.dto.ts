@@ -31,4 +31,9 @@ export class ConsolidateManifestDto {
   @IsOptional()
   @IsString()
   driverName?: string;
+
+  @ApiPropertyOptional({ example: '0909123456' })
+  @IsOptional()
+  @IsString()
+  driverPhone?: string;
 }

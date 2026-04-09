@@ -14,6 +14,7 @@ import { UnitOfWork } from '../../database/unit-of-work';
 import * as schema from '../../database/schema';
 import { InventoryRepository } from '../inventory/inventory.repository';
 import { InventoryService } from '../inventory/inventory.service';
+import { LogisticsService } from '../logistics/logistics.service';
 import {
   invFromDb,
   invToDbString,
@@ -57,6 +58,7 @@ export class WarehouseService {
     private readonly uow: UnitOfWork,
     private readonly inventoryRepository: InventoryRepository,
     private readonly inventoryService: InventoryService,
+    private readonly logisticsService: LogisticsService,
     private readonly orderRepository: OrderRepository,
   ) {}
 
@@ -629,48 +631,52 @@ export class WarehouseService {
     }
 
     return this.uow.runInTransaction(async (tx) => {
-      const vehicle = await this.warehouseRepo.findVehicleById(
-        dto.vehicleId,
-        tx,
-      );
-      if (!vehicle) {
-        throw new NotFoundException('Không tìm thấy xe.');
+      const vehicle = await this.logisticsService.getVehicleById(dto.vehicleId);
+      if (vehicle.status !== 'available') {
+        throw new BadRequestException(
+          `Xe #${dto.vehicleId} đang ở trạng thái "${vehicle.status}", không thể gán manifest.`,
+        );
       }
-      const capacityKg = parseFloat(String(vehicle.payloadCapacity));
+      const capacityKg = Number(String(vehicle.payloadCapacity));
       if (Number.isNaN(capacityKg) || capacityKg <= 0) {
         throw new BadRequestException('Xe không có payload_capacity hợp lệ.');
       }
 
-      const weightRows =
-        await this.warehouseRepo.findOrderWeightsAndRoutes(
-          uniqueOrderIds,
-          tx,
-        );
-      if (weightRows.length !== uniqueOrderIds.length) {
+      const loadRows = await this.warehouseRepo.findOrderLoadsAndRoutes(
+        uniqueOrderIds,
+        tx,
+      );
+      if (loadRows.length !== uniqueOrderIds.length) {
         throw new BadRequestException(
           'Không đủ dữ liệu đơn hoặc dòng hàng để gom (kiểm tra đơn tồn tại và có item đã duyệt).',
         );
       }
 
-      if (weightRows.some((r) => r.routeId == null)) {
+      if (loadRows.some((r) => r.routeId == null)) {
         throw new BadRequestException(
           'Mỗi cửa hàng phải được gán route trước khi gom đơn.',
         );
       }
-      const routeId = weightRows[0]!.routeId!;
-      if (weightRows.some((r) => r.routeId !== routeId)) {
+      const routeId = loadRows[0]!.routeId!;
+      if (loadRows.some((r) => r.routeId !== routeId)) {
         throw new BadRequestException('Orders must belong to the same route');
       }
 
-      const totalWeightKg = weightRows.reduce(
+      const totalWeightKg = loadRows.reduce(
         (s, r) => s + r.totalWeightKg,
         0,
       );
-      if (totalWeightKg > capacityKg) {
-        throw new BadRequestException(
-          `Vehicle overload (Total: ${totalWeightKg.toFixed(3)} kg / Max: ${capacityKg.toFixed(3)} kg)`,
-        );
-      }
+      const totalVolumeM3 = loadRows.reduce((s, r) => s + r.totalVolumeM3, 0);
+      const maxVolumeRaw =
+        (await this.systemConfigService.getConfigValue('VEHICLE_MAX_VOLUME_M3')) ??
+        null;
+      const maxVolumeM3 =
+        maxVolumeRaw != null && Number.isFinite(Number(maxVolumeRaw))
+          ? Number(maxVolumeRaw)
+          : null;
+      const overloadWarning =
+        totalWeightKg > capacityKg ||
+        (maxVolumeM3 != null && totalVolumeM3 > maxVolumeM3);
 
       const orders = await tx.query.orders.findMany({
         where: inArray(schema.orders.id, uniqueOrderIds),
@@ -691,8 +697,11 @@ export class WarehouseService {
         }
       }
 
-      const weightByOrderId = new Map(
-        weightRows.map((r) => [r.orderId, r.totalWeightKg]),
+      const loadByOrderId = new Map(
+        loadRows.map((r) => [
+          r.orderId,
+          { totalWeightKg: r.totalWeightKg, totalVolumeM3: r.totalVolumeM3 },
+        ]),
       );
 
       const shipments = await this.warehouseRepo.findShipmentsReadyForManifest(
@@ -713,14 +722,21 @@ export class WarehouseService {
         .values({
           code,
           driverName: dto.driverName ?? null,
+          driverPhone: dto.driverPhone ?? null,
+          vehicleId: dto.vehicleId,
           vehiclePlate: vehicle.licensePlate,
+          overloadWarning,
           status: 'preparing',
         })
         .returning();
 
       for (const sh of shipments) {
-        const w = weightByOrderId.get(sh.orderId) ?? 0;
-        const wStr = w.toFixed(3);
+        const load = loadByOrderId.get(sh.orderId) ?? {
+          totalWeightKg: 0,
+          totalVolumeM3: 0,
+        };
+        const wStr = load.totalWeightKg.toFixed(3);
+        const vStr = load.totalVolumeM3.toFixed(6);
         await tx
           .update(schema.shipments)
           .set({
@@ -730,6 +746,7 @@ export class WarehouseService {
             status: 'consolidated',
             totalWeightKg: wStr,
             totalWeight: wStr,
+            totalVolumeM3: vStr,
             updatedAt: new Date(),
           })
           .where(eq(schema.shipments.id, sh.id));
@@ -782,7 +799,10 @@ export class WarehouseService {
         vehicleId: dto.vehicleId,
         routeId,
         totalWeightKg: totalWeightKg.toFixed(3),
+        totalVolumeM3: totalVolumeM3.toFixed(6),
         maxPayloadKg: capacityKg.toFixed(3),
+        maxVolumeM3: maxVolumeM3 != null ? maxVolumeM3.toFixed(6) : null,
+        overloadWarning,
         pickingListId: pickingList.id,
         orderIds: uniqueOrderIds,
         orderCount: shipments.length,
@@ -962,7 +982,7 @@ export class WarehouseService {
   }
 
   async confirmManifestDeparture(manifestId: number) {
-    return this.uow.runInTransaction(async (tx) => {
+    const result = await this.uow.runInTransaction(async (tx) => {
       await tx.execute(
         sql`SELECT pg_advisory_xact_lock(${manifestId}::bigint)`,
       );
@@ -1056,8 +1076,20 @@ export class WarehouseService {
           .where(eq(schema.pickingLists.id, pl.id));
       }
 
-      return { message: 'Đã xác nhận xe rời kho và trừ tồn kho.' };
+      return {
+        message: 'Đã xác nhận xe rời kho và trừ tồn kho.',
+        vehicleId: m.vehicleId,
+      };
     });
+
+    if (result.vehicleId) {
+      await this.logisticsService.updateVehicleStatus(
+        result.vehicleId,
+        'delivering',
+      );
+    }
+
+    return { message: result.message };
   }
 
   async cancelManifest(manifestId: number) {
