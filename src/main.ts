@@ -25,10 +25,19 @@ async function bootstrap() {
     defaultVersion: '1',
   });
 
+  const corsOrigins = configService.get<string>('CORS_ORIGINS') ?? '';
+  const corsLocalhost = configService.get<string>('CORS_LOCALHOST') ?? '';
+  const allowedOrigins = [corsOrigins, corsLocalhost]
+    .flatMap((value) => value.split(','))
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: '*',
+    origin: allowedOrigins.length > 0 ? allowedOrigins : false,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204,
   });
 
   app.useGlobalPipes(
