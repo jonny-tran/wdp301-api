@@ -15,6 +15,12 @@ import { InventoryService } from '../inventory/inventory.service';
 import { OrderRepository } from './order.repository';
 import { OrderService } from './order.service';
 import { ProductionService } from '../production/production.service';
+import dayjs from 'dayjs';
+import timezone from 'dayjs/plugin/timezone';
+import utc from 'dayjs/plugin/utc';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 describe('OrderService', () => {
   let service: OrderService;
@@ -184,6 +190,14 @@ describe('OrderService', () => {
         orderableOnly: true,
       });
       expect(orderRepo.insertOrderWithItems).toHaveBeenCalled();
+      const callArg = orderRepo.insertOrderWithItems.mock.calls[0]?.[1] as
+        | { deliveryDate: Date }
+        | undefined;
+      expect(callArg).toBeDefined();
+      const vnTime = dayjs(callArg!.deliveryDate).tz('Asia/Ho_Chi_Minh');
+      expect(vnTime.hour()).toBe(21);
+      expect(vnTime.minute()).toBe(55);
+      expect(vnTime.second()).toBe(0);
     });
 
     it('should throw BadRequestException if items array is empty', async () => {

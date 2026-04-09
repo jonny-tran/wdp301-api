@@ -27,6 +27,8 @@ import { IJwtPayload } from '../auth/types/auth.types';
 import { ShipmentService } from '../shipment/shipment.service';
 import { SystemConfigService } from '../system-config/system-config.service';
 import {
+  DEFAULT_ORDER_DELIVERY_HOUR,
+  DEFAULT_ORDER_DELIVERY_MINUTE,
   HIGH_VALUE_INVENTORY_CHECK_MAX_AGE_MS,
   PRICE_JUMP_THRESHOLD,
 } from './constants/ord-optimize.constants';
@@ -690,7 +692,14 @@ export class OrderService {
       )
       .toFixed(2);
 
-    const deliveryDateForDb = effectiveDeliveryVn.startOf('day').toDate();
+    // Chuẩn hóa thời điểm giao mặc định 21:55 VN để tránh lệch ngày khi parse UTC ở client/report.
+    const deliveryDateForDb = effectiveDeliveryVn
+      .startOf('day')
+      .hour(DEFAULT_ORDER_DELIVERY_HOUR)
+      .minute(DEFAULT_ORDER_DELIVERY_MINUTE)
+      .second(0)
+      .millisecond(0)
+      .toDate();
 
     try {
       return await this.orderRepository.runTransaction(async (tx) => {
