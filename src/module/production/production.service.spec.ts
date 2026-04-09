@@ -127,7 +127,10 @@ describe('ProductionService', () => {
         createdBy: 'user-1',
       });
 
-      expect(repo.findActiveRecipesByOutputProductId).toHaveBeenCalledWith(9);
+      expect(repo.findActiveRecipesByOutputProductId).toHaveBeenCalledWith(
+        9,
+        mockTx,
+      );
       expect(repo.generateNextProductionOrderCode).toHaveBeenCalledWith(mockTx);
       expect(repo.createProductionOrder).toHaveBeenCalledWith(
         {
@@ -136,6 +139,8 @@ describe('ProductionService', () => {
           warehouseId: 2,
           plannedQuantity: '10',
           status: 'draft',
+          note: null,
+          referenceId: null,
           productionType: 'standard',
           createdBy: 'user-1',
           kitchenStaffId: 'user-1',

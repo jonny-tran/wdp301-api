@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
+import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
@@ -40,7 +41,9 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { GetCatalogDto } from './dto/get-catalog.dto';
 import { GetOrdersDto } from './dto/get-orders.dto';
 import { InventoryService } from '../inventory/inventory.service';
+import { ProductionService } from '../production/production.service';
 import { OrderRepository } from './order.repository';
+import { ApproveOrderDto } from './dto/approve-order.dto';
 
 const FALLBACK_TIMING_HOURS = 24;
 
@@ -104,6 +107,7 @@ export class OrderService {
     private readonly shipmentService: ShipmentService,
     private readonly systemConfigService: SystemConfigService,
     private readonly inventoryService: InventoryService,
+    private readonly productionService: ProductionService,
   ) {}
 
   async getCatalog(query: GetCatalogDto) {
@@ -391,14 +395,24 @@ export class OrderService {
     return this.orderRepository.getOrdersForCoordinator(status);
   }
 
-  async approveOrder(
-    orderId: string,
-    confirm?: boolean,
-    opts?: {
-      price_acknowledged?: boolean;
-      production_confirm?: boolean;
-    },
-  ) {
+  /**
+   * Duyệt đơn theo **Partial Fulfillment** (No Backorder).
+   *
+   * Bổ sung (2026-04): nếu có thiếu hàng và điều phối chọn "Gửi yêu cầu sản xuất",
+   * hệ thống sẽ tạo thêm các lệnh sản xuất **độc lập** cho Central Kitchen.
+   *
+   * - **Không treo** đơn hiện tại: đơn vẫn duyệt theo tồn thực tế.
+   * - Lệnh sản xuất chỉ phục vụ **các đơn sau**.
+   * - Tạo lệnh sản xuất và duyệt đơn chạy trong **cùng transaction**:
+   *   hoặc cùng thành công, hoặc cùng rollback (atomicity).
+   */
+  async approveOrder(orderId: string, user: IJwtPayload, dto: ApproveOrderDto) {
+    const confirm = dto.force_approve;
+    const opts = {
+      price_acknowledged: dto.price_acknowledged,
+      production_confirm: dto.production_confirm,
+    };
+
     try {
       return await this.orderRepository
         .runTransaction(async (tx) => {
@@ -535,6 +549,68 @@ export class OrderService {
             if (!eta.isAfter(truckAt)) {
               throw new ProductionConfirmNeededError();
             }
+          }
+
+          // --- Luồng Production Request (độc lập, không backorder) ---
+          // Coordinator/Admin có thể gửi yêu cầu sản xuất cho các mặt hàng thiếu.
+          // Lưu ý: hệ thống **không** dùng lệnh này để bù vào đơn hiện tại (đơn hiện tại vẫn partial).
+          const productionRequests = dto.productionRequests ?? [];
+          if (productionRequests.length > 0) {
+            const allowed = [UserRole.SUPPLY_COORDINATOR, UserRole.ADMIN];
+            if (!allowed.includes(user.role as UserRole)) {
+              throw new ForbiddenException(
+                'Bạn không có quyền gửi yêu cầu sản xuất',
+              );
+            }
+
+            const missingByProductId = new Map(
+              results.map((r) => [r.productId, r.missing]),
+            );
+
+            const seen = new Set<number>();
+            for (const pr of productionRequests) {
+              if (seen.has(pr.productId)) {
+                throw new BadRequestException(
+                  `productionRequests bị trùng productId: ${pr.productId}`,
+                );
+              }
+              seen.add(pr.productId);
+
+              const missing = missingByProductId.get(pr.productId) ?? 0;
+              if (!(missing > 0)) {
+                throw new BadRequestException(
+                  `Sản phẩm #${pr.productId} không bị thiếu hàng trong đơn này`,
+                );
+              }
+
+              // Theo yêu cầu: plannedQuantity = shortage. UI gửi quantity để “tích chọn”,
+              // nhưng backend vẫn đảm bảo quantity phải khớp thiếu hàng để tránh lệch nghiệp vụ.
+              const epsilon = 1e-6;
+              if (Math.abs(pr.quantity - missing) > epsilon) {
+                throw new BadRequestException(
+                  `Sản phẩm #${pr.productId}: quantity (${pr.quantity}) phải bằng đúng shortage (${missing})`,
+                );
+              }
+            }
+
+            // Dùng chung transaction của duyệt đơn để đảm bảo atomicity.
+            // Nếu createOrder fail (ví dụ: thiếu Recipe), toàn bộ duyệt đơn sẽ rollback.
+            const dbTx = tx as unknown as NodePgDatabase<typeof schema>;
+            await Promise.all(
+              productionRequests.map((pr) =>
+                this.productionService.createOrder(
+                  {
+                    productId: pr.productId,
+                    plannedQuantity: (missingByProductId.get(pr.productId) ?? 0),
+                    warehouseId: centralWarehouseId,
+                    createdBy: user.sub,
+                    note: `Yêu cầu từ đơn hàng [${order.id}]`,
+                    referenceId: order.id,
+                  },
+                  dbTx,
+                ),
+              ),
+            );
           }
 
           await this.orderRepository.setOrderProductionFlag(
@@ -1070,7 +1146,10 @@ export class OrderService {
     }
 
     if (!dto.isAccepted) {
-      return this.approveOrder(orderId, true, { production_confirm: true });
+      return this.approveOrder(orderId, user, {
+        force_approve: true,
+        production_confirm: true,
+      });
     }
 
     return this.orderRepository.runTransaction(async (tx) => {

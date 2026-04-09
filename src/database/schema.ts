@@ -357,7 +357,13 @@ export const suppliers = pgTable('suppliers', {
 });
 
 export const productionOrderStatusEnum = pgEnum('production_order_status', [
+  /** Bếp tự tạo nháp */
   'draft',
+  /**
+   * Điều phối gửi yêu cầu từ duyệt đơn (chờ bếp nhận / bắt đầu).
+   * Khác `draft`: có traceability qua `reference_id` / `note`.
+   */
+  'pending',
   'in_progress',
   'completed',
   'cancelled',
@@ -414,6 +420,10 @@ export const productionOrders = pgTable('production_orders', {
     scale: 4,
   }),
   status: productionOrderStatusEnum('status').default('draft').notNull(),
+  /** Diễn giải nguồn gốc (vd: "Yêu cầu từ đơn hàng …") — traceability cho bếp */
+  note: text('note'),
+  /** ID đơn hàng gốc (UUID string) — hỗ trợ JOIN/báo cáo theo yêu cầu điều phối */
+  referenceId: varchar('reference_id', { length: 50 }),
   productionType: productionOrderTypeEnum('production_type')
     .default('standard')
     .notNull(),

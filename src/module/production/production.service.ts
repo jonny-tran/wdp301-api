@@ -5,11 +5,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import Decimal from 'decimal.js';
+import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { oneRelation } from '../../common/drizzle/query-helpers';
 import { generateInboundBatchCode } from '../../common/utils/generate-batch-code.util';
 import { InsufficientStockException } from '../../common/exceptions/insufficient-stock.exception';
 import { nowVn, parseToStartOfDayVn } from '../../common/time/vn-time';
 import { UnitOfWork } from '../../database/unit-of-work';
+import * as schema from '../../database/schema';
 import { UserRole } from '../auth/dto/create-user.dto';
 import { InboundRepository } from '../inbound/inbound.repository';
 import { InventoryRepository } from '../inventory/inventory.repository';
@@ -39,6 +41,8 @@ import {
 type SalvageInputBatch = NonNullable<
   Awaited<ReturnType<ProductionRepository['findBatchById']>>
 >;
+
+type DbTx = NodePgDatabase<typeof schema>;
 
 @Injectable()
 export class ProductionService {
@@ -257,12 +261,39 @@ export class ProductionService {
     };
   }
 
-  async createOrder(input: {
-    productId: number;
-    plannedQuantity: number;
-    warehouseId: number;
-    createdBy: string;
-  }) {
+  async createOrder(
+    input: {
+      productId: number;
+      plannedQuantity: number;
+      warehouseId: number;
+      createdBy: string;
+      /** Ghi chú nguồn gốc (vd: yêu cầu từ duyệt đơn). */
+      note?: string | null;
+      /** ID đơn hàng gốc — khi có thì lệnh ở trạng thái `pending` (chờ bếp nhận). */
+      referenceId?: string | null;
+    },
+    tx?: DbTx,
+  ) {
+    const run = async (runner: DbTx) =>
+      this.createOrderInTransaction(runner, input);
+
+    // Cho phép gọi từ module khác (vd: approveOrder) và dùng chung transaction để đảm bảo atomicity.
+    // Nếu không truyền `tx`, hàm sẽ tự mở transaction qua UnitOfWork như trước.
+    if (tx) return run(tx);
+    return this.uow.runInTransaction((uowTx) => run(uowTx as DbTx));
+  }
+
+  private async createOrderInTransaction(
+    tx: DbTx,
+    input: {
+      productId: number;
+      plannedQuantity: number;
+      warehouseId: number;
+      createdBy: string;
+      note?: string | null;
+      referenceId?: string | null;
+    },
+  ) {
     if (!isPositivePlannedQuantity(input.plannedQuantity)) {
       throw new BadRequestException(
         'Số lượng dự kiến (plannedQuantity) phải lớn hơn 0.',
@@ -281,6 +312,7 @@ export class ProductionService {
 
     const recipes = await this.repo.findActiveRecipesByOutputProductId(
       input.productId,
+      tx,
     );
     if (recipes.length === 0) {
       throw new NotFoundException(
@@ -297,22 +329,30 @@ export class ProductionService {
       throw new BadRequestException('Công thức chưa có định mức nguyên liệu');
     }
 
-    return this.uow.runInTransaction(async (tx) => {
-      const code = await this.repo.generateNextProductionOrderCode(tx);
-      return this.repo.createProductionOrder(
-        {
-          code,
-          recipeId: recipe.id,
-          warehouseId: input.warehouseId,
-          plannedQuantity: String(input.plannedQuantity),
-          status: 'draft',
-          productionType: 'standard',
-          createdBy: input.createdBy,
-          kitchenStaffId: input.createdBy,
-        },
-        tx,
-      );
-    });
+    const code = await this.repo.generateNextProductionOrderCode(tx);
+    const ref = input.referenceId?.trim() ?? null;
+    const isFromStoreOrder = ref != null;
+    /** Có `reference_id` (đơn hàng gốc) → `pending`; không thì `draft` (lệnh nháp tại bếp). */
+    const status = isFromStoreOrder ? 'pending' : 'draft';
+    const note =
+      input.note?.trim() ||
+      (isFromStoreOrder ? `Yêu cầu từ đơn hàng [${ref}]` : null);
+
+    return this.repo.createProductionOrder(
+      {
+        code,
+        recipeId: recipe.id,
+        warehouseId: input.warehouseId,
+        plannedQuantity: String(input.plannedQuantity),
+        status,
+        note,
+        referenceId: ref,
+        productionType: 'standard',
+        createdBy: input.createdBy,
+        kitchenStaffId: input.createdBy,
+      },
+      tx,
+    );
   }
 
   /** Bước 1–3: công thức, tồn, HSD — tạm giữ FEFO */
@@ -325,8 +365,10 @@ export class ProductionService {
           'Lệnh salvage đã giữ chỗ khi tạo; không gọi start (FEFO).',
         );
       }
-      if (order.status !== 'draft') {
-        throw new BadRequestException('Lệnh không ở trạng thái nháp');
+      if (order.status !== 'draft' && order.status !== 'pending') {
+        throw new BadRequestException(
+          'Lệnh không ở trạng thái nháp hoặc chờ xử lý (draft/pending)',
+        );
       }
       const recipe = await this.repo.findRecipeWithItems(order.recipeId, tx);
       if (!recipe?.items?.length) {

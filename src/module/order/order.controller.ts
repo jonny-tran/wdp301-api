@@ -142,12 +142,10 @@ export class OrderController {
   })
   async approveOrder(
     @Param('id') id: string,
+    @CurrentUser() user: IJwtPayload,
     @Body() approveDto: ApproveOrderDto,
   ) {
-    return this.orderService.approveOrder(id, approveDto.force_approve, {
-      price_acknowledged: approveDto.price_acknowledged,
-      production_confirm: approveDto.production_confirm,
-    });
+    return this.orderService.approveOrder(id, user, approveDto);
   }
 
   @Patch('coordinator/:id/force-cancel')

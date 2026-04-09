@@ -145,7 +145,11 @@ export class ProductionRepository {
       .where(
         and(
           eq(schema.productionOrders.recipeId, recipeId),
-          inArray(schema.productionOrders.status, ['draft', 'in_progress']),
+          inArray(schema.productionOrders.status, [
+            'draft',
+            'pending',
+            'in_progress',
+          ]),
         ),
       );
     return Number(row?.c ?? 0);
@@ -231,7 +235,13 @@ export class ProductionRepository {
       wheres.push(
         inArray(
           schema.productionOrders.status,
-          params.status as ('draft' | 'in_progress' | 'completed' | 'cancelled')[],
+          params.status as (
+            | 'draft'
+            | 'pending'
+            | 'in_progress'
+            | 'completed'
+            | 'cancelled'
+          )[],
         ),
       );
     }
@@ -301,8 +311,9 @@ export class ProductionRepository {
   }
 
   /** Mọi công thức active cho cùng một thành phẩm (service chỉ chấp nhận đúng 1 bản ghi). */
-  async findActiveRecipesByOutputProductId(outputProductId: number) {
-    return this.db.query.recipes.findMany({
+  async findActiveRecipesByOutputProductId(outputProductId: number, tx?: Db) {
+    const runner = tx ?? this.db;
+    return runner.query.recipes.findMany({
       where: and(
         eq(schema.recipes.outputProductId, outputProductId),
         eq(schema.recipes.isActive, true),

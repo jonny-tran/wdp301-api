@@ -11,6 +11,7 @@ import { PaginationParamsDto } from '../../../common/dto/pagination-params.dto';
 /** Trạng thái lệnh sản xuất (khớp DB enum) */
 export const PRODUCTION_ORDER_STATUSES = [
   'draft',
+  'pending',
   'in_progress',
   'completed',
   'cancelled',

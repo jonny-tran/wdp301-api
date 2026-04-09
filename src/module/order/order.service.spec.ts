@@ -14,6 +14,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { InventoryService } from '../inventory/inventory.service';
 import { OrderRepository } from './order.repository';
 import { OrderService } from './order.service';
+import { ProductionService } from '../production/production.service';
 
 describe('OrderService', () => {
   let service: OrderService;
@@ -27,6 +28,11 @@ describe('OrderService', () => {
     >
   >;
   let mockTx: jest.Mocked<OrderRepository>;
+  const coordinatorUser: IJwtPayload = {
+    sub: 'u-coord',
+    role: UserRole.SUPPLY_COORDINATOR,
+    email: 'coord@a.com',
+  };
 
   beforeEach(async () => {
     const mockOrderRepoObj = {
@@ -85,6 +91,10 @@ describe('OrderService', () => {
       releaseStockForShipment: jest.fn(),
     };
 
+    const mockProductionServiceObj = {
+      createOrder: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrderService,
@@ -103,6 +113,10 @@ describe('OrderService', () => {
         {
           provide: InventoryService,
           useValue: mockInventoryServiceObj,
+        },
+        {
+          provide: ProductionService,
+          useValue: mockProductionServiceObj,
         },
       ],
     }).compile();
@@ -344,7 +358,7 @@ describe('OrderService', () => {
         ],
       });
 
-      const result = await service.approveOrder(orderId);
+      const result = await service.approveOrder(orderId, coordinatorUser, {});
 
       expect(mockTx.applySmartOrderApproval).toHaveBeenCalledWith(
         mockTx,
@@ -407,7 +421,8 @@ describe('OrderService', () => {
         ],
       });
 
-      const result = await service.approveOrder(orderId, true, {
+      const result = await service.approveOrder(orderId, coordinatorUser, {
+        force_approve: true,
         production_confirm: true,
       }); // force fill + production confirm for partial shortage
 
@@ -431,10 +446,14 @@ describe('OrderService', () => {
 
     it('should throw NotFoundException if order not found', async () => {
       mockTx.getOrderById.mockResolvedValue(null as never);
-      await expect(service.approveOrder('invalid')).rejects.toThrow(
+      await expect(
+        service.approveOrder('invalid', coordinatorUser, {}),
+      ).rejects.toThrow(
         NotFoundException,
       );
-      await expect(service.approveOrder('invalid')).rejects.toThrow(
+      await expect(
+        service.approveOrder('invalid', coordinatorUser, {}),
+      ).rejects.toThrow(
         'Không tìm thấy đơn hàng',
       );
     });
@@ -443,10 +462,14 @@ describe('OrderService', () => {
       mockTx.getOrderById.mockResolvedValue({
         status: OrderStatus.APPROVED,
       } as never);
-      await expect(service.approveOrder('valid')).rejects.toThrow(
+      await expect(
+        service.approveOrder('valid', coordinatorUser, {}),
+      ).rejects.toThrow(
         BadRequestException,
       );
-      await expect(service.approveOrder('valid')).rejects.toThrow(
+      await expect(
+        service.approveOrder('valid', coordinatorUser, {}),
+      ).rejects.toThrow(
         'Đơn hàng không ở trạng thái chờ xử lý',
       );
     });
@@ -794,13 +817,13 @@ describe('OrderService', () => {
         ],
       });
 
-      await expect(service.approveOrder(orderId, false, {})).rejects.toMatchObject(
-        {
-          response: expect.objectContaining({
-            code: 'PRODUCTION_CONFIRMATION_REQUIRED',
-          }),
-        },
-      );
+      await expect(
+        service.approveOrder(orderId, coordinatorUser, { force_approve: false }),
+      ).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: 'PRODUCTION_CONFIRMATION_REQUIRED',
+        }),
+      });
       expect(orderRepo.setOrderProductionFlag).toHaveBeenCalledWith(
         orderId,
         true,
