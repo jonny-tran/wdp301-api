@@ -6,6 +6,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { inArray } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../../database/schema';
 import { UnitOfWork } from '../../database/unit-of-work';
@@ -14,6 +15,7 @@ import { InventoryRepository } from '../inventory/inventory.repository';
 import { InventoryService } from '../inventory/inventory.service';
 import { OrderStatus } from '../order/constants/order-status.enum';
 import { UserRole } from '../auth/dto/create-user.dto';
+import { SystemConfigService } from '../system-config/system-config.service';
 import { ShipmentStatus } from './constants/shipment-status.enum';
 import { GetShipmentsDto } from './dto/get-shipments.dto';
 import { ReceiveShipmentDto } from './dto/receive-shipment.dto';
@@ -29,6 +31,7 @@ export class ShipmentService {
     private readonly shipmentRepository: ShipmentRepository,
     private readonly inventoryRepository: InventoryRepository,
     private readonly inventoryService: InventoryService,
+    private readonly systemConfigService: SystemConfigService,
     @Inject(forwardRef(() => ClaimService))
     private readonly claimService: ClaimService,
   ) {}
@@ -86,6 +89,7 @@ export class ShipmentService {
       toWarehouseId,
       tx,
       groupId,
+      undefined,
     );
     await this.shipmentRepository.linkShipmentOrder(shipment.id, orderId, tx);
 
@@ -100,6 +104,99 @@ export class ShipmentService {
       shipment.id,
       tx,
       maxW,
+    );
+
+    return shipment;
+  }
+
+  /**
+   * Tạo 1 shipment gộp chứa nhiều order trong cùng đợt allocation.
+   * - Link many-to-many qua shipment_orders.
+   * - Tính tổng weight/volume theo shipment_items.
+   * - Snapshot danh sách địa chỉ/sđt cửa hàng tại thời điểm tạo.
+   */
+  async createConsolidatedShipmentForOrders(
+    orderIds: string[],
+    fromWarehouseId: number,
+    toWarehouseId: number,
+    shipmentItemsByOrderId: Map<string, { batchId: number; quantity: number }[]>,
+    tx: NodePgDatabase<typeof schema>,
+    opts?: {
+      consolidationGroupId?: string | null;
+      maxVehicleWeightKg?: number | null;
+    },
+  ) {
+    const uniqueOrderIds = [...new Set(orderIds)];
+    if (uniqueOrderIds.length === 0) {
+      throw new BadRequestException('orderIds không được rỗng');
+    }
+
+    const orders = await tx.query.orders.findMany({
+      where: inArray(schema.orders.id, uniqueOrderIds),
+      with: {
+        store: true,
+      },
+    });
+    if (orders.length !== uniqueOrderIds.length) {
+      throw new NotFoundException('Một hoặc nhiều đơn hàng không tồn tại');
+    }
+
+    const addressSnapshot = JSON.stringify(
+      orders.map((o) => ({
+        orderId: o.id,
+        storeId: o.storeId,
+        storeName: o.store?.name ?? null,
+        address: o.store?.address ?? null,
+        contactPhone: o.store?.phone ?? null,
+      })),
+    );
+
+    const shipment = await this.shipmentRepository.createShipment(
+      uniqueOrderIds[0]!,
+      fromWarehouseId,
+      toWarehouseId,
+      tx,
+      opts?.consolidationGroupId ?? null,
+      {
+        shippingAddressSnapshot: addressSnapshot,
+        contactPhoneSnapshot: null,
+      },
+    );
+
+    for (const orderId of uniqueOrderIds) {
+      await this.shipmentRepository.linkShipmentOrder(shipment.id, orderId, tx);
+      const orderItems = shipmentItemsByOrderId.get(orderId) ?? [];
+      if (orderItems.length > 0) {
+        await this.shipmentRepository.createShipmentItems(
+          orderItems.map((item) => ({
+            shipmentId: shipment.id,
+            batchId: item.batchId,
+            quantity: item.quantity.toString(),
+          })),
+          tx,
+        );
+      }
+    }
+
+    let maxVehicleWeightKg = opts?.maxVehicleWeightKg ?? null;
+    if (maxVehicleWeightKg == null || Number.isNaN(maxVehicleWeightKg)) {
+      const raw = await this.systemConfigService.getConfigValue(
+        'VEHICLE_MAX_WEIGHT_KG',
+      );
+      const parsed = raw != null ? parseFloat(raw) : NaN;
+      maxVehicleWeightKg = Number.isFinite(parsed) ? parsed : null;
+    }
+
+    await this.shipmentRepository.recalculateShipmentLoad(
+      shipment.id,
+      tx,
+      maxVehicleWeightKg,
+    );
+
+    await this.shipmentRepository.updateShipmentStatus(
+      shipment.id,
+      ShipmentStatus.CONSOLIDATED,
+      tx,
     );
 
     return shipment;

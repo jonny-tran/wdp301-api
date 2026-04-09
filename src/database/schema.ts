@@ -374,10 +374,8 @@ export const productionOrderStatusEnum = pgEnum('production_order_status', [
   'cancelled',
 ]);
 
-/** Chuẩn (FEFO) vs tận dụng lô chỉ định (Salvage / shelf-life extension) */
 export const productionOrderTypeEnum = pgEnum('production_order_type', [
   'standard',
-  'salvage',
 ]);
 
 /** Công thức (BOM): một thành phẩm = nhiều dòng nguyên liệu */
@@ -432,7 +430,7 @@ export const productionOrders = pgTable('production_orders', {
   productionType: productionOrderTypeEnum('production_type')
     .default('standard')
     .notNull(),
-  /** Lệnh salvage: lô nguyên liệu bắt buộc (không FEFO) */
+  /** Lô nguyên liệu chỉ định (dự phòng nghiệp vụ nội bộ) */
   inputBatchId: integer('input_batch_id').references(() => batches.id),
   kitchenStaffId: uuid('kitchen_staff_id').references(() => users.id),
   createdBy: uuid('created_by')
@@ -707,6 +705,10 @@ export const shipments = pgTable(
     totalWeightKg: decimal('total_weight_kg', { precision: 12, scale: 3 }),
     totalVolumeM3: decimal('total_volume_m3', { precision: 12, scale: 4 }),
     overloadWarning: boolean('overload_warning').default(false).notNull(),
+    /** Snapshot địa chỉ giao hàng tại thời điểm tạo shipment */
+    shippingAddressSnapshot: text('shipping_address_snapshot'),
+    /** Snapshot số điện thoại liên hệ nhận hàng tại thời điểm tạo shipment */
+    contactPhoneSnapshot: text('contact_phone_snapshot'),
     deliveredAt: timestamp('delivered_at'),
     createdAt: timestamp('created_at').defaultNow(),
     updatedAt: timestamp('updated_at').defaultNow(),
@@ -925,7 +927,7 @@ export const batchRelations = relations(batches, ({ one, many }) => ({
   shipmentItemsAsActual: many(shipmentItems, {
     relationName: 'shipmentItemActualBatch',
   }),
-  salvageProductionOrders: many(productionOrders, {
+  inputBatchProductionOrders: many(productionOrders, {
     relationName: 'productionOrderInputBatch',
   }),
 }));

@@ -55,18 +55,9 @@ Tài liệu tổng hợp **các luồng nghiệp vụ và API quan trọng** mà
 
 ---
 
-### 1.3. Salvage Production — Parent Batch → Child Batch
+### 1.3. Waste-only Policy
 
-**Bản chất:** **Shelf-life extension** — chế biến **một lô nguyên liệu chỉ định** (không FEFO) thành thành phẩm mới, lô mới có HSD theo công thức / sản phẩm.
-
-**Luồng API:**
-
-1. **`POST /production/salvage`** — Tạo lệnh `production_type = salvage`, **lock đúng `input_batch_id`**, trạng thái lệnh vào ca làm việc (`in_progress`). BOM phải **đúng một dòng** nguyên liệu trùng sản phẩm trên lô; lô **chưa quá hạn** (VN).
-2. **`POST /production/salvage/:id/complete`** — Trong transaction: trừ kho **đúng lô**, nhập lô thành phẩm mới, ghi **`batch_lineage`** (parent → child), giao dịch kho consume/output, xử lý chênh lệch yield (loss/surplus tương tự sản xuất chuẩn). Sản lượng thực tế gửi qua **`actualYield`**; trên DB có thể map vào **`actual_quantity`** của lệnh (không tách cột `actual_yield` riêng).
-
-**Phân biệt với Standard:** `POST /production/orders/:id/start` dùng **FEFO**; salvage **không** dùng start/complete chuẩn cho cùng lệnh đó.
-
-**Gợi ý UI:** Màn hình chọn **batch ID** rõ ràng; cảnh báo khi lô gần hết hạn; form nhập **actual yield** (số thực) và `surplusNote` khi vượt định mức lý thuyết.
+Nghiệp vụ **Salvage đã bị loại bỏ hoàn toàn**. Mọi nguyên liệu/sản phẩm lỗi, không đạt chuẩn hoặc hỏng phải đi qua luồng **Waste** trong Inventory để đảm bảo an toàn thực phẩm và đơn giản hóa truy vết.
 
 ---
 
@@ -121,12 +112,10 @@ Các endpoint danh sách / tạo đơn / review / reject / chi tiết vẫn dùn
 
 | Method + Path | Role | Body | Lưu ý UI |
 |---------------|------|------|----------|
-| **`POST /production/salvage`** | **Manager, Central Kitchen Staff** | `CreateSalvageDto`: `inputBatchId`, `recipeId`, `quantityToConsume` | Kho = **central** (server tự resolve); BOM 1 NL |
-| **`POST /production/salvage/:id/complete`** | Manager, Kitchen | `CompleteSalvageDto`: `actualYield`, `surplusNote?` | Role Manager có thể bypass ngưỡng surplus (logic service) |
 | `GET /production/recipes`, `GET .../:id`, `POST/PATCH/DELETE recipes` | Manager, Kitchen, Admin (đọc) | BOM không còn `standardOutput` — xem `quantityPerOutput` |
 | `POST /production/orders` | Manager, Kitchen | `CreateProductionOrderDto` | `production_type` mặc định **standard** |
-| `POST /production/orders/:id/start` | Kitchen | — | **Không** dùng cho salvage |
-| `POST /production/orders/:id/complete` | Kitchen | `CompleteProductionDto` | **Không** dùng cho salvage |
+| `POST /production/orders/:id/start` | Kitchen | — | Start FEFO chuẩn |
+| `POST /production/orders/:id/complete` | Kitchen | `CompleteProductionDto` | Complete chuẩn |
 | `GET /production/orders`, `GET .../:id` | Manager, Kitchen, SC, Admin | — | Chi tiết có reservation / lineage / giao dịch |
 
 ---
@@ -202,10 +191,9 @@ Schema shipment còn có **`overload_warning`**, **`total_weight_kg`** — có t
    - Xác nhận response có `manifestId`, đơn chuyển **`picking`**, shipment **`consolidated`**.  
    - Thử cố tình vượt tải hoặc khác route để thấy lỗi UI cần bắt.
 
-3. **Salvage end-to-end**  
-   - `POST /wdp301-api/v1/production/salvage` với lô còn hạn + recipe 1 NL khớp sản phẩm lô.  
-   - `POST /wdp301-api/v1/production/salvage/{orderId}/complete` với `actualYield`.  
-   - `GET /wdp301-api/v1/production/orders/{id}` kiểm tra lineage / giao dịch `PRODUCTION:*`.
+3. **Waste flow**
+   - Dùng endpoint Waste của Inventory khi phát sinh hàng lỗi/hỏng.
+   - Kiểm tra inventory transactions ghi loại `waste` và số lượng batch giảm tương ứng.
 
 ---
 
@@ -249,7 +237,7 @@ Kết hợp với bảng đơn đã chọn và `formatWeightKg` ở trên để 
 
 ### 6.3. Tồn khả dụng / ATP sau khi Approve (Reserved Quantity)
 
-Hệ thống có cơ chế **giữ chỗ tồn** (tăng **`reserved_quantity`**, lock batch khi salvage, v.v.). Sau khi **SC nhấn Approve** trên một đơn, phần tồn tương ứng **không còn “khả dụng”** cho các đơn / màn hình khác đang mở.
+Hệ thống có cơ chế **giữ chỗ tồn** (tăng **`reserved_quantity`**). Sau khi **SC nhấn Approve** trên một đơn, phần tồn tương ứng **không còn “khả dụng”** cho các đơn / màn hình khác đang mở.
 
 **Gợi ý cho FE:**
 

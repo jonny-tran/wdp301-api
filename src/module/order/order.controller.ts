@@ -43,12 +43,13 @@ export class OrderController {
     UserRole.SUPPLY_COORDINATOR,
     UserRole.ADMIN,
     UserRole.FRANCHISE_STORE_STAFF,
+    UserRole.CENTRAL_KITCHEN_STAFF,
   )
   @ApiOperation({
     summary:
-      'Lấy danh sách đơn hàng (phân trang & lọc) [Admin, Manager, Supply Coordinator, Franchise Staff]',
+      'Lấy danh sách đơn hàng (phân trang & lọc) [Admin, Manager, Supply Coordinator, Kitchen, Franchise Staff]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator, Franchise Store Staff\n\n**Nghiệp vụ:** Trả về danh sách đơn hàng có phân trang và bộ lọc (`GetOrdersDto`) phục vụ giám sát và điều phối; nhân viên cửa hàng thường dùng kèm `storeId` hoặc endpoint `my-store` cho phạm vi cửa hàng.',
+      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator, Central Kitchen Staff, Franchise Store Staff\n\n**Nghiệp vụ:** Trả về danh sách đơn hàng có phân trang và bộ lọc (`GetOrdersDto`) phục vụ giám sát và điều phối; nhân viên cửa hàng thường dùng kèm `storeId` hoặc endpoint `my-store` cho phạm vi cửa hàng.',
   })
   async findAll(@Query() query: GetOrdersDto) {
     return this.orderService.findAll(query);
@@ -256,14 +257,15 @@ export class OrderController {
   @Roles(
     UserRole.SUPPLY_COORDINATOR,
     UserRole.FRANCHISE_STORE_STAFF,
+    UserRole.CENTRAL_KITCHEN_STAFF,
     UserRole.MANAGER,
     UserRole.ADMIN,
   )
   @ApiOperation({
     summary:
-      'Lấy chi tiết đơn hàng theo ID [Admin, Manager, Supply Coordinator, Franchise Staff]',
+      'Lấy chi tiết đơn hàng theo ID [Admin, Manager, Supply Coordinator, Kitchen, Franchise Staff]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator, Franchise Store Staff\n\n**Nghiệp vụ:** Trả về thông tin đơn; Coordinator và Manager xem mọi đơn, Franchise Staff chỉ xem đơn của cửa hàng mình (so khớp `storeId` trên JWT).',
+      '**Quyền truy cập (Roles):** Admin, Manager, Supply Coordinator, Central Kitchen Staff, Franchise Store Staff\n\n**Nghiệp vụ:** Trả về thông tin đơn; Coordinator, Manager và Kitchen xem mọi đơn, Franchise Staff chỉ xem đơn của cửa hàng mình (so khớp `storeId` trên JWT).',
   })
   async getOrderDetails(
     @Param('id') id: string,

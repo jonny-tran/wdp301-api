@@ -142,6 +142,80 @@ export class WarehouseService {
   }
 
   /**
+   * Consolidated picking: gộp danh sách nhặt hàng của nhiều đơn trong cùng đợt điều phối.
+   * Output theo (productId, batchId) để kho nhặt một lần rồi tách ở khu vực packing.
+   */
+  async createConsolidatedPickingTask(orderIds: string[]) {
+    const uniqueOrderIds = [...new Set(orderIds)];
+    if (uniqueOrderIds.length === 0) {
+      throw new BadRequestException('orderIds không được rỗng');
+    }
+
+    const links = await this.db.query.shipmentOrders.findMany({
+      where: inArray(schema.shipmentOrders.orderId, uniqueOrderIds),
+      with: {
+        shipment: {
+          with: {
+            items: {
+              with: {
+                batch: {
+                  with: {
+                    product: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const aggregated = new Map<
+      string,
+      {
+        productId: number;
+        productName: string;
+        batchId: number;
+        batchCode: string;
+        totalQtyToPick: number;
+      }
+    >();
+
+    for (const link of links) {
+      const shipment = Array.isArray(link.shipment)
+        ? link.shipment[0]
+        : link.shipment;
+      if (!shipment) continue;
+      for (const item of shipment.items) {
+        const key = `${item.batch.productId}:${item.batchId}`;
+        const current = aggregated.get(key);
+        const qty = invFromDb(item.quantity);
+        if (current) {
+          current.totalQtyToPick = Number(
+            (current.totalQtyToPick + qty).toFixed(2),
+          );
+        } else {
+          aggregated.set(key, {
+            productId: item.batch.productId,
+            productName: item.batch.product.name,
+            batchId: item.batchId,
+            batchCode: item.batch.batchCode,
+            totalQtyToPick: qty,
+          });
+        }
+      }
+    }
+
+    return {
+      orderIds: uniqueOrderIds,
+      totalLines: aggregated.size,
+      items: Array.from(aggregated.values()).sort(
+        (a, b) => a.productId - b.productId || a.batchId - b.batchId,
+      ),
+    };
+  }
+
+  /**
    * Hủy task soạn bếp: chỉ `approved` / `picking`; hoàn chỗ reserve; shipment → cancelled;
    * đơn → `cancelled` + `cancel_reason`. Transaction ACID.
    */

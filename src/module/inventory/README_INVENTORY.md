@@ -17,6 +17,25 @@ Phương trình kiểm soát: **Physical = Available + Reserved** (đồng bộ 
 
 - Sản phẩm có **`min_shelf_life`** (ngày): chỉ cho phép đặt khi HSD lô **lớn hơn** `CURRENT_DATE + min_shelf_life`.
 - Chọn lô theo **`expiry_date ASC`** (FEFO).
+- Lô hết hạn/hỏng/rỗng **không được tính là đủ hàng**:
+  - `expired` -> hiển thị `EXPIRED`, `availableQty = 0`
+  - `damaged` -> `DAMAGED`, `availableQty = 0`
+  - `empty` -> `EMPTY`, `availableQty = 0`
+
+## Reservation queue cho Coordination
+
+- Khi đơn ở trạng thái `coordinating`, hệ thống dùng cơ chế reservation tạm:
+  - ghi transaction `reservation` với lý do giữ chỗ điều phối
+  - chưa trừ `physical`, chỉ phân bổ `available/reserved`
+- Khi duyệt allocation thực tế, hệ thống release reservation queue cũ rồi lock lại theo số lượng chính thức.
+
+## Chính sách Waste-only (đã bỏ Salvage)
+
+- Không còn nghiệp vụ Salvage trong inventory/production.
+- Hàng lỗi/hỏng chỉ đi qua luồng:
+  - `POST /inventory/waste`
+  - hoặc `POST /inventory/adjust` (adjust_loss với lý do phù hợp)
+- Mọi báo cáo và audit cần dựa trên `waste`, `adjust_loss`, `adjust_surplus`, không còn `salvage`.
 
 ## Đối soát và truy vết
 

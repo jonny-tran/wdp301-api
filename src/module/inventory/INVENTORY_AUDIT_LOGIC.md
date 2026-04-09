@@ -37,6 +37,8 @@ Với **`adjustStock`** (điều chỉnh **giảm**):
 | `adjust_loss`  | Điều chỉnh trừ (hao hụt / mất…)           |
 | `adjust_surplus` | Điều chỉnh tăng (kiểm kê dư)          |
 
+Không còn loại `salvage` trong hệ thống.
+
 ## FEFO và đệm an toàn (`min_shelf_life`)
 
 Chỉ chọn lô khi:
@@ -46,3 +48,9 @@ Chỉ chọn lô khi:
 và sắp xếp **`ORDER BY expiry_date ASC`** (FEFO).
 
 Điều này tránh bán lô “còn HSD nhưng không đủ thời gian an toàn” cho cửa hàng (mô hình KFC / bếp trung tâm).
+
+## Rule hiển thị lô cho Frontend
+
+- Nếu lô hết hạn theo ngày (`expiry_date <= today`) thì status nghiệp vụ là `EXPIRED` dù cột batch status chưa được đồng bộ tức thời.
+- Với lô `EXPIRED`, `DAMAGED`, `EMPTY`: coi như không khả dụng, `availableQty = 0`.
+- Mục tiêu: tránh hiển thị sai "đủ hàng" cho lô không được phép xuất.

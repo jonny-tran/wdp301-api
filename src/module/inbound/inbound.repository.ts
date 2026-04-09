@@ -146,7 +146,7 @@ export class InboundRepository {
       batchCode: string;
       manufacturedDate: string;
       expiryDate: string;
-      /** Salvage / sản xuất nội bộ: ghi nhận giá vốn đơn vị sau tính lại */
+      /** Sản xuất nội bộ: ghi nhận giá vốn đơn vị sau tính lại */
       unitCostAtImport?: string | null;
     },
   ) {

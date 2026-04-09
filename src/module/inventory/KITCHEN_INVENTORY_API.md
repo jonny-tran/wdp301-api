@@ -1,195 +1,60 @@
-# Kitchen Inventory API (Bếp trung tâm)
+# Kitchen Inventory API (đồng bộ code mới)
 
-**Phiên bản:** 1.0 — đồng bộ refactor 2026-04-01  
-**Base path (global):** `/wdp301-api/v1/inventory` (xem `main.ts` cho prefix + versioning).
+Base path: `/inventory`
 
-## Nguyên tắc chung
+## 1) Endpoint matrix
 
-1. **Không gửi `warehouseId` từ Frontend.** Backend xác định kho bếp như sau:
-   - Nếu JWT có `storeId`: tìm bản ghi `warehouses` với `type = 'central'` và `store_id` khớp `storeId`.
-   - Nếu không có liên kết: **fallback** lấy một kho `central` bất kỳ (phục vụ admin / dữ liệu legacy).
-2. **Công thức:** `Physical = Available + Reserved` (tổng hợp từ bảng `inventory` theo `warehouse_id` + `batch_id`).
-3. **FEFO:** Chi tiết lô sắp xếp `expiry_date ASC`.
-4. **Điều chỉnh kho:** Một transaction DB; ghi `inventory_transactions` (`adjust_loss` / `adjust_surplus`); đồng bộ tổng trên `batches`.
-5. **Số học:** Phép tính chênh lệch điều chỉnh dùng **BigInt (scale 2 decimals)** trong code để tránh lỗi float JavaScript (tương đương mục tiêu dùng thư viện decimal).
+| Method | Path | Roles |
+|---|---|---|
+| GET | `/inventory/summary` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/product/:productId/batches` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/transactions` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| POST | `/inventory/adjust` | `manager`,`admin`,`central_kitchen_staff` |
+| POST | `/inventory/waste` | `manager`,`admin`,`central_kitchen_staff` |
+| GET | `/inventory/kitchen/summary` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/kitchen/details` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/analytics/summary` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/analytics/aging` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/analytics/waste` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/analytics/waste-report` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
+| GET | `/inventory/analytics/financial/loss-impact` | `manager`,`admin`,`central_kitchen_staff`,`supply_coordinator` |
 
----
+## 2) Quy tắc dữ liệu quan trọng cho FE
 
-## Headers (tất cả endpoint dưới đây)
+- Không gửi `warehouseId` cho luồng kitchen JWT-based, backend tự resolve kho trung tâm.
+- Công thức luôn đúng: `physical = available + reserved`.
+- FEFO theo `expiryDate ASC`.
+- Batch status hiển thị:
+  - `GOOD`, `NEAR_EXPIRY`, `EXPIRED`, `DAMAGED`, `EMPTY`
+  - Với `EXPIRED|DAMAGED|EMPTY`, backend trả `availableQty = 0` (không hiểu nhầm là đủ hàng).
 
-| Header | Bắt buộc | Mô tả |
-|--------|----------|--------|
-| `Authorization` | Có | `Bearer <access_token>` |
-| `Content-Type` | Chỉ POST | `application/json` |
+## 3) Contract chính từng endpoint
 
----
+- `GET /inventory/summary`
+  - Query: `page`, `limit`, `searchTerm`
+  - Trả theo product + `stockStatus`, `expiryStatus`, `suggestedProductionQty`
 
-## 1. GET `/inventory/summary`
+- `GET /inventory/product/:productId/batches`
+  - Trả danh sách batch theo FEFO
+  - Có `isNextFEFO` cho batch khả dụng kế tiếp
 
-**Roles:** `manager`, `admin`, `central_kitchen_staff`, `supply_coordinator`
+- `POST /inventory/adjust`
+  - Body: `batchId`, `actualQuantity`, `reasonCode`, `note?`
+  - Tạo `adjust_loss` hoặc `adjust_surplus`
 
-**Query (optional):** `page`, `limit`, `searchTerm`
+- `POST /inventory/waste`
+  - Body: `batch_id`, `reason`, `note?`
+  - Tiêu hủy toàn bộ tồn lô ở kho trung tâm
+  - Ghi `inventory_transactions.type = waste`
+  - Cập nhật trạng thái lô tương ứng
 
-**Mô tả:** Tổng quan tồn theo **product** tại kho bếp của user.
+- `GET /inventory/transactions`
+  - Query: `batchId`, `type`, `fromDate`, `toDate`, `page`, `limit`
+  - Hỗ trợ type: `import`,`export`,`waste`,`adjustment`,`production_consume`,`production_output`,`reservation`,`release`,`adjust_loss`,`adjust_surplus`
 
-**Ví dụ response (payload sau lớp wrapper global `data` nếu có interceptor):**
+## 4) Chính sách Waste-only
 
-```json
-{
-  "data": [
-    {
-      "productId": 101,
-      "sku": "PROD-GAKARA-001",
-      "productName": "Gà viên Karaage",
-      "unit": "KG",
-      "totalPhysical": 150,
-      "totalAvailable": 120.5,
-      "totalReserved": 29.5,
-      "stockStatus": "LOW_STOCK",
-      "expiryStatus": "NEAR_EXPIRY_ALERT",
-      "category": null,
-      "suggestedProductionQty": 30
-    }
-  ],
-  "meta": {
-    "totalItems": 1,
-    "page": 1,
-    "itemsPerPage": 20,
-    "totalPages": 1
-  }
-}
-```
-
-- `stockStatus`: `OK` | `LOW_STOCK` — so sánh `totalAvailable` với `products.min_stock_level`.
-- `expiryStatus`: `OK` | `NEAR_EXPIRY_ALERT` — có lô trong kho với HSD trong vòng **7 ngày** (hằng `KITCHEN_NEAR_EXPIRY_ALERT_DAYS`).
-- `category`: hiện `null` (schema `products` chưa có category); có thể bổ sung sau.
-- `suggestedProductionQty`: chỉ có khi `LOW_STOCK`, = `max(0, minStock - totalAvailable)`.
-
----
-
-## 2. GET `/inventory/product/:productId/batches`
-
-**Roles:** `manager`, `admin`, `central_kitchen_staff`, `supply_coordinator`
-
-**Path:** `productId` (integer)
-
-**Mô tả:** Các lô của sản phẩm tại kho bếp; **ORDER BY expiry_date ASC**. Gồm lô chỉ còn reserved.
-
-**Ví dụ response:**
-
-```json
-{
-  "productId": 101,
-  "batches": [
-    {
-      "batchId": 5002,
-      "batchCode": "BTCH-2024-002",
-      "expiryDate": "2026-05-15T00:00:00.000Z",
-      "physicalQty": 10.5,
-      "availableQty": 0,
-      "reservedQty": 10.5,
-      "status": "NEAR_EXPIRY",
-      "isNextFEFO": false
-    },
-    {
-      "batchId": 5001,
-      "batchCode": "BTCH-2024-001",
-      "expiryDate": "2026-06-01T00:00:00.000Z",
-      "physicalQty": 50,
-      "availableQty": 50,
-      "reservedQty": 0,
-      "status": "GOOD",
-      "isNextFEFO": true
-    }
-  ]
-}
-```
-
-- `status` dòng lô: `GOOD` | `NEAR_EXPIRY` | `EXPIRED` | `DAMAGED` | `EMPTY` (kết hợp `batch.status` + HSD vs `min_shelf_life`).
-- `isNextFEFO`: **một** lô — lô đầu tiên theo FEFO có `availableQty > 0`.
-
----
-
-## 3. POST `/inventory/adjust`
-
-**Roles:** `manager`, `admin`, `central_kitchen_staff`
-
-**Body:**
-
-```json
-{
-  "batchId": 5001,
-  "actualQuantity": 48.5,
-  "reasonCode": "PRODUCTION_WASTE",
-  "note": "Rơi vãi trong quá trình chế biến"
-}
-```
-
-**`reasonCode` (enum):** `DAMAGE` | `WASTE` | `PRODUCTION_WASTE` | `INPUT_ERROR` | `EXPIRED`
-
-**Logic:** `difference = actualQuantity - currentPhysical`; cập nhật `inventory.quantity` = `actualQuantity` (giữ `reserved_quantity`); ghi `inventory_transactions` với `quantity_change = difference` (loại `adjust_loss` nếu âm, `adjust_surplus` nếu dương); `referenceId` dạng `ADJ-…`; `createdBy` = `sub` từ JWT.
-
-**Ràng buộc:** `actualQuantity >= reserved` (physical không được nhỏ hơn reserved).
-
-**Ví dụ response:**
-
-```json
-{
-  "batchId": 5001,
-  "physicalQty": 48.5,
-  "availableQty": 38.5,
-  "reservedQty": 10,
-  "referenceId": "ADJ-A1B2C3D4E5",
-  "quantityChange": -1.5
-}
-```
-
----
-
-## 4. GET `/inventory/transactions`
-
-**Roles:** `manager`, `admin`, `central_kitchen_staff`, `supply_coordinator`
-
-**Query (optional):** `batchId`, `type`, `fromDate`, `toDate`, `page`, `limit`
-
-- `type`: một trong các giá trị enum PostgreSQL: `import`, `export`, `waste`, `adjustment`, `production_consume`, `production_output`, `reservation`, `release`, `adjust_loss`, `adjust_surplus`.
-- Response map nhóm điều chỉnh: `adjust_loss` / `adjust_surplus` / `adjustment` → nhãn `ADJUSTMENT` trong JSON.
-
-**Ví dụ response:**
-
-```json
-{
-  "data": [
-    {
-      "id": 999,
-      "timestamp": "2024-05-20T10:00:00.000Z",
-      "type": "ADJUSTMENT",
-      "batchCode": "BTCH-2024-001",
-      "changeQty": -1.5,
-      "reason": "PRODUCTION_WASTE | Rơi vãi",
-      "staffName": "kitchen_staff_01",
-      "referenceId": "ADJ-A1B2C3D4E5"
-    }
-  ],
-  "meta": {
-    "totalItems": 1,
-    "itemCount": 1,
-    "itemsPerPage": 10,
-    "totalPages": 1,
-    "currentPage": 1
-  }
-}
-```
-
----
-
-## Endpoint khác (không đổi path trong refactor này)
-
-- `GET /inventory/kitchen/summary`, `GET /inventory/kitchen/details` — logic cũ (macro/drill-down theo kho central global) vẫn tồn tại; ưu tiên dùng các route JWT ở trên cho UI bếp mới.
-- `GET /inventory/store`, `GET /inventory/store/transactions` — cửa hàng franchise.
-
----
-
-## Trả lời nhanh cho Tech Lead (đặc tả vs “rối loạn”)
-
-Đặc tả đã bao phủ: tổng quan theo SKU, drill-down FEFO + highlight lô xuất kế tiếp, điều chỉnh sau kiểm kê/hỏng với audit, lịch sử theo lô/khoảng thời gian. Phần mở rộng sau nếu cần: gắn **category** khi có cột/category master; tùy chỉnh ngưỡng NEAR_EXPIRY theo từng SKU; workflow phê duyệt điều chỉnh qua `inventory_adjustment_tickets` (đã có trong schema, chưa gắn vào route này).
+- Không còn transaction type `salvage`.
+- FE chỉ dùng:
+  - `POST /inventory/waste` cho hàng hỏng/hết hạn cần hủy
+  - `POST /inventory/adjust` cho kiểm kê chênh lệch.

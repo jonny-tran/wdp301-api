@@ -321,16 +321,20 @@ export class InventoryService {
     const batches = rows.map((r) => {
       const physical = invFromDb(r.physicalQty);
       const reserved = invFromDb(r.reservedQty);
-      const available = invRound2(physical - reserved);
-      const isNextFEFO = !assignedFefo && available > 0;
-      if (isNextFEFO) {
-        assignedFefo = true;
-      }
       const status = this.deriveKitchenBatchLineStatus(
         r.batchStatus,
         r.expiryDate,
         r.minShelfLife ?? 0,
       );
+      const rawAvailable = invRound2(physical - reserved);
+      const available =
+        status === 'EXPIRED' || status === 'DAMAGED' || status === 'EMPTY'
+          ? 0
+          : rawAvailable;
+      const isNextFEFO = !assignedFefo && available > 0;
+      if (isNextFEFO) {
+        assignedFefo = true;
+      }
       return {
         batchId: r.batchId,
         batchCode: r.batchCode,
@@ -362,6 +366,11 @@ export class InventoryService {
     expiryDate: string | Date,
     minShelfLifeDays: number,
   ): string {
+    const expiryDateStr = this.toExpiryUtcIso(expiryDate).slice(0, 10);
+    const todayDateStr = new Date().toISOString().slice(0, 10);
+    if (expiryDateStr <= todayDateStr) {
+      return 'EXPIRED';
+    }
     if (batchStatus === 'expired') {
       return 'EXPIRED';
     }
@@ -1098,7 +1107,7 @@ export class InventoryService {
   }
 
   /**
-   * Giữ chỗ trên đúng một lô tại kho (Salvage — không qua FEFO).
+   * Giữ chỗ trên đúng một lô tại kho (không qua FEFO).
    */
   async lockSpecificBatch(
     warehouseId: number,
@@ -1131,7 +1140,7 @@ export class InventoryService {
     const avail = q.minus(r);
     if (avail.lt(amt)) {
       throw new BadRequestException(
-        'Không đủ tồn khả dụng trên lô để giữ chỗ salvage',
+        'Không đủ tồn khả dụng trên lô để giữ chỗ',
       );
     }
     await tx
@@ -1157,6 +1166,8 @@ export class InventoryService {
       createdBy?: string | null;
       /** Ngày tối đa (YYYY-MM-DD) mà HSD lô phải lớn hơn — ATP logistics */
       safetyMinimumExpiryDateStr?: string;
+      /** true = chỉ giữ chỗ (reservation queue), false = khóa cứng cho bước đóng gói */
+      isReservation?: boolean;
     },
   ): Promise<{
     shipmentItems: { batchId: number; quantity: number }[];
@@ -1181,6 +1192,7 @@ export class InventoryService {
     }[] = [];
 
     const createdBy = options?.createdBy ?? null;
+    const isReservation = options?.isReservation ?? true;
     const shelfOpts = options?.safetyMinimumExpiryDateStr
       ? { safetyMinimumExpiryDateStr: options.safetyMinimumExpiryDateStr }
       : undefined;
@@ -1225,7 +1237,9 @@ export class InventoryService {
           'reservation',
           takeNum,
           orderId,
-          'Giữ chỗ theo đơn hàng (RESERVATION)',
+          isReservation
+            ? 'Giữ chỗ theo điều phối (RESERVATION_QUEUE)'
+            : 'Khóa cứng cho picking/packing (RESERVATION)',
           tx,
           { createdBy: createdBy ?? undefined },
         );

@@ -128,7 +128,7 @@ Một số route dùng `@ResponseMessage(...)` — `message` có thể khác `"S
 
 **Công thức / BOM:** `GET/POST/PATCH/DELETE /production/recipes/*` (xem Swagger).
 
-**Salvage:** `POST /production/salvage`, `POST /production/salvage/:id/complete` (khác luồng chuẩn).
+**Lưu ý:** Nghiệp vụ Salvage đã được loại bỏ; hàng lỗi/hỏng chỉ đi qua luồng **Waste** trong module Inventory.
 
 ### 3.3 FE hiển thị “yêu cầu từ đơn nào”
 

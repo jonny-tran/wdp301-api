@@ -112,6 +112,10 @@ export class ShipmentRepository {
     toWarehouseId: number,
     tx?: NodePgDatabase<typeof schema>,
     consolidationGroupId?: string | null,
+    snapshots?: {
+      shippingAddressSnapshot?: string | null;
+      contactPhoneSnapshot?: string | null;
+    },
   ) {
     const database = tx || this.db;
     const inserted = await database
@@ -122,6 +126,8 @@ export class ShipmentRepository {
         toWarehouseId,
         status: this.shipmentStatusEnum.PREPARING,
         consolidationGroupId: consolidationGroupId ?? null,
+        shippingAddressSnapshot: snapshots?.shippingAddressSnapshot ?? null,
+        contactPhoneSnapshot: snapshots?.contactPhoneSnapshot ?? null,
       })
       .returning();
     const rows = Array.isArray(inserted) ? inserted : [];

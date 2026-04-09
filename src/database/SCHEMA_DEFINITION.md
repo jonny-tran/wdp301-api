@@ -44,6 +44,7 @@ Each table below lists: **Enum name** (PostgreSQL type), **Value**, and **Busine
 | Value | Business meaning |
 |-------|------------------|
 | `pending` | Order submitted; not yet approved for fulfillment. |
+| `coordinating` | Order is in Coordination Hub inquiry/allocation window; temporarily locked for coordinator-kitchen decisioning. |
 | `approved` | Approved for planning: stock reservation / picking / production can proceed. |
 | `rejected` | Rejected by coordinator or manager; no fulfillment. |
 | `cancelled` | Cancelled before or during lifecycle; must release reservations as per business rules. |
@@ -145,6 +146,7 @@ Each table below lists: **Enum name** (PostgreSQL type), **Value**, and **Busine
 | Value | Business meaning |
 |-------|------------------|
 | `draft` | Planned run; no material consumption yet. |
+| `pending` | Coordination-triggered production request awaiting kitchen start; linked with `reference_id` / `note`. |
 | `in_progress` | Kitchen executing; ingredients reserved/consumed per implementation. |
 | `completed` | Output recorded; child batches and lineage can be finalized. |
 | `cancelled` | Run aborted; release ingredient reservations. |
@@ -283,6 +285,7 @@ Physical **movement** from `from_warehouse_id` to `to_warehouse_id`, optionally 
 | `actual_transport_cost` | Chi phí vận chuyển thực tế chuyến (decimal) — đối soát lãi/lỗ. |
 | `total_weight` | Tổng khối lượng chuyến (decimal); kiểm soát tải trọng (song song `total_weight_kg` nếu cần đơn vị cụ thể). |
 | `total_weight_kg`, `total_volume_m3`, `overload_warning` | Capacity checks for transport planning. |
+| `shipping_address_snapshot`, `contact_phone_snapshot` | Snapshot thông tin giao tại thời điểm tạo shipment batch/consolidation; tránh lệch dữ liệu khi hồ sơ store thay đổi sau đó. |
 | `delivered_at` | Proof of arrival timestamp. |
 
 > **Manifest**  

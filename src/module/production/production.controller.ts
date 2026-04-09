@@ -22,9 +22,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { RequestWithUser } from '../auth/types/auth.types';
 import { WarehouseRepository } from '../warehouse/warehouse.repository';
 import { CompleteProductionDto } from './dto/complete-production.dto';
-import { CompleteSalvageDto } from './dto/complete-salvage.dto';
 import { CreateProductionOrderDto } from './dto/create-production-order.dto';
-import { CreateSalvageDto } from './dto/create-salvage.dto';
 import { CreateRecipeDto } from './dto/create-recipe.dto';
 import { GetProductionOrdersQueryDto } from './dto/get-production-orders-query.dto';
 import { GetRecipesQueryDto } from './dto/get-recipes-query.dto';
@@ -147,51 +145,6 @@ export class ProductionController {
   @ResponseMessage('Success')
   getOrder(@Param('id', ParseUUIDPipe) id: string) {
     return this.productionService.getProductionOrderById(id);
-  }
-
-  @Post('salvage')
-  @Roles(UserRole.CENTRAL_KITCHEN_STAFF, UserRole.MANAGER)
-  @ApiOperation({
-    summary:
-      'Tạo lệnh salvage — giữ chỗ đúng một lô NL, không FEFO [Kitchen, Manager]',
-    description:
-      'BOM phải có **đúng một** dòng nguyên liệu trùng sản phẩm trên lô. Lô chưa quá hạn (VN).',
-  })
-  @ResponseMessage('Đã tạo lệnh salvage và giữ chỗ lô')
-  async createSalvage(
-    @Body() dto: CreateSalvageDto,
-    @CurrentUser() user: RequestWithUser['user'],
-  ) {
-    const wh = await this.warehouseRepo.findCentralWarehouseId();
-    if (!wh) {
-      throw new NotFoundException('Không tìm thấy kho trung tâm');
-    }
-    return this.productionService.createSalvageProductionOrder({
-      inputBatchId: dto.inputBatchId,
-      recipeId: dto.recipeId,
-      quantityToConsume: dto.quantityToConsume,
-      warehouseId: wh.id,
-      createdBy: user.userId,
-    });
-  }
-
-  @Post('salvage/:id/complete')
-  @Roles(UserRole.CENTRAL_KITCHEN_STAFF, UserRole.MANAGER)
-  @ApiOperation({
-    summary:
-      'Hoàn tất salvage — trừ lô NL, nhập lô TP, lineage, giao dịch kho [Kitchen, Manager]',
-  })
-  @ResponseMessage('Hoàn tất salvage')
-  async completeSalvage(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: CompleteSalvageDto,
-    @CurrentUser() user: RequestWithUser['user'],
-  ) {
-    return this.productionService.completeSalvageProduction(id, {
-      actualYield: dto.actualYield,
-      surplusNote: dto.surplusNote,
-      callerRole: user.role,
-    });
   }
 
   @Post('orders')

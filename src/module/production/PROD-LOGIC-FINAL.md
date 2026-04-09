@@ -1,61 +1,70 @@
-# Đặc tả nghiệp vụ sản xuất (BOM & lệnh)
-**Mã phân hệ:** PROD-LOGIC | **Version:** 1.2
+# Production Module — API Contract (BOM & Production Orders)
 
-## 0. API tóm tắt (`/production`)
+## 1) Chính sách nghiệp vụ hiện tại
 
-| Method | Path | Ý nghĩa |
-|--------|------|--------|
-| GET | `/production/recipes` | Danh sách BOM (phân trang, `search`, `isActive`) — mỗi dòng có `ingredientCount` |
-| GET | `/production/recipes/:id` | Chi tiết BOM + từng nguyên liệu (`ingredient`) |
-| POST | `/production/recipes` | Tạo BOM |
-| PATCH | `/production/recipes/:id` | Sửa BOM / đổi thành phẩm / `isActive` (không đổi BOM khi còn lệnh draft/in_progress) |
-| DELETE | `/production/recipes/:id` | Ngừng công thức (`is_active = false`) |
-| GET | `/production/orders` | Danh sách lệnh (phân trang, lọc `status`) |
-| GET | `/production/orders/:id` | Chi tiết lệnh: recipe, reservations (lô FEFO), lineage, `inventoryTransactions` (`PRODUCTION:{id}`) |
-| POST | `/production/orders` | Tạo lệnh **draft** (body: `productId` + `plannedQuantity`) |
-| POST | `/production/orders/:id/start` | Kiểm tồn/HSD, tạm giữ NL (FEFO) |
-| POST | `/production/orders/:id/complete` | Ghi nhận sản lượng thực tế, trừ NL, tạo lô TP + lineage |
+- **Salvage đã loại bỏ hoàn toàn**.
+- Hàng lỗi/hỏng xử lý qua luồng **Waste** của Inventory.
+- Production chỉ còn luồng chuẩn:
+  - tạo BOM
+  - tạo lệnh sản xuất
+  - start (reserve FEFO nguyên liệu)
+  - complete (consume nguyên liệu + output thành phẩm)
 
-## 1. Tạo công thức — `POST /production/recipes` (`CreateRecipeDto`)
+## 2) Endpoint matrix (`/production`)
 
-- **`productId`:** sản phẩm **đầu ra** — bắt buộc **`finished_good`**, active.
-- **`items[]`:** mỗi phần tử có **`productId`** (nguyên liệu) + **`quantity`**.
-  - Nguyên liệu phải là **`raw_material`**, active; **không** trùng `productId` với thành phẩm đầu ra.
-- **`quantity`:** định mức nguyên liệu cho **đúng 1 đơn vị** thành phẩm (không còn khái niệm `standardOutput` / batch mẻ chuẩn).
-- **Tên công thức (`recipes.name`):** server gán theo **tên sản phẩm thành phẩm** — **không** nhập tay trên API.
+| Method | Path | Roles | Mục đích |
+|---|---|---|---|
+| POST | `/production/recipes` | `manager`,`central_kitchen_staff` | Tạo BOM |
+| GET | `/production/recipes` | `manager`,`central_kitchen_staff`,`admin` | Danh sách BOM |
+| GET | `/production/recipes/:id` | `manager`,`central_kitchen_staff`,`admin` | Chi tiết BOM |
+| PATCH | `/production/recipes/:id` | `manager`,`central_kitchen_staff` | Cập nhật BOM |
+| DELETE | `/production/recipes/:id` | `manager`,`central_kitchen_staff` | Soft-delete BOM |
+| GET | `/production/orders` | `manager`,`central_kitchen_staff`,`supply_coordinator`,`admin` | Danh sách lệnh |
+| GET | `/production/orders/:id` | `manager`,`central_kitchen_staff`,`supply_coordinator`,`admin` | Chi tiết lệnh + reservation + lineage + inventory tx |
+| POST | `/production/orders` | `manager`,`central_kitchen_staff` | Tạo lệnh sản xuất (`draft` hoặc `pending`) |
+| POST | `/production/orders/:id/start` | `central_kitchen_staff` | Reserve nguyên liệu theo FEFO |
+| POST | `/production/orders/:id/complete` | `central_kitchen_staff` | Hoàn tất lệnh, tạo batch thành phẩm |
 
-## 2. Tạo lệnh sản xuất — `POST /production/orders` (`CreateProductionOrderDto`)
+## 3) Hợp đồng dữ liệu FE cần bám
 
-- **`productId`:** thành phẩm **`finished_good`** (active).
-- Hệ thống tìm **mọi** recipe `is_active` trùng `output_product_id`; **phải đúng 1** recipe — nếu 0 → 404, nếu >1 → 400 (tránh nhầm BOM).
-- **`plannedQuantity`:** số lượng thành phẩm dự kiến (cùng đơn vị với SP đầu ra).
-- `warehouseId` kho trung tâm do server chọn (controller), không gửi từ FE.
+- `POST /production/recipes` (`CreateRecipeDto`)
+  - `productId` đầu ra phải là `finished_good`
+  - `items[].productId` nguyên liệu phải là `raw_material`
+  - `items[].quantity` là định mức cho 1 đơn vị output
 
-## 3. Nhu cầu nguyên liệu khi start (FEFO)
+- `POST /production/orders` (`CreateProductionOrderDto`)
+  - `productId`, `plannedQuantity`
+  - `warehouseId` được backend resolve (kho trung tâm)
+  - nếu lệnh tạo từ phối hợp order (`referenceId`) thì status là `pending`, ngược lại là `draft`
 
-Với mỗi dòng BOM:
+- `POST /production/orders/:id/complete` (`CompleteProductionDto`)
+  - `actualQuantity`
+  - `surplusNote?` bắt buộc khi sản lượng vượt định mức
 
-`need = quantityPerOutput × plannedQuantity`
+## 4) Rule nghiệp vụ chính
 
-(trong đó `quantityPerOutput` lấy từ `recipe_items`, `plannedQuantity` từ lệnh).
+- `start`:
+  - chỉ chạy khi order `draft|pending`
+  - reserve nguyên liệu theo FEFO + shelf-life rules
+  - ghi `production_reservations`
+  - set order `in_progress`
 
-## 4. Cơ chế tạm giữ FEFO (bước start)
+- `complete`:
+  - consume nguyên liệu đã reserve
+  - tạo batch thành phẩm mới + update inventory
+  - ghi inventory transaction:
+    - `production_consume`
+    - `production_output`
+    - `waste` (nếu loss)
+    - `adjustment` (nếu surplus)
+  - tạo `batch_lineage` parent -> child
+  - set order `completed`
 
-Trước khi bếp vào ca:
+## 5) FE lưu ý khi tích hợp
 
-- **Check BOM:** đã có ở lệnh (qua `recipe_id`).
-- **Check tồn:** FEFO theo `expiryDate`, chỉ dùng lô chưa hết hạn (so với ngày hiện tại VN).
-- **Lock:** tăng `reserved_quantity` trên `inventory`, ghi `production_reservations`.
-
-## 5. Công thức hạn dùng thành phẩm
-
-Hạn dùng lô TP = min(NSX + shelf life lý thuyết, min(HSD các lô nguyên liệu đã tiêu hao)) — thành phẩm không được “sống” lâu hơn nguyên liệu đầu vào.
-
-## 6. Hao hụt & dư thừa (complete)
-
-- **Planned** trên lệnh vs **actual** nhập vào: chênh lệch → `PRODUCTION_LOSS` / `PRODUCTION_SURPLUS` (+ giải trình khi dư).
-- Manager/Admin có ngưỡng duyệt khi dư vượt % so với planned (xem `production.constants`).
-
-## 7. Lineage
-
-`batch_lineage`: lô nguyên liệu (parent) → lô thành phẩm (child), kèm `consumed_quantity` và `production_order_id`.
+- Không gọi bất kỳ endpoint `/production/salvage*` (đã bị remove).
+- Màn hình production detail nên hiển thị:
+  - reservation theo batch
+  - lineage
+  - inventory transactions có `referenceId = PRODUCTION:{id}`
+- Khi complete thành công, luôn refetch order detail vì có batch mới và lineage mới.

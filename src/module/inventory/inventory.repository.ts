@@ -936,7 +936,14 @@ export class InventoryRepository {
         schema.batches,
         eq(schema.inventory.batchId, schema.batches.id),
       )
-      .where(eq(schema.inventory.warehouseId, warehouseId))
+      .where(
+        and(
+          eq(schema.inventory.warehouseId, warehouseId),
+          ne(schema.batches.status, 'expired'),
+          ne(schema.batches.status, 'damaged'),
+          ne(schema.batches.status, 'empty'),
+        ),
+      )
       .groupBy(schema.batches.productId)
       .as('inv_agg');
 
@@ -1047,7 +1054,10 @@ export class InventoryRepository {
           eq(schema.inventory.warehouseId, warehouseId),
           inArray(schema.batches.productId, productIds),
           lte(schema.batches.expiryDate, untilStr),
-          gte(schema.batches.expiryDate, todayStr),
+          gt(schema.batches.expiryDate, todayStr),
+          ne(schema.batches.status, 'expired'),
+          ne(schema.batches.status, 'damaged'),
+          ne(schema.batches.status, 'empty'),
           or(
             gt(schema.inventory.quantity, '0'),
             gt(schema.inventory.reservedQuantity, '0'),
@@ -1575,7 +1585,7 @@ export class InventoryRepository {
 
   /**
    * Trừ đúng một lô tại kho: giảm `quantity` và `reserved_quantity` cùng một lượng
-   * (sau khi đã lock bằng giữ chỗ salvage).
+   * (sau khi đã lock bằng cơ chế reservation tương ứng).
    */
   async deductStockFromSpecificBatch(
     warehouseId: number,

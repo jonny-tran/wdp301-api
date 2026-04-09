@@ -31,6 +31,23 @@ Tài liệu này mô tả **hợp đồng nghiệp vụ và kỹ thuật** sau r
 - `DELETE /inbound/receipts/:id` — xóa **toàn bộ** phiếu chỉ khi `status = draft`; role `central_kitchen_staff` hoặc `manager`. Trong một transaction: xóa mọi `receipt_items`, xóa các `batches` gắn dòng legacy (nếu có), rồi xóa `receipts`.
 - `DELETE /inbound/receipts/:receiptId/items/:itemId` — xóa dòng nháp (có `batch_id` legacy thì xóa luôn batch tạm).
 
+## Danh sách endpoint đầy đủ (`/inbound`)
+
+| Method | Path | Roles | Mục đích |
+|---|---|---|---|
+| GET | `/inbound/products` | `central_kitchen_staff` | Chọn sản phẩm cho phiếu nhập |
+| POST | `/inbound/receipts` | `central_kitchen_staff` | Tạo phiếu nhập draft |
+| GET | `/inbound/receipts` | `central_kitchen_staff` | Danh sách phiếu nhập |
+| GET | `/inbound/receipts/:id` | `central_kitchen_staff` | Chi tiết phiếu |
+| POST | `/inbound/receipts/:id/items` | `central_kitchen_staff` | Thêm dòng hàng |
+| PATCH | `/inbound/receipts/:id/complete` | `central_kitchen_staff` | Chốt phiếu, tạo batch, cộng tồn |
+| PATCH | `/inbound/receipts/:id/variance-approval` | `manager`,`supply_coordinator` | Duyệt nhập vượt ngưỡng |
+| DELETE | `/inbound/receipts/:id` | `central_kitchen_staff`,`manager` | Xóa phiếu draft |
+| DELETE | `/inbound/receipts/:receiptId/items/:itemId` | `central_kitchen_staff` | Xóa dòng draft |
+| DELETE | `/inbound/items/:batchId` | `central_kitchen_staff` | Xóa dòng theo batchId (legacy) |
+| GET | `/inbound/batches/:id/label` | `central_kitchen_staff` | Data in tem lô |
+| POST | `/inbound/batches/reprint` | `central_kitchen_staff` | Yêu cầu in lại tem |
+
 ## Sinh mã lô
 
 - Định dạng: **`BAT-{YYYYMMDD}-{SKU_SANITIZED}-{SEQ4}`** (SEQ đếm theo prefix ngày + SKU trong DB, transaction-safe).
@@ -42,12 +59,13 @@ Tài liệu này mô tả **hợp đồng nghiệp vụ và kỹ thuật** sau r
 - **Nhập từ NCC** thường là nguyên liệu / hàng bán lại; **thành phẩm nội bộ** chủ yếu sinh từ **production** (xuất hiện lô mới), không bắt buộc qua inbound trừ khi nghiệp vụ có nhập TP từ ngoài.
 - Catalog đặt hàng franchise **không** liên quan trực tiếp inbound — xem `ORD-OPTIMIZE.md` / `product_type`.
 
-## Module Production (tóm tắt)
+## Module Production liên quan (cập nhật)
 
 - Bảng: `recipes`, `recipe_items`, `production_orders`, `production_reservations`.
 - Enum `inventory_transactions`: `production_consume`, `production_output`.
-- `POST /production/recipes` — BOM: thành phẩm `finished_good`, dòng nguyên liệu `raw_material`, định mức trên **1 đơn vị TP** (xem `PROD-LOGIC-FINAL.md`).
-- `POST /production/orders` — body **`productId`** (finished_good), hệ thống chọn đúng một recipe active; `POST .../start` → reserve FEFO; `POST .../complete` → trừ NL, tạo lô TP, lineage.
+- `POST /production/recipes` — BOM: thành phẩm `finished_good`, nguyên liệu `raw_material`.
+- `POST /production/orders` -> `POST /production/orders/:id/start` -> `POST /production/orders/:id/complete`.
+- Không còn bất kỳ endpoint Salvage.
 
 ## Migration
 

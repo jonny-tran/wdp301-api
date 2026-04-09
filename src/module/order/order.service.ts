@@ -203,6 +203,36 @@ export class OrderService {
           tx,
         );
 
+      // 1.1) Reservation Queue: giữ chỗ tạm cho toàn bộ đơn coordinating của ngày giao
+      // để đơn mới phát sinh không "ăn" mất ATP trong lúc chờ bếp phản hồi.
+      const coordinatingOrderIds =
+        await this.orderRepository.listOrderIdsByDeliveryDateAndStatus(
+          deliveryDate,
+          OrderStatus.COORDINATING,
+          tx,
+        );
+      for (const orderId of coordinatingOrderIds) {
+        const order = await this.orderRepository.getOrderById(orderId, tx);
+        if (!order) continue;
+
+        // Clear reservation cũ cùng order trước khi giữ chỗ lại để tránh double reserve.
+        await this.inventoryService.releaseStock(order.id, tx);
+        await this.inventoryService.lockStockForOrder(
+          order.id,
+          centralWarehouseId,
+          order.items.map((item) => ({
+            orderItemId: item.id,
+            productId: item.productId,
+            quantityRequested: parseFloat(String(item.quantityRequested)),
+          })),
+          tx,
+          {
+            createdBy: actorId,
+            isReservation: true,
+          },
+        );
+      }
+
       // 2) Xác định danh sách cần hỏi bếp
       let inquiryLines =
         dto.lines?.map((l) => ({
@@ -258,6 +288,7 @@ export class OrderService {
       return {
         deliveryDate,
         lockedOrders: lockedCount,
+        queuedReservations: coordinatingOrderIds.length,
         productionOrdersCreated: created.length,
         referenceId,
       };
@@ -294,10 +325,21 @@ export class OrderService {
       status: OrderStatus;
       lines: Array<{ orderItemId: number; productId: number; requested: number; approved: number; missing: number }>;
     }> = [];
+    return this.orderRepository.runTransaction(async (tx) => {
+      const shipmentItemsByOrderId = new Map<
+        string,
+        { batchId: number; quantity: number }[]
+      >();
+      const groupMap = new Map<
+        string,
+        {
+          orderIds: string[];
+          toWarehouseId: number;
+          consolidationGroupId: string | null;
+        }
+      >();
 
-    // Mỗi đơn duyệt trong transaction riêng để đảm bảo atomicity theo đơn (giống approve lẻ).
-    for (const oa of dto.orderApprovals) {
-      const res = await this.orderRepository.runTransaction(async (tx) => {
+      for (const oa of dto.orderApprovals) {
         const order = await this.orderRepository.getOrderById(oa.orderId, tx);
         if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
 
@@ -324,12 +366,10 @@ export class OrderService {
           throw new InternalServerErrorException('Không tìm thấy kho cửa hàng');
         }
 
-        // Map allocation theo orderItemId
         const allocByItemId = new Map(
           oa.items.map((i) => [i.orderItemId, i.quantityApproved]),
         );
 
-        // Validate allocation không vượt requested gốc
         const lockLines = order.items.map((it) => {
           const requested = parseFloat(String(it.quantityRequested));
           const approvedTarget = allocByItemId.get(it.id);
@@ -350,16 +390,21 @@ export class OrderService {
           };
         });
 
-        // lock tồn theo FEFO đúng theo “approvedTarget” (đây là quantityRequested của lock)
+        // Reservation queue đã giữ chỗ từ bước coordinating -> release trước khi lock theo allocation thực tế.
+        await this.inventoryService.releaseStock(order.id, tx);
+
         const lock = await this.inventoryService.lockStockForOrder(
           order.id,
           centralWarehouseId,
           lockLines,
           tx,
-          { safetyMinimumExpiryDateStr: deliveryDateYmd, createdBy: actorId },
+          {
+            safetyMinimumExpiryDateStr: deliveryDateYmd,
+            createdBy: actorId,
+            isReservation: true,
+          },
         );
 
-        // Tính lại tổng tiền theo approved thực tế (trong trường hợp thiếu kho vẫn có thể bị hụt)
         const productIds = order.items.map((i) => i.productId);
         const catalogRows =
           await this.orderRepository.findProductsWithSnapshotByIds(productIds);
@@ -389,16 +434,21 @@ export class OrderService {
           itemRows,
         });
 
-        await this.shipmentService.createShipmentForOrder(
-          order.id,
-          centralWarehouseId,
-          storeWarehouseId,
-          lock.shipmentItems,
-          tx,
-          { consolidationGroupId: order.consolidationGroupId ?? null },
-        );
+        shipmentItemsByOrderId.set(order.id, lock.shipmentItems);
+        const routeId = order.store?.routeId ?? 'no_route';
+        const groupKey = `${routeId}:${storeWarehouseId}:${order.consolidationGroupId ?? 'none'}`;
+        const group = groupMap.get(groupKey);
+        if (group) {
+          group.orderIds.push(order.id);
+        } else {
+          groupMap.set(groupKey, {
+            orderIds: [order.id],
+            toWarehouseId: storeWarehouseId,
+            consolidationGroupId: order.consolidationGroupId ?? null,
+          });
+        }
 
-        return {
+        results.push({
           orderId: order.id,
           status: OrderStatus.APPROVED,
           lines: lock.results.map((r) => ({
@@ -408,16 +458,48 @@ export class OrderService {
             approved: r.approved,
             missing: r.missing,
           })),
-        };
-      });
-      results.push(res);
-    }
+        });
+      }
 
-    return {
-      deliveryDate: deliveryDateYmd,
-      approvedCount: results.length,
-      items: results,
-    };
+      const maxWStr = await this.systemConfigService.getConfigValue(
+        'VEHICLE_MAX_WEIGHT_KG',
+      );
+      const maxVehicleWeightKg = maxWStr ? parseFloat(maxWStr) : NaN;
+      const safeMaxW = Number.isFinite(maxVehicleWeightKg)
+        ? maxVehicleWeightKg
+        : null;
+
+      for (const group of groupMap.values()) {
+        const shipment =
+          await this.shipmentService.createConsolidatedShipmentForOrders(
+            group.orderIds,
+            centralWarehouseId,
+            group.toWarehouseId,
+            shipmentItemsByOrderId,
+            tx,
+            {
+              consolidationGroupId: group.consolidationGroupId,
+              maxVehicleWeightKg: safeMaxW,
+            },
+          );
+
+        for (const orderId of group.orderIds) {
+          await tx
+            .update(schema.orders)
+            .set({
+              shipmentId: shipment.id,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.orders.id, orderId));
+        }
+      }
+
+      return {
+        deliveryDate: deliveryDateYmd,
+        approvedCount: results.length,
+        items: results,
+      };
+    });
   }
 
   async getCatalog(query: GetCatalogDto) {
