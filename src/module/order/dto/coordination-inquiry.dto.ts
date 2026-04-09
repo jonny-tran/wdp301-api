@@ -6,6 +6,8 @@ import {
   IsInt,
   IsNumber,
   IsOptional,
+  IsString,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -45,5 +47,15 @@ export class CoordinationInquiryDto {
   @ValidateNested({ each: true })
   @Type(() => CoordinationInquiryLineDto)
   lines?: CoordinationInquiryLineDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Ghi chú điều phối gửi bếp (vd: ưu tiên ca sáng, mức thiếu nghiêm trọng...).',
+    example: 'Bù được không?',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 }
 

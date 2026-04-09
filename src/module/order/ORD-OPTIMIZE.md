@@ -107,6 +107,7 @@ Kế thừa `PaginationParamsDto`: `page`, `limit`, `sortBy`, `sortOrder`. Respo
 - `deliveryDate` (YYYY-MM-DD)
 - `lines?[]` (optional): `{ productId, quantity }`
   - Nếu **không gửi** `lines`, BE tự tính `shortage` từ tổng cầu (pending) và ATP kho trung tâm.
+- `note?` (optional): ghi chú điều phối gửi bếp (tối đa 500 ký tự).
 
 **Tác động DB:**
 

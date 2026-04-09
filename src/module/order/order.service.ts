@@ -229,7 +229,9 @@ export class OrderService {
                 warehouseId: centralWarehouseId,
                 createdBy: user.sub,
                 referenceId,
-                note: `Inquiry năng lực bếp cho ngày giao ${deliveryDate} (thiếu theo tổng cầu)`,
+                note:
+                  dto.note?.trim() ||
+                  `Inquiry năng lực bếp cho ngày giao ${deliveryDate} (thiếu theo tổng cầu)`,
               },
               dbTx,
             ),
