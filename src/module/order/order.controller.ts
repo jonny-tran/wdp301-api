@@ -138,7 +138,7 @@ export class OrderController {
   @ApiOperation({
     summary: 'Duyệt đơn hàng [Admin, Supply Coordinator]',
     description:
-      '**Quyền truy cập (Roles):** Admin, Supply Coordinator\n\n**Nghiệp vụ:** Khóa và phân bổ tồn theo FEFO, cập nhật số lượng duyệt từng dòng — hỗ trợ **Partial Fulfillment** (không backorder). Có thể bắt buộc `force_approve` khi tỷ lệ đáp ứng thấp, `price_acknowledged` khi lệch giá so với snapshot >20%, và `production_confirm` khi thiếu hàng cần phối hợp bếp.',
+      '**Quyền truy cập (Roles):** Admin, Supply Coordinator\n\n**Nghiệp vụ:** Khóa và phân bổ tồn theo FEFO, cập nhật số lượng duyệt từng dòng — hỗ trợ **Partial Fulfillment** (không backorder). Có thể bắt buộc `force_approve` khi tỷ lệ đáp ứng thấp, `price_acknowledged` khi lệch giá so với snapshot >20%, `production_confirm` khi thiếu hàng cần xác nhận phối hợp bếp (ETA), và **`productionRequests`** để gửi yêu cầu sản xuất bù (lệnh `pending` tại kho trung tâm, độc lập đơn hiện tại).',
   })
   async approveOrder(
     @Param('id') id: string,

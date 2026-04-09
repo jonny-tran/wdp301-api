@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { DatabaseModule } from '../../database/database.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { ProductionModule } from '../production/production.module';
@@ -14,7 +14,7 @@ import { OrderService } from './order.service';
     InventoryModule,
     ShipmentModule,
     SystemConfigModule,
-    ProductionModule,
+    forwardRef(() => ProductionModule),
   ],
   controllers: [OrderController],
   providers: [OrderService, OrderRepository],

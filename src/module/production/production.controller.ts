@@ -125,7 +125,7 @@ export class ProductionController {
   @ApiOperation({
     summary: 'Danh sách lệnh sản xuất [Manager, Kitchen, Coordinator, Admin]',
     description:
-      'Lọc `status`: `draft`, `in_progress`, `completed`, `cancelled` (CSV hoặc lặp query). Phân trang `page`/`limit`.',
+      'Lọc `status`: `draft`, `pending`, `in_progress`, `completed`, `cancelled` (CSV hoặc lặp query). Phân trang `page`/`limit`. `pending` = yêu cầu từ điều phối khi duyệt đơn (có `note` / `reference_id`).',
   })
   @ResponseMessage('Success')
   listOrders(@Query() query: GetProductionOrdersQueryDto) {
